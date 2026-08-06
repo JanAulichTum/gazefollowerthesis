@@ -1194,12 +1194,26 @@ try:
           _tel.Telemetry("z").save("/nonexistent/\0bad") is None)
 
     # OVERHEAD: measured, not asserted by inspection.
-    _t0 = time.perf_counter()
-    for _ in range(50):
-        _tel.Telemetry("perf", probe=lambda: {"sampling_hz": 30})._tick()
-    _tick_ms = (time.perf_counter() - _t0) / 50 * 1000
-    check("one 1 Hz tick costs well under a frame budget",
-          _tick_ms < 5.0, "%.2f ms per tick" % _tick_ms)
+    # The threshold is a SHARE OF THE SAMPLING INTERVAL, not an absolute
+    # millisecond figure — psutil is markedly slower on Windows, so an
+    # absolute bound fails there for no real reason. What matters is that
+    # a 1 Hz sampler uses a negligible slice of its own second.
+    _perf_rec = _tel.Telemetry("perf", probe=lambda: {"sampling_hz": 30})
+    for _ in range(5):
+        _perf_rec._tick()            # warm-up: psutil primes its counters
+    _samples_ms = []
+    for _ in range(30):
+        _t0 = time.perf_counter()
+        _perf_rec._tick()
+        _samples_ms.append((time.perf_counter() - _t0) * 1000)
+    _samples_ms.sort()
+    _tick_ms = _samples_ms[len(_samples_ms) // 2]      # median, not mean
+    _duty_pct = 100.0 * _tick_ms / (_tel.SAMPLE_INTERVAL_S * 1000)
+    check("a 1 Hz tick uses a negligible share of its own interval",
+          _duty_pct < 5.0,
+          "%.2f ms per tick = %.2f %% duty" % (_tick_ms, _duty_pct))
+    check("the tick never approaches a frame budget",
+          _samples_ms[-1] < 33.3, "worst %.2f ms" % _samples_ms[-1])
 
     check("the series is bounded (a forgotten server cannot fill the disk)",
           "MAX_SAMPLES" in _tel_src and _tel.MAX_SAMPLES <= 20000)
@@ -1286,25 +1300,25 @@ try:
     check("diagnose_session can compare two sessions", "--compare" in _diag)
 
     # End-to-end: a synthetic bad session must be diagnosed as bad.
-    _n = {"i": 0}
-
-    def _degrading():
-        _n["i"] += 1
-        _bad = _n["i"] > 3
-        return {"sampling_hz": 12.1 if _bad else 29.4,
-                "face_ms_median": 21.0 if _bad else 9.6,
-                "gaze_ms_median": 58.5 if _bad else 20.0,
-                "subscribers": 2, "frame_size": "1280x720"}
-
-    _saved_interval = _tel.SAMPLE_INTERVAL_S
-    try:
-        _tel.SAMPLE_INTERVAL_S = 0.02
-        _rec = _tel.Telemetry("synthetic", probe=_degrading).start()
-        time.sleep(0.35)
-        _rec.stop()
-        _data = _rec.to_dict()
-    finally:
-        _tel.SAMPLE_INTERVAL_S = _saved_interval
+    # The series is BUILT, not sampled from a live thread. The earlier
+    # version slept 0.35 s and hoped the sampler produced >= 12 rows —
+    # which it did here and did NOT on a slower machine, so the
+    # degradation check silently had too little data and the assertion
+    # failed for timing reasons rather than behaviour. A deterministic
+    # series tests the analysis, which is what this section is about.
+    _rec = _tel.Telemetry("synthetic")
+    _rec.series = [
+        {"t": i,
+         "sampling_hz": 29.4 if i < 9 else 12.1,
+         "face_ms_median": 9.6 if i < 9 else 21.0,
+         "gaze_ms_median": 20.0 if i < 9 else 58.5,
+         "subscribers": 2, "frame_size": "1280x720",
+         "detected_pct_cumulative": 100.0}
+        for i in range(18)
+    ]
+    _data = _rec.to_dict()
+    check("the synthetic series has enough rows for a trend test",
+          len(_data["series"]) >= 12, "%d rows" % len(_data["series"]))
 
     _dns: dict = {"__name__": "_diag",
                   "__file__": os.path.join(BASE, "diagnose_session.py")}
