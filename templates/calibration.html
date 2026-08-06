@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+
+{% block title %}Calibration — Eye-Tracking Study{% endblock %}
+{# Light card layout for instructions (matches the welcome page); the
+   page switches to the dark theme only when videos are shown. #}
+{% block theme %}light{% endblock %}
+{% block page_id %}calibration{% endblock %}
+
+{% block content %}
+<div class="calibration-container">
+
+    <!-- ============================================================
+         PHASE 1 — GazeFollower Native Calibration + MANDATORY
+         accuracy validation. Same card format as the welcome page.
+         ============================================================ -->
+    <div id="phase1" class="page-container">
+        <div class="card card--narrow">
+
+            <div class="study-header">
+                <div class="study-header__institution">Setup &amp; Calibration</div>
+                <h1 class="study-header__title">Eye-Tracker Setup</h1>
+                <h2 class="study-header__subtitle">Calibration and a short accuracy check before the videos begin</h2>
+            </div>
+
+            <hr class="divider">
+
+            <section class="study-info">
+                <p class="study-info__text"><strong>Please set up your environment first:</strong></p>
+                <ul class="study-info__text">
+                    <li>Place the laptop on a <strong>table</strong> (not your lap), webcam at <strong>eye level</strong>.</li>
+                    <li>Sit about <strong>{{ viewing_distance_cm|int }}&nbsp;cm</strong> from the screen (roughly arm's length).</li>
+                    <li>Light your face <strong>from the front</strong>; avoid windows or lamps behind you.</li>
+                    <li>If possible, remove glasses with strong reflections.</li>
+                    <li>Keep your <strong>head still</strong> during calibration and the videos — move only your eyes.</li>
+                </ul>
+                <p class="study-info__text">
+                    Clicking the button opens a <strong>fullscreen calibration</strong>:
+                    simply look at each dot as it appears. Afterwards a
+                    <strong>required accuracy check</strong> measures how
+                    precisely your gaze is tracked — the result is stored with
+                    your session.
+                </p>
+            </section>
+
+            <!-- Calibration technique guidance: how to get the most
+                 accurate calibration, incl. the fix for the common
+                 "gaze reads too high" webcam problem. -->
+            <section class="calib-tips">
+                <p class="calib-tips__title">For the most accurate calibration</p>
+                <ol class="calib-tips__list">
+                    <li><strong>Camera at eye level.</strong> This is the
+                        single most important step. A webcam <em>below</em>
+                        eye level makes the tracker read your gaze too high
+                        when you look up. Raise the laptop (a stack of books
+                        works) until the camera is level with your eyes.</li>
+                    <li><strong>Look at the exact centre of each dot</strong>
+                        and hold until it moves on — don't glance ahead to the
+                        next one.</li>
+                    <li><strong>Give the top dots special attention.</strong>
+                        The upper edge is the hardest for a webcam; really
+                        fixate the dots near the top.</li>
+                    <li><strong>Move only your eyes, keep your head still</strong>
+                        — during calibration and the videos.</li>
+                    <li><strong>Even light from the front</strong>, no window
+                        or lamp behind you; minimise glasses glare if you can.</li>
+                </ol>
+            </section>
+
+            <!-- Live head-position guide: uses the webcam geometry to
+                 steer the participant to the optimal, camera-at-eye-level
+                 pose before calibration. Degrades to the static tips
+                 above if the camera geometry can't be read. -->
+            <div class="card-actions">
+                <button id="positionCheckBtn" class="btn-secondary" type="button">
+                    Check my position (recommended)
+                </button>
+            </div>
+            <div id="positionPanel" class="position-panel" hidden
+                 role="status" aria-live="polite">
+                <div id="positionVerdict" class="position-panel__verdict">
+                    Starting camera…
+                </div>
+                <ul id="positionGuidance" class="position-panel__list"></ul>
+                <div id="positionMetrics" class="position-panel__metrics"></div>
+            </div>
+
+            <!-- Pre-session sampling-rate gate. Measured before
+                 calibration, while the instructions are being read. A
+                 session recorded below the threshold cannot support
+                 fixation-timing analysis, and that used to be
+                 discoverable only after the participant had left. -->
+            <div id="ratePanel" class="position-panel" hidden
+                 role="status" aria-live="polite">
+                <div id="rateVerdict" class="position-panel__verdict"></div>
+                <div id="rateDetail" class="position-panel__metrics"></div>
+                <div class="gain-control__row">
+                    <button id="rateRetryBtn" class="btn-secondary" hidden>
+                        Measure again
+                    </button>
+                    <button id="rateOverrideBtn" class="btn-secondary" hidden>
+                        Record anyway (flagged in the data)
+                    </button>
+                </div>
+            </div>
+
+            <div id="nativeCalStatus" class="detection-status detection-status--unknown"
+                 role="status" aria-live="polite">
+                Preparing the eye tracker…
+            </div>
+
+            <!-- Indeterminate loading bar (model loading can take minutes
+                 on slower laptops — this shows the app is not frozen) -->
+            <div id="nativeCalLoading" class="loading-bar">
+                <div class="loading-bar__fill"></div>
+            </div>
+
+            <!-- Gain correction: webcam gaze often moves the right way
+                 but "not far enough" (compressed toward the center).
+                 After the accuracy check an automatic correction is
+                 fitted; this slider allows manual fine-tuning while the
+                 green dot gives live feedback. -->
+            <div id="gainControl" class="gain-control" hidden>
+                <label class="form-label" for="gainSlider">
+                    Gaze range correction:
+                    <strong id="gainValue">×1.00</strong>
+                    <span id="gainSource" class="gain-control__source"></span>
+                </label>
+                <input type="range" id="gainSlider" min="0.8" max="2.5"
+                       step="0.05" value="1.0" aria-label="Gaze gain correction">
+                <div class="gain-control__row">
+                    <button id="gainAutoBtn" class="btn-secondary" disabled>
+                        Auto-fit from accuracy check
+                    </button>
+                </div>
+                <p class="study-info__text gain-control__hint">
+                    If the green dot moves in the right direction but not far
+                    enough towards the edges, increase the gain until it
+                    reaches where you look — then <strong>re-run the accuracy
+                    check</strong> to verify.
+                </p>
+            </div>
+
+            <div class="card-actions">
+                <button id="startNativeCal" class="btn-primary btn-primary--full">
+                    Start Eye-Tracker Calibration
+                </button>
+                <button id="runValidationBtn" class="btn-secondary" disabled>
+                    Run Accuracy Check (required)
+                </button>
+                <button id="startVideosBtn" class="btn-secondary" disabled>
+                    Start the Videos
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================
+         ACCURACY VALIDATION (pre: 5 targets / post: 3 targets)
+         The measured gaze is compared against each target; the mean
+         error in px and degrees of visual angle is stored in the
+         session manifest.
+         ============================================================ -->
+    <div id="trackingTest" class="tracking-test" hidden>
+        <p id="testInfo" class="tracking-test__info">Look at the ring</p>
+        <div id="testTarget" class="test-target" hidden></div>
+        <div id="testGazeDot" class="gaze-preview-dot" hidden></div>
+
+        <div id="testResults" class="tracking-test__results" hidden>
+            <div id="testMarks"></div>
+            <div class="tracking-test__summary card" role="status">
+                <h2 id="testVerdict" class="review-subtitle">Results</h2>
+                <p id="testSummary" class="study-info__text"></p>
+                <div class="card-actions">
+                    <button id="testCloseBtn" class="btn-primary btn-primary--full">
+                        Continue
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Live verification dot: after calibration it follows the
+         participant's gaze — visible proof the tracker works -->
+    <div id="gazePreviewDot" class="gaze-preview-dot" hidden></div>
+
+    <!-- ============================================================
+         EXPERIMENT — videos play here, in the SAME fullscreen page,
+         directly after the validation (a page change would exit
+         fullscreen and require another click).
+         ============================================================ -->
+    <div id="experimentSection" class="video-container" hidden>
+
+        <!-- Click-to-continue overlay: browsers revoke autoplay permission
+             a few seconds after the last click ("transient activation"),
+             so a fresh click may be needed right before a video starts. -->
+        <div id="startOverlay" class="start-overlay" role="button" tabindex="0"
+             aria-label="Continue" hidden>
+            <p id="startOverlayText" class="start-overlay__text">
+                Ready to continue.
+            </p>
+            <p class="start-overlay__hint">Click anywhere to continue</p>
+        </div>
+
+        <div id="progressIndicator" class="progress-indicator" hidden>
+            Video <span id="currentVideo">1</span> of <span id="totalVideos">?</span>
+        </div>
+
+        <div id="interStimulus" class="inter-stimulus" hidden>
+            <p class="inter-stimulus__text">
+                Please keep looking at the screen.<br>
+                Next video starting shortly…
+            </p>
+        </div>
+
+        <video id="videoPlayer" class="video-player" playsinline preload="auto" hidden>
+            Your browser does not support the video element.
+        </video>
+
+    </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    window.testMode = {{ 'true' if test_mode else 'false' }};
+    // px → degrees conversion parameters (logged with every validation)
+    window.screenDiagInches = {{ screen_diag_inches }};
+    window.screenDiagAssumed = {{ 'true' if session.get('screen_diag_assumed') else 'false' }};
+    window.viewingDistanceCm = {{ viewing_distance_cm }};
+    window.maxValidationErrorDeg = {{ max_validation_error_deg }};
+</script>
+<script src="{{ url_for('static', filename='js/experiment.js') }}?v={{ asset_version }}"></script>
+{% endblock %}

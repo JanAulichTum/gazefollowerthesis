@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block title %}Study Complete — Eye-Tracking Study{% endblock %}
+{% block page_id %}complete{% endblock %}
+
+{% block content %}
+<div class="page-container">
+    <div class="card debrief-container">
+
+        <!-- Animated CSS-only success icon -->
+        <div class="success-icon" aria-hidden="true">
+            <svg class="success-icon__svg" viewBox="0 0 52 52">
+                <circle class="success-icon__circle" cx="26" cy="26" r="25" fill="none" />
+                <path class="success-icon__check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8" />
+            </svg>
+        </div>
+
+        <h1 class="debrief-title">Study Complete</h1>
+
+        <p class="debrief-text">
+            Thank you for participating in this study! Your eye-tracking data has been
+            recorded successfully and will contribute to our research on visual attention
+            during video stimuli.
+        </p>
+
+        <p class="debrief-text debrief-text--highlight">
+            Your participation is greatly appreciated.
+        </p>
+
+        <hr class="divider">
+
+        <p class="debrief-contact">
+            If you have any questions about this study, please contact
+            <strong>Dr.&nbsp;Christian Kosel</strong> at the
+            <strong>Technical University of Munich (TUM)</strong>.
+        </p>
+
+        <button id="closeBtn" class="btn-primary btn-primary--full" onclick="closeStudy()">
+            Close
+        </button>
+
+        <p class="researcher-link">
+            <a href="/review" class="btn-link">Open Gaze Review Tool (researcher)</a>
+        </p>
+    </div>
+
+    <footer class="page-footer">
+        <p>&copy; {{ current_year }} Technical University of Munich (TUM). All rights reserved.</p>
+    </footer>
+</div>
+
+<script>
+    /**
+     * Attempt to close the browser tab/window.
+     * Browsers restrict window.close() for tabs not opened via script,
+     * so we fall back to a friendly message.
+     */
+    function closeStudy() {
+        window.close();
+
+        // If the window didn't close (browser restriction), show a message
+        setTimeout(function () {
+            const btn = document.getElementById('closeBtn');
+            btn.textContent = 'You may now close this tab';
+            btn.disabled = true;
+            btn.classList.add('btn-primary--muted');
+        }, 500);
+    }
+</script>
+{% endblock %}

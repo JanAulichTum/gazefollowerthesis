@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Last line of defence before content becomes public.
+#
+# WHY THIS EXISTS
+# ---------------
+# This repository is PUBLIC. A push is therefore irreversible in a way
+# that a local mistake is not: deleting the repository afterwards does
+# not remove forks, caches, scrapers or existing clones. There is no
+# undo, so the check belongs BEFORE the push rather than in a policy
+# document nobody rereads.
+#
+# It refuses to push when any of the following is staged in history:
+#
+#   * model weights            not ours to redistribute (CC BY-NC-SA)
+#   * raw session recordings   human-subjects data
+#   * participants.xlsx        the participant register
+#   * participant_key.json     the reidentification key
+#   * telemetry files          hostname + absolute paths
+#   * secret keys              API credentials
+#
+# Note it inspects TRACKED FILES, not the working tree, so a file that
+# slipped past .gitignore in an earlier commit is still caught.
+#
+# Override for one push (only if you are certain):
+#
+#     GF_ALLOW_PUSH=1 git push
+#
+# Hooks are not cloned. This one is tracked and activated with
+# `git config core.hooksPath githooks`.
+
+set -u
+
+remote_name="${1:-}"
+remote_url="${2:-}"
+
+if [ "${GF_ALLOW_PUSH:-0}" = "1" ]; then
+    echo "pre-push: GF_ALLOW_PUSH=1 — public-safety check skipped." >&2
+    exit 0
+fi
+
+blocked=$(git ls-files -- \
+    'models/*.mnn' 'models/*.onnx' 'models/*.tflite' 'models/*.pb' \
+    'data/gazefollower_raw' 'data/archive' 'data/llm_logs' \
+    'data/telemetry' \
+    '*participant_key*' '*participants.xlsx' '*gazefollower_data.xlsx' \
+    '*.gemini_key' '*.secret_key' '*.env' '*fake_face.mp4' \
+    2>/dev/null)
+
+if [ -z "$blocked" ]; then
+    exit 0
+fi
+
+cat >&2 <<BANNER
+
+  ────────────────────────────────────────────────────────────────
+   PUSH BLOCKED — restricted content is tracked in this PUBLIC repo
+  ────────────────────────────────────────────────────────────────
+
+  Remote : ${remote_name} -> ${remote_url}
+
+  These files are tracked and would become public:
+
+$(printf '    %s\n' $blocked)
+
+  Publishing cannot be undone. Deleting the repository afterwards does
+  not remove forks, caches or clones.
+
+  Remove from tracking AND from history before pushing:
+
+      git rm --cached <file>
+      # then rewrite the commits that contain it, e.g. for the most
+      # recent commit:  git commit --amend
+      git reflog expire --expire=now --all && git gc --prune=now
+
+  Verify it is really gone:
+
+      git rev-list --objects --all | grep <file>
+
+  Override for a single push (only if you are certain):
+
+      GF_ALLOW_PUSH=1 git push
+
+BANNER
+exit 1

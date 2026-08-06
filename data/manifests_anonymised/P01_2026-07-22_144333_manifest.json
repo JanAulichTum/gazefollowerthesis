@@ -1,0 +1,482 @@
+{
+  "participant_id": "P01",
+  "finalized_at_utc": "2026-07-22T12:43:50.069181+00:00",
+  "session_csv": "P01_2026-07-22_144333.csv",
+  "test_mode": true,
+  "sample_counts": {
+    "_testclip_30s.mp4": 431
+  },
+  "data_quality": {
+    "_testclip_30s.mp4": {
+      "samples": 431,
+      "valid_samples": 431,
+      "valid_pct": 100.0,
+      "gaze_samples_pct": 47.3,
+      "sampling_hz": 15.6,
+      "low_sampling_rate": true,
+      "passes_gaze_samples_threshold": false,
+      "nominal_sampling_hz": 30.0,
+      "relative_yield_pct": 100.0,
+      "sampling_hz_fastest": 16.2,
+      "rate_ratio": 1.04,
+      "rate_multimodal": false
+    }
+  },
+  "validations": [
+    {
+      "phase": "pre",
+      "recorded_at_utc": "2026-07-22T12:41:15.486616+00:00",
+      "targets": [
+        {
+          "tx": 230,
+          "ty": 130,
+          "err_px": 262.7,
+          "precision_px": 15.8,
+          "n_samples": 20
+        },
+        {
+          "tx": 1690,
+          "ty": 130,
+          "err_px": 356.7,
+          "precision_px": 23.4,
+          "n_samples": 20
+        },
+        {
+          "tx": 960,
+          "ty": 335,
+          "err_px": 2.8,
+          "precision_px": 17.6,
+          "n_samples": 21
+        },
+        {
+          "tx": 288,
+          "ty": 540,
+          "err_px": 126,
+          "precision_px": 62.5,
+          "n_samples": 20
+        },
+        {
+          "tx": 1632,
+          "ty": 540,
+          "err_px": 251.3,
+          "precision_px": 39.5,
+          "n_samples": 20
+        },
+        {
+          "tx": 960,
+          "ty": 745,
+          "err_px": 88.9,
+          "precision_px": 15.9,
+          "n_samples": 20
+        },
+        {
+          "tx": 960,
+          "ty": 950,
+          "err_px": 104.9,
+          "precision_px": 24.6,
+          "n_samples": 22
+        }
+      ],
+      "targets_measured": 7,
+      "mean_err_px": 170.4,
+      "mean_err_deg": 2.93,
+      "mean_precision_px": 28.5,
+      "mean_precision_deg": 0.49,
+      "correction_active": {
+        "active": false
+      },
+      "screen": {
+        "width_px": 1920,
+        "height_px": 1080,
+        "device_pixel_ratio": 1,
+        "diag_inches": 15.6,
+        "diag_assumed": false,
+        "viewing_distance_cm": 60,
+        "viewing_distance_measured": false
+      },
+      "passes_threshold": true
+    },
+    {
+      "phase": "pre",
+      "recorded_at_utc": "2026-07-22T12:41:41.191429+00:00",
+      "targets": [
+        {
+          "tx": 230,
+          "ty": 130,
+          "err_px": 127,
+          "precision_px": 10.9,
+          "n_samples": 20
+        },
+        {
+          "tx": 1690,
+          "ty": 130,
+          "err_px": 56.1,
+          "precision_px": 26.2,
+          "n_samples": 20
+        },
+        {
+          "tx": 960,
+          "ty": 335,
+          "err_px": 144.9,
+          "precision_px": 20.3,
+          "n_samples": 20
+        },
+        {
+          "tx": 288,
+          "ty": 540,
+          "err_px": 84.4,
+          "precision_px": 14.6,
+          "n_samples": 22
+        },
+        {
+          "tx": 1632,
+          "ty": 540,
+          "err_px": 120.4,
+          "precision_px": 34.7,
+          "n_samples": 20
+        },
+        {
+          "tx": 960,
+          "ty": 745,
+          "err_px": 86.6,
+          "precision_px": 14.1,
+          "n_samples": 20
+        },
+        {
+          "tx": 960,
+          "ty": 950,
+          "err_px": 105.1,
+          "precision_px": 11,
+          "n_samples": 20
+        }
+      ],
+      "targets_measured": 7,
+      "mean_err_px": 103.5,
+      "mean_err_deg": 1.78,
+      "mean_precision_px": 18.8,
+      "mean_precision_deg": 0.32,
+      "correction_active": {
+        "active": true,
+        "px": [
+          0.891959,
+          66.512399
+        ],
+        "py": [
+          1.097878,
+          -218.860951
+        ],
+        "cy": 540.0,
+        "kind": "affine",
+        "gain_x": 0.892,
+        "gain_y": 1.098,
+        "gain_mean": 0.99,
+        "source": "auto-fit (affine)"
+      },
+      "screen": {
+        "width_px": 1920,
+        "height_px": 1080,
+        "device_pixel_ratio": 1,
+        "diag_inches": 15.6,
+        "diag_assumed": false,
+        "viewing_distance_cm": 60,
+        "viewing_distance_measured": false
+      },
+      "passes_threshold": true
+    },
+    {
+      "phase": "pre",
+      "recorded_at_utc": "2026-07-22T12:42:25.031188+00:00",
+      "targets": [
+        {
+          "tx": 230,
+          "ty": 130,
+          "err_px": 104.1,
+          "precision_px": 9.1,
+          "n_samples": 20
+        },
+        {
+          "tx": 1690,
+          "ty": 130,
+          "err_px": 241.5,
+          "precision_px": 17.7,
+          "n_samples": 20
+        },
+        {
+          "tx": 960,
+          "ty": 335,
+          "err_px": 130,
+          "precision_px": 10,
+          "n_samples": 20
+        },
+        {
+          "tx": 288,
+          "ty": 540,
+          "err_px": 142.9,
+          "precision_px": 8.3,
+          "n_samples": 20
+        },
+        {
+          "tx": 1632,
+          "ty": 540,
+          "err_px": 184.6,
+          "precision_px": 35.6,
+          "n_samples": 20
+        },
+        {
+          "tx": 960,
+          "ty": 745,
+          "err_px": 76.5,
+          "precision_px": 21,
+          "n_samples": 20
+        },
+        {
+          "tx": 960,
+          "ty": 950,
+          "err_px": 64.4,
+          "precision_px": 15.5,
+          "n_samples": 20
+        }
+      ],
+      "targets_measured": 7,
+      "mean_err_px": 134.9,
+      "mean_err_deg": 2.32,
+      "mean_precision_px": 16.7,
+      "mean_precision_deg": 0.29,
+      "correction_active": {
+        "active": true,
+        "px": [
+          1.15,
+          -144.0
+        ],
+        "py": [
+          1.15,
+          -81.0
+        ],
+        "cy": 540.0,
+        "kind": "affine",
+        "gain_x": 1.15,
+        "gain_y": 1.15,
+        "gain_mean": 1.15,
+        "source": "manual slider"
+      },
+      "screen": {
+        "width_px": 1920,
+        "height_px": 1080,
+        "device_pixel_ratio": 1,
+        "diag_inches": 15.6,
+        "diag_assumed": false,
+        "viewing_distance_cm": 60,
+        "viewing_distance_measured": false
+      },
+      "passes_threshold": true
+    },
+    {
+      "phase": "pre",
+      "recorded_at_utc": "2026-07-22T12:42:46.423634+00:00",
+      "targets": [
+        {
+          "tx": 230,
+          "ty": 130,
+          "err_px": 41.2,
+          "precision_px": 13.4,
+          "n_samples": 20
+        },
+        {
+          "tx": 1690,
+          "ty": 130,
+          "err_px": 120.9,
+          "precision_px": 34.5,
+          "n_samples": 20
+        },
+        {
+          "tx": 960,
+          "ty": 335,
+          "err_px": 77.1,
+          "precision_px": 16.2,
+          "n_samples": 20
+        },
+        {
+          "tx": 288,
+          "ty": 540,
+          "err_px": 176.9,
+          "precision_px": 12.3,
+          "n_samples": 21
+        },
+        {
+          "tx": 1632,
+          "ty": 540,
+          "err_px": 16.8,
+          "precision_px": 24.4,
+          "n_samples": 20
+        },
+        {
+          "tx": 960,
+          "ty": 745,
+          "err_px": 48.1,
+          "precision_px": 32.6,
+          "n_samples": 20
+        },
+        {
+          "tx": 960,
+          "ty": 950,
+          "err_px": 21.4,
+          "precision_px": 15.6,
+          "n_samples": 20
+        }
+      ],
+      "targets_measured": 7,
+      "mean_err_px": 71.8,
+      "mean_err_deg": 1.23,
+      "mean_precision_px": 21.3,
+      "mean_precision_deg": 0.37,
+      "correction_active": {
+        "active": true,
+        "px": [
+          0.934352,
+          17.639068
+        ],
+        "py": [
+          1.130436,
+          -73.819143
+        ],
+        "cy": 540.0,
+        "kind": "affine",
+        "gain_x": 0.934,
+        "gain_y": 1.13,
+        "gain_mean": 1.03,
+        "source": "auto-fit (affine)"
+      },
+      "screen": {
+        "width_px": 1920,
+        "height_px": 1080,
+        "device_pixel_ratio": 1,
+        "diag_inches": 15.6,
+        "diag_assumed": false,
+        "viewing_distance_cm": 60,
+        "viewing_distance_measured": false
+      },
+      "passes_threshold": true
+    },
+    {
+      "phase": "post",
+      "recorded_at_utc": "2026-07-22T12:43:32.384635+00:00",
+      "targets": [
+        {
+          "tx": 288,
+          "ty": 162,
+          "err_px": 42.6,
+          "precision_px": 22.7,
+          "n_samples": 10
+        },
+        {
+          "tx": 1632,
+          "ty": 540,
+          "err_px": 99,
+          "precision_px": 31.4,
+          "n_samples": 10
+        },
+        {
+          "tx": 960,
+          "ty": 918,
+          "err_px": 58.1,
+          "precision_px": 25,
+          "n_samples": 10
+        }
+      ],
+      "targets_measured": 3,
+      "mean_err_px": 66.6,
+      "mean_err_deg": 1.14,
+      "mean_precision_px": 26.3,
+      "mean_precision_deg": 0.45,
+      "correction_active": {
+        "active": true,
+        "px": [
+          0.949331,
+          -14.740586
+        ],
+        "py": [
+          1.191931,
+          -79.471766
+        ],
+        "cy": 540.0,
+        "kind": "affine",
+        "gain_x": 0.949,
+        "gain_y": 1.192,
+        "gain_mean": 1.07,
+        "source": "auto-fit (affine)"
+      },
+      "screen": {
+        "width_px": 1920,
+        "height_px": 1080,
+        "device_pixel_ratio": 1,
+        "diag_inches": 15.6,
+        "diag_assumed": false,
+        "viewing_distance_cm": 60,
+        "viewing_distance_measured": false
+      },
+      "passes_threshold": true
+    }
+  ],
+  "gain_correction": {
+    "active": true,
+    "px": [
+      0.949331,
+      -14.740586
+    ],
+    "py": [
+      1.191931,
+      -79.471766
+    ],
+    "cy": 540.0,
+    "kind": "affine",
+    "gain_x": 0.949,
+    "gain_y": 1.192,
+    "gain_mean": 1.07,
+    "source": "auto-fit (affine)"
+  },
+  "head_position": null,
+  "quality_thresholds": {
+    "max_validation_error_deg": 3.0,
+    "min_gaze_samples_pct": 60.0,
+    "min_sampling_hz": 20.0,
+    "assumed_viewing_distance_cm": 60.0,
+    "nominal_sampling_hz": 30.0
+  },
+  "stimuli": [
+    {
+      "stimulus": "_testclip_30s.mp4",
+      "t_start_ns": 1784724174219886300,
+      "t_end_ns": 1784724204573777500,
+      "video_rect": {
+        "x": 0,
+        "y": -8,
+        "w": 1920,
+        "h": 1080,
+        "video_w": 1280,
+        "video_h": 720
+      }
+    }
+  ],
+  "legacy_data_quality": {
+    "_testclip_30s.mp4": {
+      "samples": 431,
+      "valid_samples": 431,
+      "valid_pct": 100.0,
+      "gaze_samples_pct": 100.0,
+      "sampling_hz": 15.6,
+      "low_sampling_rate": true,
+      "passes_gaze_samples_threshold": true
+    }
+  },
+  "backfill": {
+    "version": "2026-07-31-nominal-rate",
+    "note": "gaze_samples_pct recomputed against a fixed nominal rate; the original self-referential values are kept in legacy_data_quality"
+  },
+  "anonymised": {
+    "tool": "anonymise_manifests.py",
+    "at": "2026-08-06T14:06:42",
+    "note": "Pseudonymised copy. The reidentification key is held outside version control.",
+    "gaze_coordinates_removed": 62,
+    "retained": "Validation targets keep tx/ty (the fixed grid), err_px and precision_px. The measured gaze positions (mx/my) they were computed from are removed."
+  }
+}

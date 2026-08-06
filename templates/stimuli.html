@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block title %}Experiment — Eye-Tracking Study{% endblock %}
+{% block theme %}dark{% endblock %}
+{% block page_id %}stimuli{% endblock %}
+
+{% block content %}
+<!-- Click-to-start overlay: browsers refuse to autoplay videos with
+     sound until the user has clicked on the page at least once. -->
+<div id="startOverlay" class="start-overlay" role="button" tabindex="0"
+     aria-label="Begin the experiment">
+    <p id="startOverlayText" class="start-overlay__text">
+        The experiment is ready.<br>Please watch each video attentively.
+    </p>
+    <p class="start-overlay__hint">Click anywhere to begin</p>
+</div>
+
+<div class="video-container">
+
+    <!-- Progress indicator -->
+    <div id="progressIndicator" class="progress-indicator" hidden>
+        Video <span id="currentVideo">1</span> of <span id="totalVideos">{{ stimuli | length }}</span>
+    </div>
+
+    <!-- Inter-stimulus rest screen -->
+    <div id="interStimulus" class="inter-stimulus" hidden>
+        <p class="inter-stimulus__text">
+            Please keep looking at the screen.<br>
+            Next video starting shortly…
+        </p>
+    </div>
+
+    <!-- HTML5 video player -->
+    <video id="videoPlayer" class="video-player" playsinline preload="auto" hidden>
+        Your browser does not support the video element.
+    </video>
+
+    <!-- Note: gaze recording runs server-side (GazeFollower owns the
+         webcam); the browser only plays videos and signals start/stop. -->
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<!-- Pass stimuli list from Flask/Jinja2 to JavaScript -->
+<script>
+    window.stimuliList = {{ stimuli | tojson }};
+    window.testMode = {{ 'true' if clip_video else 'false' }};
+</script>
+<script src="{{ url_for('static', filename='js/experiment.js') }}?v={{ asset_version }}"></script>
+{% endblock %}

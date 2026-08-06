@@ -1,0 +1,473 @@
+{
+  "participant_id": "P04",
+  "finalized_at_utc": "2026-07-17T12:19:26.470761+00:00",
+  "session_csv": "P04_2026-07-17_141915.csv",
+  "test_mode": true,
+  "sample_counts": {
+    "_testclip_30s.mp4": 427
+  },
+  "data_quality": {
+    "_testclip_30s.mp4": {
+      "samples": 427,
+      "valid_samples": 427,
+      "valid_pct": 100.0,
+      "gaze_samples_pct": 46.0,
+      "passes_gaze_samples_threshold": false,
+      "nominal_sampling_hz": 30.0,
+      "relative_yield_pct": 95.0,
+      "sampling_hz": 14.5,
+      "sampling_hz_fastest": 15.4,
+      "rate_ratio": 1.06,
+      "rate_multimodal": false,
+      "low_sampling_rate": true
+    }
+  },
+  "validations": [
+    {
+      "phase": "pre",
+      "recorded_at_utc": "2026-07-17T12:17:08.872654+00:00",
+      "targets": [
+        {
+          "tx": 202,
+          "ty": 126,
+          "err_px": 191.7,
+          "precision_px": 46.1,
+          "n_samples": 18
+        },
+        {
+          "tx": 1478,
+          "ty": 126,
+          "err_px": 113.7,
+          "precision_px": 5.6,
+          "n_samples": 22
+        },
+        {
+          "tx": 840,
+          "ty": 326,
+          "err_px": 34.2,
+          "precision_px": 6.6,
+          "n_samples": 20
+        },
+        {
+          "tx": 252,
+          "ty": 525,
+          "err_px": 113.2,
+          "precision_px": 24.7,
+          "n_samples": 20
+        },
+        {
+          "tx": 1428,
+          "ty": 525,
+          "err_px": 88,
+          "precision_px": 5.1,
+          "n_samples": 20
+        },
+        {
+          "tx": 840,
+          "ty": 725,
+          "err_px": 103.1,
+          "precision_px": 14.8,
+          "n_samples": 20
+        },
+        {
+          "tx": 840,
+          "ty": 924,
+          "err_px": 75.1,
+          "precision_px": 14.3,
+          "n_samples": 20
+        }
+      ],
+      "targets_measured": 7,
+      "mean_err_px": 102.7,
+      "mean_err_deg": 1.67,
+      "mean_precision_px": 16.7,
+      "mean_precision_deg": 0.27,
+      "correction_active": {
+        "active": false
+      },
+      "screen": {
+        "width_px": 1680,
+        "height_px": 1050,
+        "device_pixel_ratio": 2,
+        "diag_inches": 13.3,
+        "diag_assumed": true,
+        "viewing_distance_cm": 60
+      },
+      "passes_threshold": true
+    },
+    {
+      "phase": "pre",
+      "recorded_at_utc": "2026-07-17T12:17:41.454433+00:00",
+      "targets": [
+        {
+          "tx": 202,
+          "ty": 126,
+          "err_px": 102.8,
+          "precision_px": 12.6,
+          "n_samples": 20
+        },
+        {
+          "tx": 1478,
+          "ty": 126,
+          "err_px": 74.3,
+          "precision_px": 11.4,
+          "n_samples": 21
+        },
+        {
+          "tx": 840,
+          "ty": 326,
+          "err_px": 68.8,
+          "precision_px": 13.2,
+          "n_samples": 20
+        },
+        {
+          "tx": 252,
+          "ty": 525,
+          "err_px": 110.6,
+          "precision_px": 13.4,
+          "n_samples": 20
+        },
+        {
+          "tx": 1428,
+          "ty": 525,
+          "err_px": 125,
+          "precision_px": 9.6,
+          "n_samples": 20
+        },
+        {
+          "tx": 840,
+          "ty": 725,
+          "err_px": 172.9,
+          "precision_px": 30.6,
+          "n_samples": 21
+        },
+        {
+          "tx": 840,
+          "ty": 924,
+          "err_px": 33.4,
+          "precision_px": 35,
+          "n_samples": 21
+        }
+      ],
+      "targets_measured": 7,
+      "mean_err_px": 98.3,
+      "mean_err_deg": 1.6,
+      "mean_precision_px": 18,
+      "mean_precision_deg": 0.29,
+      "correction_active": {
+        "active": true,
+        "px": [
+          0.983038,
+          3.013167
+        ],
+        "py": [
+          1.042711,
+          -95.368009
+        ],
+        "cy": 525.0,
+        "kind": "affine",
+        "gain_x": 0.983,
+        "gain_y": 1.043,
+        "gain_mean": 1.01,
+        "source": "auto-fit (affine)"
+      },
+      "screen": {
+        "width_px": 1680,
+        "height_px": 1050,
+        "device_pixel_ratio": 2,
+        "diag_inches": 13.3,
+        "diag_assumed": true,
+        "viewing_distance_cm": 60
+      },
+      "passes_threshold": true
+    },
+    {
+      "phase": "pre",
+      "recorded_at_utc": "2026-07-17T12:18:06.831813+00:00",
+      "targets": [
+        {
+          "tx": 202,
+          "ty": 126,
+          "err_px": 81.9,
+          "precision_px": 22.5,
+          "n_samples": 20
+        },
+        {
+          "tx": 1478,
+          "ty": 126,
+          "err_px": 95.2,
+          "precision_px": 10.4,
+          "n_samples": 20
+        },
+        {
+          "tx": 840,
+          "ty": 326,
+          "err_px": 10.6,
+          "precision_px": 16.4,
+          "n_samples": 20
+        },
+        {
+          "tx": 252,
+          "ty": 525,
+          "err_px": 106.6,
+          "precision_px": 24.2,
+          "n_samples": 20
+        },
+        {
+          "tx": 1428,
+          "ty": 525,
+          "err_px": 60.6,
+          "precision_px": 12.1,
+          "n_samples": 20
+        },
+        {
+          "tx": 840,
+          "ty": 725,
+          "err_px": 133.6,
+          "precision_px": 23.9,
+          "n_samples": 21
+        },
+        {
+          "tx": 840,
+          "ty": 924,
+          "err_px": 91.7,
+          "precision_px": 25.3,
+          "n_samples": 21
+        }
+      ],
+      "targets_measured": 7,
+      "mean_err_px": 82.9,
+      "mean_err_deg": 1.35,
+      "mean_precision_px": 19.3,
+      "mean_precision_deg": 0.31,
+      "correction_active": {
+        "active": true,
+        "px": [
+          0.978001,
+          49.371163
+        ],
+        "py": [
+          0.93532,
+          -78.849445
+        ],
+        "cy": 525.0,
+        "kind": "affine",
+        "gain_x": 0.978,
+        "gain_y": 0.935,
+        "gain_mean": 0.96,
+        "source": "auto-fit (affine)"
+      },
+      "screen": {
+        "width_px": 1680,
+        "height_px": 1050,
+        "device_pixel_ratio": 2,
+        "diag_inches": 13.3,
+        "diag_assumed": true,
+        "viewing_distance_cm": 60
+      },
+      "passes_threshold": true
+    },
+    {
+      "phase": "pre",
+      "recorded_at_utc": "2026-07-17T12:18:28.252966+00:00",
+      "targets": [
+        {
+          "tx": 202,
+          "ty": 126,
+          "err_px": 28.3,
+          "precision_px": 58.7,
+          "n_samples": 20
+        },
+        {
+          "tx": 1478,
+          "ty": 126,
+          "err_px": 88.7,
+          "precision_px": 19.8,
+          "n_samples": 20
+        },
+        {
+          "tx": 840,
+          "ty": 326,
+          "err_px": 3.9,
+          "precision_px": 20.9,
+          "n_samples": 20
+        },
+        {
+          "tx": 252,
+          "ty": 525,
+          "err_px": 113.4,
+          "precision_px": 26.1,
+          "n_samples": 20
+        },
+        {
+          "tx": 1428,
+          "ty": 525,
+          "err_px": 84.9,
+          "precision_px": 16.6,
+          "n_samples": 20
+        },
+        {
+          "tx": 840,
+          "ty": 725,
+          "err_px": 54,
+          "precision_px": 24.3,
+          "n_samples": 21
+        },
+        {
+          "tx": 840,
+          "ty": 924,
+          "err_px": 96.9,
+          "precision_px": 24.9,
+          "n_samples": 20
+        }
+      ],
+      "targets_measured": 7,
+      "mean_err_px": 67.2,
+      "mean_err_deg": 1.09,
+      "mean_precision_px": 27.3,
+      "mean_precision_deg": 0.45,
+      "correction_active": {
+        "active": true,
+        "px": [
+          1.002069,
+          40.453248
+        ],
+        "py": [
+          0.948953,
+          -88.271729
+        ],
+        "cy": 525.0,
+        "kind": "affine",
+        "gain_x": 1.002,
+        "gain_y": 0.949,
+        "gain_mean": 0.98,
+        "source": "auto-fit (affine)"
+      },
+      "screen": {
+        "width_px": 1680,
+        "height_px": 1050,
+        "device_pixel_ratio": 2,
+        "diag_inches": 13.3,
+        "diag_assumed": true,
+        "viewing_distance_cm": 60
+      },
+      "passes_threshold": true
+    },
+    {
+      "phase": "post",
+      "recorded_at_utc": "2026-07-17T12:19:13.217011+00:00",
+      "targets": [
+        {
+          "tx": 252,
+          "ty": 158,
+          "err_px": 98.1,
+          "precision_px": 8.4,
+          "n_samples": 10
+        },
+        {
+          "tx": 1428,
+          "ty": 525,
+          "err_px": 38.2,
+          "precision_px": 24.3,
+          "n_samples": 10
+        },
+        {
+          "tx": 840,
+          "ty": 893,
+          "err_px": 104.3,
+          "precision_px": 17.8,
+          "n_samples": 10
+        }
+      ],
+      "targets_measured": 3,
+      "mean_err_px": 80.2,
+      "mean_err_deg": 1.31,
+      "mean_precision_px": 16.9,
+      "mean_precision_deg": 0.27,
+      "correction_active": {
+        "active": true,
+        "px": [
+          0.981123,
+          67.935825
+        ],
+        "py": [
+          0.961313,
+          -118.384566
+        ],
+        "cy": 525.0,
+        "kind": "affine",
+        "gain_x": 0.981,
+        "gain_y": 0.961,
+        "gain_mean": 0.97,
+        "source": "auto-fit (affine)"
+      },
+      "screen": {
+        "width_px": 1680,
+        "height_px": 1050,
+        "device_pixel_ratio": 2,
+        "diag_inches": 13.3,
+        "diag_assumed": true,
+        "viewing_distance_cm": 60
+      },
+      "passes_threshold": true
+    }
+  ],
+  "gain_correction": {
+    "active": true,
+    "px": [
+      0.981123,
+      67.935825
+    ],
+    "py": [
+      0.961313,
+      -118.384566
+    ],
+    "cy": 525.0,
+    "kind": "affine",
+    "gain_x": 0.981,
+    "gain_y": 0.961,
+    "gain_mean": 0.97,
+    "source": "auto-fit (affine)"
+  },
+  "quality_thresholds": {
+    "max_validation_error_deg": 3.0,
+    "min_gaze_samples_pct": 60.0,
+    "assumed_viewing_distance_cm": 60.0,
+    "nominal_sampling_hz": 30.0
+  },
+  "stimuli": [
+    {
+      "stimulus": "_testclip_30s.mp4",
+      "t_start_ns": 1784290714435652000,
+      "t_end_ns": 1784290745408256000,
+      "video_rect": {
+        "x": 0,
+        "y": 52.50439453125,
+        "w": 1679.984375,
+        "h": 944.9912109375,
+        "video_w": 1280,
+        "video_h": 720
+      }
+    }
+  ],
+  "legacy_data_quality": {
+    "_testclip_30s.mp4": {
+      "samples": 427,
+      "valid_samples": 427,
+      "valid_pct": 100.0,
+      "gaze_samples_pct": 95.0,
+      "passes_gaze_samples_threshold": true
+    }
+  },
+  "backfill": {
+    "version": "2026-07-31-nominal-rate",
+    "note": "gaze_samples_pct recomputed against a fixed nominal rate; the original self-referential values are kept in legacy_data_quality"
+  },
+  "anonymised": {
+    "tool": "anonymise_manifests.py",
+    "at": "2026-08-06T14:06:42",
+    "note": "Pseudonymised copy. The reidentification key is held outside version control.",
+    "gaze_coordinates_removed": 62,
+    "retained": "Validation targets keep tx/ty (the fixed grid), err_px and precision_px. The measured gaze positions (mx/my) they were computed from are removed."
+  }
+}

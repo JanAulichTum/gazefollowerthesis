@@ -1,0 +1,465 @@
+{% extends "base.html" %}
+
+{% block title %}Gaze Replay — Eye-Tracking Study{% endblock %}
+{% block theme %}light{% endblock %}
+{% block page_id %}review{% endblock %}
+
+{% block head_extra %}
+<!-- Markdown rendering for the AI feedback (sanitized before insertion) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.5/purify.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="review-container">
+
+    <!-- Page header, same language as the welcome page -->
+    <div class="study-header">
+        <div class="study-header__institution">Researcher Tool</div>
+        <h1 class="study-header__title">Gaze Replay &amp; AI Feedback</h1>
+        <h2 class="study-header__subtitle">Replay recordings with the gaze overlay and summarize attention</h2>
+    </div>
+
+    <!-- Replay card -->
+    <div class="card review-card">
+        <h2 class="review-subtitle">Replay a Recording</h2>
+        <div class="review-controls">
+            <select id="recordingSel" class="review-select"
+                    aria-label="Select a recording">
+                <option value="">Loading recordings…</option>
+            </select>
+            <button id="loadBtn" class="btn-primary" disabled>Load Replay</button>
+        </div>
+
+        <div id="playerWrap" class="review-player" hidden>
+            <video id="reviewVideo" class="review-video" controls playsinline preload="auto"></video>
+            <canvas id="overlayCanvas" class="review-overlay"></canvas>
+        </div>
+        <p id="replayInfo" class="review-info" role="status" aria-live="polite"></p>
+    </div>
+
+    <!-- Recording quality card: everything the methods section needs
+         about this recording — validations, drift, gain correction,
+         data loss, sampling and fixation statistics. -->
+    <div class="card review-card" id="qualityCard" hidden>
+        <h2 class="review-subtitle">Recording Quality</h2>
+        <div id="qualityPanel" class="quality-panel"></div>
+    </div>
+
+    <!-- LLM feedback card -->
+    <div class="card review-card">
+        <h2 class="review-subtitle">AI Feedback <span class="review-badge">research pipeline</span></h2>
+        <p class="review-info">
+            The AI receives keyframes captured at the participant's
+            <strong>fixations</strong> (with the gaze position and a zoomed
+            crop of the attended region), so it can describe
+            <strong>what</strong> was looked at — and evaluate it against your
+            criteria below. Two-step prompt chain, pinned model, all
+            requests logged to <code>data/llm_logs/</code>. Uses the Google
+            Gemini API; your key is sent once and never stored.
+        </p>
+
+        <label class="form-label" for="rubric">Evaluation criteria (optional)</label>
+        <textarea id="rubric" class="review-input review-textarea" rows="3"
+                  placeholder="e.g., Focusing on the students rather than the blackboard is considered professional; frequent glances at the door are considered a sign of distraction…"></textarea>
+
+        <div class="review-controls">
+            <input id="apiKey" class="review-input" type="password"
+                   aria-label="Google Gemini API key" autocomplete="off"
+                   placeholder="Gemini API key (optional — stored default is used if empty)">
+            <label class="form-label" for="detailMode" style="align-self:center">Detail</label>
+            <select id="detailMode" class="review-input" aria-label="Output granularity"
+                    style="max-width:11rem">
+                <option value="fixations" selected>Every fixation</option>
+                <option value="phases">Summary (phases)</option>
+            </select>
+            <label class="form-label" for="nRuns" style="align-self:center">Runs</label>
+            <select id="nRuns" class="review-input" aria-label="Repeated runs for consistency"
+                    style="max-width:6rem">
+                <option value="1" selected>1</option>
+                <option value="3">3</option>
+                <option value="5">5</option>
+            </select>
+            <button id="llmBtn" class="btn-primary" disabled>
+                Generate Feedback
+            </button>
+        </div>
+        <div id="llmOut" class="review-llm-out" hidden></div>
+        <p id="llmMeta" class="review-info" hidden></p>
+    </div>
+
+    <p class="researcher-link">
+        <a href="/" class="btn-link">← Back to the study</a>
+    </p>
+
+</div>
+
+<script>
+(function () {
+    'use strict';
+
+    const sel = document.getElementById('recordingSel');
+    const loadBtn = document.getElementById('loadBtn');
+    const wrap = document.getElementById('playerWrap');
+    const video = document.getElementById('reviewVideo');
+    const canvas = document.getElementById('overlayCanvas');
+    const info = document.getElementById('replayInfo');
+    const apiKey = document.getElementById('apiKey');
+    const llmBtn = document.getElementById('llmBtn');
+    const llmOut = document.getElementById('llmOut');
+
+    let points = [];          // [{t, nx, ny}] sorted by t
+    let rafId = null;
+
+    // ── Populate recording list ──
+    fetch('/api/review_index')
+        .then((r) => r.json())
+        .then((data) => {
+            sel.innerHTML = '';
+            if (!data.recordings.length) {
+                sel.innerHTML = '<option value="">No recordings yet</option>';
+                return;
+            }
+            data.recordings.forEach((rec) => {
+                const opt = document.createElement('option');
+                opt.value = JSON.stringify(rec);
+                // Session suffix (timestamp) distinguishes repeated runs
+                const sess = String(rec.session_id || 'legacy');
+                const short = sess.length > 12 ? '…' + sess.slice(-12) : sess;
+                opt.textContent = rec.participant_id + ' — ' + rec.stimulus_name
+                    + '  (session ' + short + ')';
+                sel.appendChild(opt);
+            });
+            loadBtn.disabled = false;
+        })
+        .catch((err) => { sel.innerHTML = '<option>Error loading index</option>'; console.error(err); });
+
+    function selected() {
+        try { return JSON.parse(sel.value); } catch (e) { return null; }
+    }
+
+    // ── Load a replay ──
+    loadBtn.addEventListener('click', async () => {
+        const rec = selected();
+        if (!rec) return;
+        info.textContent = 'Loading gaze data…';
+        const resp = await fetch('/api/gaze?participant='
+            + encodeURIComponent(rec.participant_id)
+            + '&stimulus=' + encodeURIComponent(rec.stimulus_name)
+            + '&session=' + encodeURIComponent(rec.session_id || ''));
+        const data = await resp.json();
+        if (data.error) {
+            info.textContent = '⚠ ' + data.error;
+            wrap.hidden = true;
+            return;
+        }
+        points = data.points.sort((a, b) => a.t - b.t);
+        info.textContent = points.length + ' gaze samples loaded — press play.';
+        video.src = '/stimulus/' + encodeURIComponent(rec.stimulus_name);
+        wrap.hidden = false;
+        llmBtn.disabled = false;
+        startOverlayLoop();
+        loadQuality(rec);
+    });
+
+    // ── Recording quality panel ──
+    async function loadQuality(rec) {
+        const card = document.getElementById('qualityCard');
+        const panel = document.getElementById('qualityPanel');
+        panel.innerHTML = '';
+        const row = (label, value, cls) => {
+            if (value === null || value === undefined || value === '') return;
+            const div = document.createElement('div');
+            div.className = 'quality-row' + (cls ? ' quality-row--' + cls : '');
+            const b = document.createElement('strong');
+            b.textContent = label;
+            div.appendChild(b);
+            div.appendChild(document.createTextNode(' ' + value));
+            panel.appendChild(div);
+        };
+        try {
+            const r = await fetch('/api/session_quality?participant='
+                + encodeURIComponent(rec.participant_id)
+                + '&stimulus=' + encodeURIComponent(rec.stimulus_name)
+                + '&session=' + encodeURIComponent(rec.session_id || ''));
+            const q = await r.json();
+
+            if (q.recording) {
+                const rc = q.recording;
+                row('Recording:', rc.rate_hz + ' Hz · ' + rc.n_samples
+                    + ' samples over ' + rc.duration_s + ' s'
+                    + (rc.low_sampling_rate
+                        ? ' — LOW RATE (< ' + rc.min_sampling_hz
+                          + ' Hz): fixation timing unreliable, likely frame '
+                          + 'decimation' : ''),
+                    rc.low_sampling_rate ? 'fail' : '');
+                if (rc.rate_multimodal) {
+                    row('Rate stability:',
+                        'MULTIMODAL — median ' + rc.rate_hz + ' Hz but '
+                        + rc.rate_hz_fastest + ' Hz at its fastest (×'
+                        + rc.rate_ratio + '). The recording alternates '
+                        + 'between full and decimated rate, so a single '
+                        + 'Hz does not describe it and fixation timing is '
+                        + 'biased in a time-varying way.', 'fail');
+                }
+                if (rc.n_fixations) {
+                    // The ± is the sampling grid, not biological spread:
+                    // onsets/offsets can only land on sample boundaries.
+                    const quant = rc.sample_interval_ms
+                        && rc.fixation_ms_uncertainty
+                        && Math.abs(rc.fixation_ms_uncertainty
+                            - rc.sample_interval_ms) <= 2;
+                    row('Fixations:', rc.n_fixations + ' (median '
+                        + rc.median_fixation_ms + ' ± '
+                        + (rc.fixation_ms_uncertainty || 0) + ' ms, '
+                        + rc.time_in_fixations_pct + ' % of the time)'
+                        + (quant ? ' — ± is one sample interval '
+                            + '(quantization, not variability)' : ''),
+                        quant ? 'fail' : '');
+                    const perSec = rc.duration_s
+                        ? rc.n_fixations / rc.duration_s : 0;
+                    if (perSec && perSec < 2) {
+                        row('Fixation rate:', perSec.toFixed(1)
+                            + ' /s — natural viewing is 3–4 /s. Undersampled '
+                            + 'saccades merge adjacent fixations, inflating '
+                            + 'durations and undercounting.', 'fail');
+                    }
+                }
+                if (rc.off_video_pct !== undefined) {
+                    row('Gaze off-video:', rc.off_video_pct + ' %');
+                }
+            }
+            if (q.data_quality) {
+                const dq = q.data_quality;
+                // Always state the denominator — the percentage is
+                // uninterpretable without the nominal rate it assumes.
+                row('Gaze samples (Tobii-style):',
+                    dq.gaze_samples_pct + ' % of '
+                    + (dq.nominal_sampling_hz || '?') + ' Hz nominal — '
+                    + (dq.passes_gaze_samples_threshold ? 'PASS' : 'FAIL'),
+                    dq.passes_gaze_samples_threshold ? 'pass' : 'fail');
+                if (dq.relative_yield_pct !== undefined) {
+                    row('Relative yield:', dq.relative_yield_pct
+                        + ' % of this session’s own median rate '
+                        + '(diagnostic only — not a data-loss figure)');
+                }
+            }
+            // A pixel-space mismatch makes calibration look perfect and
+            // validation look catastrophic. Show it BEFORE the accuracy
+            // numbers, because it invalidates them.
+            const ss = (q.validations || [])
+                .map((v) => v.screen_space)
+                .find((s) => s && s.mismatch);
+            if (ss) {
+                row('⚠ SCREEN SPACE MISMATCH:',
+                    'Tracker maps gaze into ' + ss.tracker[0] + '×'
+                    + ss.tracker[1] + ' but the browser reports '
+                    + ss.browser[0] + '×' + ss.browser[1] + ' (scale '
+                    + ss.scale_x + ' × ' + ss.scale_y + '). Likely cause: '
+                    + (ss.likely_cause || 'unknown') + '. The accuracy '
+                    + 'figures below are a COORDINATE error, not a '
+                    + 'tracking failure — recalibrating will not help. '
+                    + 'Set display scaling to 100 % (or run on a single '
+                    + 'monitor) and repeat.', 'fail');
+            }
+            (q.validations || []).forEach((v) => {
+                if (v.mean_err_px === null) return;
+                row('Validation (' + v.phase + ')'
+                    + (v.correction_active ? ' [corrected]:' : ':'),
+                    v.mean_err_px + ' px ≈ ' + v.mean_err_deg + '° accuracy · '
+                    + (v.mean_precision_px !== null
+                        ? v.mean_precision_px + ' px precision · ' : '')
+                    + (v.n_targets ? v.n_targets + ' targets · ' : '')
+                    + (v.mean_err_deg_raw !== null
+                        && v.mean_err_deg_raw !== undefined
+                        && v.correction_active
+                        ? '(' + v.mean_err_deg_raw + '° uncorrected) · ' : '')
+                    + (v.passes_threshold ? 'PASS' : 'FAIL'),
+                    v.passes_threshold ? 'pass' : 'fail');
+            });
+            if (q.drift_deg !== undefined) {
+                row('Calibration drift (post − pre):',
+                    (q.drift_deg > 0 ? '+' : '') + q.drift_deg + '°'
+                    + (q.drift_basis ? ' [' + q.drift_basis + ' basis]' : '')
+                    + (q.drift_comparable === false
+                        ? ' — NOT comparable: pre and post used different '
+                          + 'target counts' : ''),
+                    q.drift_comparable === false ? 'fail' : '');
+            }
+            if (q.gain_correction && q.gain_correction.active) {
+                const gc = q.gain_correction;
+                // Report the axes SEPARATELY. A single mean gain can read
+                // ×1.0 while one axis is compressed and the other expanded
+                // — which is exactly the failure mode on webcam trackers,
+                // where the vertical axis is the weak one.
+                row('Gain correction:',
+                    'x ×' + gc.gain_x + ' · y ×' + gc.gain_y
+                    + ' (' + gc.kind + ', ' + gc.source + ')',
+                    (Math.abs(gc.gain_x - 1) < 0.02
+                        && Math.abs(gc.gain_y - 1) < 0.02) ? 'fail' : '');
+                if (Math.abs(gc.gain_x - 1) < 0.02
+                    && Math.abs(gc.gain_y - 1) < 0.02) {
+                    row('', 'Both gains ≈ 1: the fit is effectively the '
+                        + 'identity, so “corrected” columns equal the raw '
+                        + 'ones. Check the pre-validation target spread.');
+                }
+            }
+            if (q.rate_gate) {
+                const g = q.rate_gate;
+                if (g.ok === false) {
+                    row('Pre-session rate gate:',
+                        'not measured (' + (g.error || 'unavailable') + ')');
+                } else {
+                    row('Pre-session rate gate:',
+                        g.sustained_hz + ' Hz sustained'
+                        + (g.detected_pct !== null
+                            && g.detected_pct !== undefined
+                            ? ' · ' + g.detected_pct + ' % of frames detected'
+                            : '')
+                        + (g.turbo_drop
+                            ? ' (fell from ' + g.initial_hz + ' Hz during '
+                              + 'the check)'
+                            : '')
+                        + ' — ' + (g.passes ? 'PASS' : 'FAIL')
+                        + (g.overridden
+                            ? ' · OVERRIDDEN by researcher'
+                              + (g.override_reason
+                                  ? ': ' + g.override_reason : '')
+                            : ''),
+                        (g.passes && !g.overridden) ? 'pass' : 'fail');
+                }
+            }
+            if (q.screen) {
+                row('Screen:', q.screen.width_px + '×' + q.screen.height_px
+                    + ' px · ' + q.screen.diag_inches + '″'
+                    + (q.screen.diag_assumed ? ' (assumed)' : '')
+                    + ' · viewing distance ' + q.screen.viewing_distance_cm
+                    + ' cm (assumed)');
+            }
+            if (q.quality_thresholds) {
+                row('Preregistered thresholds:', '≤ '
+                    + q.quality_thresholds.max_validation_error_deg
+                    + '° accuracy · ≥ '
+                    + q.quality_thresholds.min_gaze_samples_pct
+                    + ' % gaze samples');
+            }
+            card.hidden = panel.children.length === 0;
+        } catch (err) {
+            console.error('Quality panel failed:', err);
+            card.hidden = true;
+        }
+    }
+
+    // ── Overlay drawing ──
+    function videoContentBox() {
+        // object-fit: contain → compute the actual frame area inside the element
+        const rw = video.clientWidth, rh = video.clientHeight;
+        const vw = video.videoWidth || 16, vh = video.videoHeight || 9;
+        const scale = Math.min(rw / vw, rh / vh);
+        const w = vw * scale, h = vh * scale;
+        return { x: (rw - w) / 2, y: (rh - h) / 2, w: w, h: h };
+    }
+
+    function samplesAt(t) {
+        // All samples in the trailing 0.5 s window (for a motion trail)
+        const out = [];
+        for (let i = 0; i < points.length; i++) {
+            if (points[i].t <= t && points[i].t > t - 0.5) out.push(points[i]);
+            if (points[i].t > t) break;
+        }
+        return out;
+    }
+
+    function draw() {
+        canvas.width = video.clientWidth;
+        canvas.height = video.clientHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const box = videoContentBox();
+        const trail = samplesAt(video.currentTime);
+
+        trail.forEach((p, i) => {
+            const isLast = i === trail.length - 1;
+            const alpha = isLast ? 0.95 : 0.15 + 0.4 * (i / trail.length);
+            const r = isLast ? 14 : 6;
+            const x = box.x + p.nx * box.w;
+            const y = box.y + p.ny * box.h;
+            ctx.beginPath();
+            ctx.arc(x, y, r, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 60, 60, ' + alpha + ')';
+            ctx.fill();
+            if (isLast) {
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+                ctx.stroke();
+            }
+        });
+        rafId = requestAnimationFrame(draw);
+    }
+
+    function startOverlayLoop() {
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(draw);
+    }
+
+    // ── LLM feedback ──
+    llmBtn.addEventListener('click', async () => {
+        const rec = selected();
+        if (!rec) return;
+        // Empty key is fine — the server falls back to the stored default
+        llmBtn.disabled = true;
+        llmOut.hidden = false;
+        llmOut.textContent = 'Analyzing video frames at the gaze positions… '
+            + 'this can take up to a minute.';
+        try {
+            const resp = await fetch('/api/llm_feedback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    participant: rec.participant_id,
+                    stimulus: rec.stimulus_name,
+                    session: rec.session_id || '',
+                    api_key: apiKey.value.trim(),
+                    rubric: (document.getElementById('rubric').value || '').trim(),
+                    n_runs: parseInt(document.getElementById('nRuns').value, 10) || 1,
+                    detail: document.getElementById('detailMode').value || 'fixations',
+                }),
+            });
+            const data = await resp.json();
+            const meta = document.getElementById('llmMeta');
+            if (data.error) {
+                llmOut.textContent = '⚠ ' + data.error;
+                if (meta) meta.hidden = true;
+            } else {
+                if (window.marked && window.DOMPurify) {
+                    // Render the Markdown, sanitized against script injection
+                    llmOut.innerHTML = DOMPurify.sanitize(marked.parse(data.feedback || ''));
+                } else {
+                    llmOut.textContent = data.feedback;
+                }
+                if (meta) {
+                    let m = 'Model: ' + (data.model || '?')
+                        + ' · keyframes: ' + (data.frames_used || 0)
+                        + ' (' + (data.keyframe_method || '-') + ')'
+                        + (data.chained ? ' · prompt chain: 2 steps' : '')
+                        + (data.measured_error_px
+                            ? ' · measured error: ±' + Math.round(data.measured_error_px) + ' px'
+                            : '');
+                    if (data.consistency) {
+                        m += ' · consistency across ' + data.runs + ' runs: '
+                            + data.consistency.criteria_agreement_pct + '% agreement';
+                    }
+                    meta.textContent = m;
+                    meta.hidden = false;
+                }
+            }
+        } catch (err) {
+            llmOut.textContent = '⚠ Request failed: ' + err;
+        } finally {
+            llmBtn.disabled = false;
+        }
+    });
+})();
+</script>
+{% endblock %}
