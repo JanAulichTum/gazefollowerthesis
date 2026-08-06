@@ -1,0 +1,101 @@
+# ══════════════════════════════════════════════════════════════════
+#  HUMAN-SUBJECTS DATA — NEVER COMMIT
+# ══════════════════════════════════════════════════════════════════
+# Git history is permanent. Once these are committed and pushed, a
+# later `git rm` does NOT remove them — the objects stay in history and
+# in every clone. Removing them means rewriting history, and by then
+# the data may already be replicated. Treat everything in this block as
+# unrecoverable if committed even once.
+#
+# Committed instead: data/manifests_anonymised/ — pseudonymised copies
+# produced by anonymise_manifests.py, holding the quality metrics with
+# no names, no gaze coordinates and no user paths.
+
+# THE REIDENTIFICATION KEY. Pseudonyms plus this file is not
+# pseudonymisation. Keep it with the consent forms, off the repo.
+data/participant_key.json
+
+# Raw session recordings and the original, name-bearing manifests
+data/gazefollower_raw/
+data/archive/
+
+# Participant register and the aggregated workbook
+data/participants.xlsx
+data/gazefollower_data.xlsx
+data/*.xlsx
+
+# LLM audit trail — contains stimulus content and session context
+data/llm_logs/
+
+# Telemetry: useful, but records hostname, absolute paths and machine
+# details. Keep locally; the manifest carries the summary.
+data/telemetry/
+
+# The reference clip is a recording of a real face
+data/fake_face.mp4
+data/*.mp4
+
+# ══════════════════════════════════════════════════════════════════
+#  THIRD-PARTY MODEL WEIGHTS — NOT REDISTRIBUTABLE
+# ══════════════════════════════════════════════════════════════════
+# This repository is PUBLIC. GazeFollower's gaze model is licensed
+# CC BY-NC-SA by its authors and is restricted for this project, so it
+# is not ours to publish. Keep it locally; obtain it from upstream.
+# models/README.md records which build was used, since the sampling
+# rate — and therefore the fixation statistics — depend on it.
+models/*.mnn
+models/*.onnx
+models/*.pb
+models/*.tflite
+
+# ══════════════════════════════════════════════════════════════════
+#  SECRETS
+# ══════════════════════════════════════════════════════════════════
+.gemini_key
+.secret_key
+*.key
+.env
+
+# ══════════════════════════════════════════════════════════════════
+#  ENVIRONMENT — machine-specific, and venvs are not relocatable
+# ══════════════════════════════════════════════════════════════════
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+
+# ══════════════════════════════════════════════════════════════════
+#  GENERATED OUTPUT — reproducible, and noisy in diffs
+# ══════════════════════════════════════════════════════════════════
+data/server.log
+data/tracker_service.log
+data/run_all_*.log
+data/run_all_*.md
+data/setup_check_*.log
+data/optimize_rate_*.json
+data/session_probe_*.json
+data/hz_experiment_*.json
+data/preview_load_*.json
+data/*_telemetry.json
+*.pre-backfill.json
+
+# ══════════════════════════════════════════════════════════════════
+#  OS / EDITOR
+# ══════════════════════════════════════════════════════════════════
+.DS_Store
+Thumbs.db
+~$*.xlsx
+.idea/
+.vscode/
+*.swp
+
+# ══════════════════════════════════════════════════════════════════
+#  KEPT DELIBERATELY (do not add to this ignore list)
+# ══════════════════════════════════════════════════════════════════
+#   models/README.md               which model build was used; the
+#                                  weights themselves are excluded
+#   data/manifests_anonymised/     pseudonymised session metadata
+#   templates/, static/            the experiment UI

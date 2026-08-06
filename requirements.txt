@@ -1,0 +1,34 @@
+# Eye-Tracking Web Experiment – Python Dependencies
+# Install with:  pip install -r requirements.txt
+
+Flask>=3.0
+Flask-SocketIO>=5.3
+simple-websocket>=1.0
+pandas>=2.0
+openpyxl>=3.1
+werkzeug>=3.0
+
+# IMPORTANT: numpy must stay below 2.0 — GazeFollower's compiled
+# dependencies are built against the numpy 1.x ABI. numpy 2.x causes:
+# "numpy.core.multiarray failed to import"
+numpy>=1.24,<2
+
+# Primary eye tracker (deep-learning webcam gaze estimation)
+# https://github.com/GanchengZhu/GazeFollower  (CC BY-NC-SA — research use)
+gazefollower
+pygame>=2.5
+
+# GazeFollower uses MediaPipe's legacy `mediapipe.solutions` face-mesh
+# API. PIN this: the newest mediapipe (0.10.31) ships a protobuf that is
+# incompatible with Python 3.12 — `mediapipe.solutions` then fails to
+# load and GazeFollower dies with
+#   "module 'mediapipe' has no attribute 'solutions'".
+# 0.10.21 pulls a compatible protobuf (4.25.x) and has wheels for
+# macOS/Windows/Linux. Also good for reproducibility.
+mediapipe==0.10.21
+# MNN = GazeFollower's neural-network runtime. Older macOS builds are
+# broken ("symbol not found ... MNN10getVersionEv") — require a recent one.
+MNN>=3.0
+
+# Legacy pupil-detection fallback (pygazetracker/ package)
+opencv-python>=4.8

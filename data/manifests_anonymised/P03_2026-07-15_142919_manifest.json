@@ -1,0 +1,164 @@
+{
+  "participant_id": "P03",
+  "finalized_at_utc": "2026-07-15T12:29:23.169501+00:00",
+  "session_csv": "P03_2026-07-15_142919.csv",
+  "test_mode": true,
+  "sample_counts": {
+    "Stimuli_2.mp4": 125
+  },
+  "data_quality": {
+    "Stimuli_2.mp4": {
+      "samples": 125,
+      "valid_samples": 125,
+      "valid_pct": 100.0,
+      "gaze_samples_pct": 84.2,
+      "passes_gaze_samples_threshold": true,
+      "nominal_sampling_hz": 30.0,
+      "relative_yield_pct": 87.0,
+      "sampling_hz": 28.8,
+      "sampling_hz_fastest": 30.3,
+      "rate_ratio": 1.05,
+      "rate_multimodal": false,
+      "low_sampling_rate": false
+    }
+  },
+  "validations": [
+    {
+      "phase": "pre",
+      "recorded_at_utc": "2026-07-15T12:28:49.397884+00:00",
+      "targets": [
+        {
+          "tx": 202,
+          "ty": 126,
+          "err_px": 815.1,
+          "precision_px": 52.2,
+          "n_samples": 20
+        },
+        {
+          "tx": 1478,
+          "ty": 126,
+          "err_px": 937.4,
+          "precision_px": 31.8,
+          "n_samples": 21
+        },
+        {
+          "tx": 840,
+          "ty": 525,
+          "err_px": 329.9,
+          "precision_px": 17.9,
+          "n_samples": 20
+        },
+        {
+          "tx": 202,
+          "ty": 924,
+          "err_px": 356.6,
+          "precision_px": 16.3,
+          "n_samples": 20
+        },
+        {
+          "tx": 1478,
+          "ty": 924,
+          "err_px": 462.6,
+          "precision_px": 29.2,
+          "n_samples": 21
+        }
+      ],
+      "targets_measured": 5,
+      "mean_err_px": 580.3,
+      "mean_err_deg": 9.92,
+      "mean_precision_px": 29.5,
+      "mean_precision_deg": 0.51,
+      "screen": {
+        "width_px": 1680,
+        "height_px": 1050,
+        "device_pixel_ratio": 2,
+        "diag_inches": 14,
+        "diag_assumed": true,
+        "viewing_distance_cm": 60
+      },
+      "passes_threshold": false
+    },
+    {
+      "phase": "post",
+      "recorded_at_utc": "2026-07-15T12:29:18.984587+00:00",
+      "targets": [
+        {
+          "tx": 252,
+          "ty": 158,
+          "err_px": 834.9,
+          "precision_px": 49,
+          "n_samples": 10
+        },
+        {
+          "tx": 1428,
+          "ty": 525,
+          "err_px": 563.3,
+          "precision_px": 52.6,
+          "n_samples": 10
+        },
+        {
+          "tx": 840,
+          "ty": 893,
+          "err_px": 83.6,
+          "precision_px": 23.4,
+          "n_samples": 10
+        }
+      ],
+      "targets_measured": 3,
+      "mean_err_px": 493.9,
+      "mean_err_deg": 8.45,
+      "mean_precision_px": 41.7,
+      "mean_precision_deg": 0.71,
+      "screen": {
+        "width_px": 1680,
+        "height_px": 1050,
+        "device_pixel_ratio": 2,
+        "diag_inches": 14,
+        "diag_assumed": true,
+        "viewing_distance_cm": 60
+      },
+      "passes_threshold": false
+    }
+  ],
+  "quality_thresholds": {
+    "max_validation_error_deg": 3.0,
+    "min_gaze_samples_pct": 60.0,
+    "assumed_viewing_distance_cm": 60.0,
+    "nominal_sampling_hz": 30.0
+  },
+  "stimuli": [
+    {
+      "stimulus": "Stimuli_2.mp4",
+      "t_start_ns": 1784118546226000000,
+      "t_end_ns": 1784118551177228000,
+      "video_rect": {
+        "x": 0,
+        "y": 52.50439453125,
+        "w": 1679.984375,
+        "h": 944.9912109375,
+        "video_w": 1280,
+        "video_h": 720
+      }
+    }
+  ],
+  "legacy_data_quality": {
+    "Stimuli_2.mp4": {
+      "samples": 125,
+      "valid_samples": 125,
+      "valid_pct": 100.0,
+      "gaze_samples_pct": 87.0,
+      "passes_gaze_samples_threshold": true
+    }
+  },
+  "backfill": {
+    "version": "2026-07-31-nominal-rate",
+    "note": "gaze_samples_pct recomputed against a fixed nominal rate; the original self-referential values are kept in legacy_data_quality"
+  },
+  "anonymised": {
+    "tool": "anonymise_manifests.py",
+    "at": "2026-08-06T14:06:42",
+    "note": "Pseudonymised copy. The reidentification key is held outside version control.",
+    "gaze_coordinates_removed": 16,
+    "retained": "Validation targets keep tx/ty (the fixed grid), err_px and precision_px. The measured gaze positions (mx/my) they were computed from are removed."
+  }
+}

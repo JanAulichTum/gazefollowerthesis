@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Eye-tracking study on visual attention during video stimuli — Technical University of Munich (TUM).">
+    <meta name="robots" content="noindex">
+    <meta name="theme-color" content="#0065BD">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <title>{% block title %}Eye-Tracking Study{% endblock %}</title>
+
+    <!-- Google Fonts — Inter (400, 500, 600, 700) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+          rel="stylesheet">
+
+    <!-- Application stylesheet (cache-busted so updates always load) -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v={{ asset_version }}">
+
+    <!-- Socket.IO client -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+
+    <!-- Page-specific head extras (scripts, styles, etc.) -->
+    {% block head_extra %}{% endblock %}
+</head>
+
+<body data-theme="{% block theme %}light{% endblock %}" data-page="{% block page_id %}{% endblock %}">
+
+    <noscript>
+        <div class="noscript-warning" role="alert">
+            This study requires JavaScript. Please enable it and reload the page.
+        </div>
+    </noscript>
+
+    {% if test_mode %}
+    <!-- Visible reminder that the server runs with TEST_MODE=1 -->
+    <div class="test-mode-badge">TEST MODE</div>
+    {% endif %}
+
+    <!-- Flash messages -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <div class="flash-messages" role="alert">
+                {% for category, message in messages %}
+                    <div class="flash-message flash-{{ category }}">
+                        <span class="flash-message__text">{{ message }}</span>
+                        <button class="flash-message__close" aria-label="Dismiss"
+                                onclick="this.parentElement.remove()">×</button>
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+
+    <!-- Page content -->
+    {% block content %}{% endblock %}
+
+    <!-- Page-specific scripts -->
+    {% block scripts %}{% endblock %}
+
+</body>
+</html>

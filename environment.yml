@@ -1,0 +1,54 @@
+# Conda environment for the eye-tracking experiment.
+#
+#   conda env create -f environment.yml
+#   conda activate gaze_thesis
+#
+# On Apple Silicon use setup_env.sh instead — it forces CONDA_SUBDIR=osx-arm64
+# first, without which conda can silently build an x86_64 environment that
+# runs under Rosetta, where the MNN wheels are broken.
+#
+# Rename the env by editing `name:` below, or:
+#   conda env create -f environment.yml -n some_other_name
+name: gaze_thesis
+
+channels:
+  - conda-forge
+
+dependencies:
+  # 3.11 deliberately. 3.12 pulls a protobuf that breaks mediapipe's
+  # legacy `mediapipe.solutions` API, which GazeFollower depends on;
+  # the Anaconda base 3.9 had a broken MNN wheel.
+  - python=3.11
+  - pip
+
+  - pip:
+      # ── Web app ──
+      - Flask>=3.0
+      - Flask-SocketIO>=5.3
+      - simple-websocket>=1.0
+      - werkzeug>=3.0
+
+      # ── Data / output ──
+      - pandas>=2.0
+      - openpyxl>=3.1
+      # numpy MUST stay below 2.0: GazeFollower's compiled dependencies
+      # are built against the numpy 1.x ABI. numpy 2.x fails with
+      # "numpy.core.multiarray failed to import".
+      - "numpy>=1.24,<2"
+
+      # ── Eye tracking ──
+      # https://github.com/GanchengZhu/GazeFollower (CC BY-NC-SA, research use)
+      - gazefollower
+      # PIN: newer mediapipe (0.10.31+) ships a protobuf incompatible with
+      # Python 3.12 and drops `mediapipe.solutions`, which GazeFollower
+      # uses. 0.10.21 has wheels for macOS/Windows/Linux.
+      - mediapipe==0.10.21
+      # MNN = GazeFollower's inference runtime. Older macOS builds are
+      # broken ("symbol not found ... MNN10getVersionEv").
+      - MNN>=3.0
+      # Used by GazeFollower's DefaultConfig to pick the monitor, and by
+      # check_screen_space.py. Usually pulled in transitively; pinned
+      # explicitly because a coordinate bug depends on it.
+      - screeninfo>=0.8
+      - pygame>=2.5
+      - opencv-python>=4.8

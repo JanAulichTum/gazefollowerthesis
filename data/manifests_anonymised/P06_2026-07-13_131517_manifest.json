@@ -1,0 +1,56 @@
+{
+  "participant_id": "P06",
+  "finalized_at_utc": "2026-07-13T11:15:19.137025+00:00",
+  "session_csv": "P06_2026-07-13_131517.csv",
+  "test_mode": true,
+  "sample_counts": {
+    "Stimuli_2.mp4": 2899
+  },
+  "stimuli": [
+    {
+      "stimulus": "Stimuli_2.mp4",
+      "t_start_ns": 1783941203293491000,
+      "t_end_ns": 1783941317970645000,
+      "video_rect": {
+        "x": 0,
+        "y": 52.50439453125,
+        "w": 1679.984375,
+        "h": 944.9912109375,
+        "video_w": 1280,
+        "video_h": 720
+      }
+    }
+  ],
+  "renamed_from": "P06__session_1783941317975870000.csv",
+  "data_quality": {
+    "Stimuli_2.mp4": {
+      "samples": 2899,
+      "valid_samples": 2899,
+      "valid_pct": 100.0,
+      "gaze_samples_pct": 84.3,
+      "nominal_sampling_hz": 30.0,
+      "relative_yield_pct": 87.6,
+      "sampling_hz": 28.8,
+      "sampling_hz_fastest": 30.1,
+      "rate_ratio": 1.04,
+      "rate_multimodal": false,
+      "low_sampling_rate": false,
+      "passes_gaze_samples_threshold": true
+    }
+  },
+  "legacy_data_quality": {},
+  "quality_thresholds": {
+    "nominal_sampling_hz": 30.0
+  },
+  "backfill": {
+    "version": "2026-07-31-nominal-rate",
+    "note": "gaze_samples_pct recomputed against a fixed nominal rate; the original self-referential values are kept in legacy_data_quality"
+  },
+  "anonymised": {
+    "tool": "anonymise_manifests.py",
+    "at": "2026-08-06T14:06:42",
+    "note": "Pseudonymised copy. The reidentification key is held outside version control.",
+    "gaze_coordinates_removed": 0,
+    "retained": "Validation targets keep tx/ty (the fixed grid), err_px and precision_px. The measured gaze positions (mx/my) they were computed from are removed."
+  }
+}
