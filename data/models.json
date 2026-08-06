@@ -1,0 +1,23 @@
+[
+  {
+    "name": "gemini-flash",
+    "provider": "gemini",
+    "model": "gemini-3.5-flash",
+    "api_key_env": "GEMINI_API_KEY",
+    "note": "Free tier is fine for development. Do NOT report thesis results from a free-tier model without saying so."
+  },
+  {
+    "name": "gpt",
+    "provider": "openai",
+    "model": "gpt-5",
+    "api_key_env": "OPENAI_API_KEY",
+    "supports_temperature": true,
+    "note": "Set supports_temperature=false for models that reject the parameter."
+  },
+  {
+    "name": "claude",
+    "provider": "anthropic",
+    "model": "claude-opus-5",
+    "api_key_env": "ANTHROPIC_API_KEY"
+  }
+]

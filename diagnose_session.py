@@ -147,6 +147,11 @@ def show_series(data: dict) -> None:
     if not series:
         print("  (no samples — was the session shorter than a second?)")
         return
+    if not [k for r in series for k in r if k != "t"]:
+        print("  *** %d samples, but every one contains ONLY a timestamp."
+              % len(series))
+        print("  Nothing was measured. See WHAT LOOKS WRONG below.")
+        return
     rows = [
         ("sampling rate", "sampling_hz", " Hz"),
         ("FaceMesh", "face_ms_median", " ms"),
@@ -179,6 +184,39 @@ def find_anomalies(data: dict) -> list:
     out = []
     series = data.get("series") or []
     env = data.get("environment") or {}
+
+    # ── FIRST: is there anything to diagnose at all? ──────────────
+    # A silent "nothing flagged" on an empty series is the worst
+    # possible output: it reads as a clean bill of health when in fact
+    # no measurement was taken. This happened for real — the tracker
+    # probe omitted its "ok" key, so every reply was discarded and 134
+    # samples recorded nothing but a timestamp.
+    measured = [k for r in series for k in r if k != "t"]
+    if series and not measured:
+        out.append((
+            "CRITICAL", "NO MEASUREMENTS RECORDED — %d samples contain only "
+            "a timestamp." % len(series),
+            "This session cannot be diagnosed. Either psutil is missing "
+            "(pip install psutil) or the tracker probe returned nothing. "
+            "Check that 'python -c \"import psutil\"' works in the venv "
+            "that runs the server, and that the tracker replies to the "
+            "telemetry command with ok=True."))
+        return out
+    if not series:
+        out.append((
+            "WARNING", "No samples recorded.",
+            "The session may have been shorter than the sampling interval, "
+            "or telemetry was disabled (GF_TELEMETRY=0)."))
+        return out
+
+    # psutil drives every system metric; without it they are all absent
+    # and their absence would otherwise look like "nothing to report".
+    if (env.get("packages") or {}).get("psutil") == "not installed":
+        out.append((
+            "WARNING", "psutil is not installed in the server's venv.",
+            "CPU load, clock, RAM and battery were not recorded, so a "
+            "machine-side cause cannot be ruled in or out for this "
+            "session. Fix with: pip install psutil"))
     perf = (env.get("perf_mode") or {}).get("describe") or ""
     hz = _stats(_col(series, "sampling_hz"))
     face = _stats(_col(series, "face_ms_median"))

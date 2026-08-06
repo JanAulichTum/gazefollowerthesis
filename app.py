@@ -54,6 +54,7 @@ from flask_socketio import SocketIO, emit
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from config import (
+    FIXATION_DISPERSION_NORM,
     DATA_DIR,
     DEFAULT_SCREEN_DIAG_INCHES,
     TEST_CLIP_30S,
@@ -64,6 +65,7 @@ from config import (
     LLM_LOG_DIR,
     LLM_MAX_FRAMES,
     LLM_N_RUNS_MAX,
+    LLM_WINDOW_SECONDS,
     MAX_VALIDATION_ERROR_DEG,
     MIN_GAZE_SAMPLES_PCT,
     MIN_SAMPLING_HZ,
@@ -306,6 +308,7 @@ def finalize_gazefollower_session(
     nominal_dt_ns = 1e9 / NOMINAL_SAMPLING_HZ if NOMINAL_SAMPLING_HZ else 0.0
 
     counts: dict[str, Any] = {}
+    events: dict = {}
     quality: dict[str, dict] = {}
     for entry in stimulus_log:
         segment = df[
@@ -429,11 +432,22 @@ def finalize_gazefollower_session(
             len(segment), participant_id, entry["stimulus"],
         )
 
+        # ── RQ2 event metrics, PERSISTED ─────────────────────────────
+        # Previously these were computed only inside quality_report.py,
+        # so they existed on screen and nowhere else — which is why every
+        # RQ2 metric showed as MISSING in verify_metrics. Recording them
+        # here makes them part of the session record.
+        try:
+            events[entry["stimulus"]] = _event_metrics(segment)
+        except Exception:  # noqa: BLE001 — never lose a session over stats
+            logger.exception("Event metrics failed for %s", entry["stimulus"])
+
     logger.info(
         "Data loss (Tobii-style gaze samples %%): %s",
         {k: v["gaze_samples_pct"] for k, v in quality.items()},
     )
     counts["__quality__"] = quality
+    counts["__events__"] = events
     return counts
 
 
@@ -930,6 +944,90 @@ def _gaze_region_stats(df: pd.DataFrame) -> dict:
     return stats
 
 
+# Degree conversion for the event metrics. Derived once from the same
+# geometry helper the metrics spec uses, so px<->deg never disagrees
+# between the spec, the AOI feasibility maths and the manifest.
+try:
+    from metrics_spec import SCREEN_H_PX as SCREEN_H_PX_FOR_DEG
+    from metrics_spec import SCREEN_W_PX as SCREEN_W_PX_FOR_DEG
+    from metrics_spec import px_per_degree as _ppd_fn
+
+    _PX_PER_DEG = _ppd_fn()
+except Exception:  # noqa: BLE001
+    SCREEN_W_PX_FOR_DEG, SCREEN_H_PX_FOR_DEG, _PX_PER_DEG = 1920, 1080, None
+
+
+def _event_metrics(segment: pd.DataFrame) -> dict:
+    """RQ2 event metrics for one recorded stimulus, for the manifest.
+
+    Everything here is reported WITH the caveat that makes it
+    interpretable, because at 21-32 Hz the numbers are not
+    self-explanatory:
+
+      * fixation_count is biased DOWN and duration UP, because a saccade
+        falling entirely between two samples is invisible and I-DT then
+        merges the fixations either side of it. fixation_rate_per_s is
+        included as the honest indicator — natural viewing is 3-4 /s.
+      * idt_min_duration_s is recorded next to the three-sample floor it
+        was checked against, so the parameter choice is auditable.
+      * saccade amplitude is a displacement between fixation centroids.
+        Velocity and duration are NOT recoverable at this rate.
+    """
+    from fixations import (PREFERRED_MIN_DURATION_S, detect_fixations,
+                           effective_sampling_hz, saccade_metrics)
+
+    out: dict = {}
+    if "video_time_s" not in segment.columns \
+            or "gaze_video_nx" not in segment.columns:
+        return {"error": "segment lacks video-normalised coordinates"}
+
+    times = segment["video_time_s"].tolist()
+    xs = segment["gaze_video_nx"].tolist()
+    ys = segment["gaze_video_ny"].tolist()
+    span = (max(times) - min(times)) if len(times) > 1 else 0.0
+    hz = effective_sampling_hz(times)
+
+    fx = detect_fixations(times, xs, ys)
+    durs = sorted(f.duration for f in fx)
+    out["sampling_hz_empirical"] = round(hz, 1)
+    out["fixation_count"] = len(fx)
+    out["fixation_rate_per_s"] = round(len(fx) / span, 2) if span > 0 else None
+    if durs:
+        out["fixation_duration_median_ms"] = int(1000 * durs[len(durs) // 2])
+        out["fixation_duration_uncertainty_ms"] = int(1000 * fx[0].dt_s)
+        out["time_in_fixations_pct"] = round(100 * sum(durs) / span, 1) \
+            if span > 0 else None
+    # The I-DT parameters actually used, and the floor they respect.
+    out["idt_min_duration_s"] = round(
+        max(PREFERRED_MIN_DURATION_S, 3.0 / hz) if hz else
+        PREFERRED_MIN_DURATION_S, 3)
+    out["idt_min_duration_floor_s"] = round(3.0 / hz, 3) if hz else None
+    out["idt_dispersion_norm"] = FIXATION_DISPERSION_NORM
+    out["idt_dispersion_deg"] = round(
+        FIXATION_DISPERSION_NORM * SCREEN_W_PX_FOR_DEG / _PX_PER_DEG, 2) \
+        if _PX_PER_DEG else None
+
+    # Gaze that left the video frame: the model cannot describe what was
+    # attended there, so it bounds every RQ3 feedback claim.
+    n = len(segment)
+    if n:
+        off = segment[(segment["gaze_video_nx"] < 0)
+                      | (segment["gaze_video_nx"] > 1)
+                      | (segment["gaze_video_ny"] < 0)
+                      | (segment["gaze_video_ny"] > 1)]
+        out["gaze_off_video_pct"] = round(100.0 * len(off) / n, 1)
+
+    if len(fx) >= 2 and _PX_PER_DEG:
+        out["saccades"] = saccade_metrics(
+            [{"nx": f.nx, "ny": f.ny} for f in fx],
+            _PX_PER_DEG, SCREEN_W_PX_FOR_DEG, SCREEN_H_PX_FOR_DEG)
+    out["interpretation"] = (
+        "fixation_count is biased DOWN and duration UP at this sampling "
+        "rate (merged fixations); report fixation_rate_per_s alongside "
+        "them. Saccade velocity/duration are not measurable here.")
+    return out
+
+
 def _fixation_summary(df: pd.DataFrame) -> dict:
     """Grid-free attention metrics for the LLM prompt.
 
@@ -1209,11 +1307,25 @@ def api_llm_feedback():
     session = payload.get("session", "")
     n_runs = max(1, min(int(payload.get("n_runs") or 1), LLM_N_RUNS_MAX))
     chain = payload.get("chain", True)
-    # Output granularity: "phases" = grouped summary (max 8 phases);
-    # "fixations" = one sentence per fixation keyframe.
+    # Output granularity.
+    #   "phases"    model-chosen groupings (readable narrative feedback)
+    #   "fixations" one entry per fixation keyframe
+    #   "windows"   FIXED time bins — the unit is decided by us, not the
+    #               model. Use this for the agreement analysis: when the
+    #               model picks its own boundaries, a disagreement between
+    #               two models (or between a model and a human coder)
+    #               confounds SEGMENTATION with JUDGMENT, and kappa stops
+    #               being interpretable. Fixed bins make the units
+    #               identical across every rater, which is what kappa
+    #               assumes.
     detail = payload.get("detail", "phases")
-    if detail not in ("phases", "fixations"):
+    if detail not in ("phases", "fixations", "windows"):
         detail = "phases"
+    # Bin length for "windows" mode. 5 s is a compromise: long enough that
+    # a rater can say what was attended, short enough that a 30 s clip
+    # yields 6 codable units rather than 1.
+    window_s = float(payload.get("window_s") or LLM_WINDOW_SECONDS)
+    n_bins = None            # set in "windows" mode below
     if not api_key:
         return {
             "feedback": None,
@@ -1294,7 +1406,7 @@ def api_llm_feedback():
                "detail": detail}
     # Per-fixation output is much longer (one line + one JSON object per
     # keyframe) — give it a correspondingly larger output budget.
-    out_tokens = 8000 if detail == "fixations" else 4000
+    out_tokens = 8000 if detail in ("fixations", "windows") else 4000
 
     # ── Chain step 1: scene descriptions WITHOUT gaze markers.
     # Serves two purposes: grounding for step 2, and an independent
@@ -1400,7 +1512,42 @@ def api_llm_feedback():
         "descriptive feedback."
     )
 
-    if frames and detail == "fixations":
+    if frames and detail == "windows":
+        n_bins = max(1, int(round(duration / window_s)))
+        task_text = (
+            "\n\nYour tasks:\n"
+            "1. The video is %.1f s long. Describe it in EXACTLY %d "
+            "consecutive time windows of %.1f s each, starting at t=0. "
+            "Do NOT choose your own boundaries, do not merge windows, and "
+            "do not skip any — even if nothing changes between them, and "
+            "even if the gaze was off-screen (say so for that window). "
+            "The windows are fixed so that different raters describe the "
+            "SAME units.\n"
+            "2. For each window write ONE short sentence naming the "
+            "general object/area under the gaze marker. Given the stated "
+            "measurement uncertainty, name the general area rather than "
+            "making over-precise claims.\n"
+            "3. Close with 2-3 sentences evaluating the gaze behaviour "
+            "against the researcher's criteria above.\n"
+            "Format in simple Markdown. NEVER use LaTeX or math "
+            "notation — write times plainly, e.g. 't=4.5 s'.\n"
+            "4. AFTER the prose, output a machine-readable summary as a "
+            "fenced code block starting with ```json — a JSON array of "
+            "EXACTLY %d objects, one per window, in order: "
+            "[{\"t_start\": <s>, \"t_end\": <s>, "
+            "\"attended\": \"<object/area>\", \"bbox\": [x, y, w, h], "
+            "\"criteria_met\": <true|false|null>, "
+            "\"confidence\": \"<low|medium|high>\"}]. "
+            "\"bbox\" is the region of the VIDEO FRAME occupied by the "
+            "thing you named, in NORMALISED coordinates (0-1, origin "
+            "top-left) — it is what makes the claim checkable against the "
+            "recorded gaze; use null if you cannot localise it. Use "
+            "criteria_met: null when no criteria were provided. The array "
+            "MUST have exactly %d entries. The JSON block is REQUIRED — "
+            "never omit it."
+            % (duration, n_bins, window_s, n_bins, n_bins)
+        )
+    elif frames and detail == "fixations":
         task_text = (
             "\n\nYour tasks:\n"
             "1. For EVERY keyframe above (each one is a single fixation), "
@@ -1419,10 +1566,16 @@ def api_llm_feedback():
             "fenced code block starting with ```json — a JSON array with "
             "ONE object PER FIXATION, same order: [{\"t_start\": <s>, "
             "\"t_end\": <s>, \"attended\": \"<object/area>\", "
+            "\"bbox\": [x, y, w, h], "
             "\"criteria_met\": <true|false|null>, \"confidence\": "
             "\"<low|medium|high>\"}] (use the fixation time for both "
-            "t_start and t_end). Use criteria_met: null when no criteria "
-            "were provided. The JSON block is REQUIRED — never omit it."
+            "t_start and t_end). \"bbox\" is the region of the VIDEO FRAME "
+            "occupied by the thing you named, in NORMALISED "
+            "coordinates (0-1, origin top-left) — it is what makes "
+            "the claim checkable against the recorded gaze; use null "
+            "if you cannot localise it. Use criteria_met: null when "
+            "no criteria were provided. The JSON block is REQUIRED — "
+            "never omit it."
         )
     elif frames:
         task_text = (
@@ -1445,8 +1598,15 @@ def api_llm_feedback():
             "3. AFTER the prose, output a machine-readable summary as a "
             "fenced code block starting with ```json — a JSON array of "
             "the SAME phases (max 8): [{\"t_start\": <s>, \"t_end\": <s>, "
-            "\"attended\": \"<object/area>\", \"criteria_met\": "
-            "<true|false|null>, \"confidence\": \"<low|medium|high>\"}]. "
+            "\"attended\": \"<object/area>\", \"bbox\": [x, y, w, h], "
+            "\"criteria_met\": <true|false|null>, "
+            "\"confidence\": \"<low|medium|high>\"}]. "
+            "\"bbox\" is the region of the VIDEO FRAME occupied by the "
+            "thing you named, in NORMALISED coordinates (0-1, origin "
+            "top-left). It is what makes your claim checkable against "
+            "the recorded gaze coordinates, so give your honest best "
+            "estimate of the object's extent rather than a box around "
+            "the marker. Use null if you cannot localise it. "
             "Use criteria_met: null when no criteria were provided. The "
             "JSON block is REQUIRED — never omit it."
         )
@@ -1461,6 +1621,52 @@ def api_llm_feedback():
         )
 
     parts.append({"text": stats_text + "\n\n" + criteria_text + task_text})
+
+    # ── Save the EXACT payload for multi-model comparison ────────────
+    # A fair comparison across models requires byte-identical input. The
+    # audit log stores images as SHA-256 references (deliberately, to stay
+    # reviewable), so it cannot be replayed. This writes the full payload,
+    # images included, to data/llm_replay/ for model_comparison.py.
+    try:
+        _replay_dir = os.path.join(DATA_DIR, "llm_replay")
+        os.makedirs(_replay_dir, exist_ok=True)
+        _replay_name = "%s__%s__%s.json" % (
+            _safe_filename(participant or "unknown"),
+            _safe_filename(os.path.splitext(stimulus)[0] or "stimulus"),
+            detail)
+        with open(os.path.join(_replay_dir, _replay_name), "w",
+                  encoding="utf-8") as _fh:
+            json.dump({
+                "participant": participant,
+                "stimulus": stimulus,
+                "session": session,
+                "detail": detail,
+                "created_utc": datetime.now(timezone.utc).isoformat(),
+                "reference_model": GEMINI_MODEL,
+                "max_tokens": out_tokens,
+                # The measured accuracy the marker radius and the prompt
+                # were built from — claim_check needs it to pad boxes.
+                "accuracy_deg": (val or {}).get("mean_err_deg"),
+                "accuracy_px": (val or {}).get("mean_err_px"),
+                # How many entries the JSON block MUST contain. In
+                # "fixations" mode the units are defined by I-DT, not by
+                # the model, so a short reply means the output was
+                # TRUNCATED — and a truncated reply silently drops the
+                # last fixations, biasing every downstream figure toward
+                # the start of the video. Recorded so the comparison can
+                # detect it instead of averaging over a partial answer.
+                "expected_units": (len(frames) if detail == "fixations"
+                                   else (n_bins if detail == "windows"
+                                         else None)),
+                "unit_definition": ("one per detected fixation (I-DT)"
+                                    if detail == "fixations"
+                                    else ("fixed %.1f s bins" % window_s
+                                          if detail == "windows"
+                                          else "model-chosen phases")),
+                "parts": parts,
+            }, _fh)
+    except Exception:  # noqa: BLE001 — never block feedback generation
+        logger.exception("Could not write LLM replay payload")
 
     try:
         runs: list[dict] = []
@@ -1750,6 +1956,11 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
         # BEFORE calibration, and whether the researcher overrode a
         # failing verdict. Lets analysis separate "we knew this session
         # was degraded" from "we found out afterwards".
+        # RQ2 event metrics per stimulus (fixations, saccades, off-video),
+        # each carrying the caveat that makes it interpretable at this
+        # sampling rate. Previously computed only in quality_report.py and
+        # never persisted.
+        "events": counts.get("__events__"),
         "rate_gate": state.get("rate_gate"),
         # Condensed background telemetry (full series in data/telemetry/).
         # Keeps the manifest readable while making the headline context —

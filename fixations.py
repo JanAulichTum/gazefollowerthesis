@@ -20,6 +20,11 @@ from typing import Any
 
 from config import FIXATION_DISPERSION_NORM, FIXATION_MIN_DURATION_S
 
+# Literature default for I-DT (Salvucci & Goldberg 2000 and after use
+# ~100 ms). Used as the LOWER bound of the derived minimum duration;
+# the sampling rate raises it when three samples take longer than this.
+PREFERRED_MIN_DURATION_S = 0.10
+
 
 @dataclass
 class Fixation:
@@ -74,7 +79,7 @@ def detect_fixations(
     xs: "list[float]",
     ys: "list[float]",
     dispersion_threshold: float = FIXATION_DISPERSION_NORM,
-    min_duration: float = FIXATION_MIN_DURATION_S,
+    min_duration: "float | None" = None,
     max_gap_s: "float | None" = None,
     min_samples: int = 3,
 ) -> list[Fixation]:
@@ -87,7 +92,20 @@ def detect_fixations(
             is not a fixation on the content).
         dispersion_threshold: Max (max-min)x + (max-min)y within a
             fixation, in normalized units.
-        min_duration: Minimum fixation duration in seconds.
+        min_duration: Minimum fixation duration in seconds. ``None`` →
+            DERIVED from the measured rate as max(100 ms, min_samples /
+            sampling_hz).
+
+            WHY DERIVED RATHER THAN FIXED. The configured default was a
+            flat 200 ms, which is roughly double the ~100 ms used in the
+            I-DT literature and therefore discards genuine short
+            fixations — contributing directly to the measured 1.1 /s
+            fixation rate against the 3–4 /s of natural viewing.
+            But it cannot simply be lowered either: a dispersion window
+            needs at least ``min_samples`` points to mean anything, which
+            at 21 Hz is 143 ms and at 30 Hz is 100 ms. The floor is a
+            property of the recording, not a preference, so it is
+            computed per segment and reported alongside the result.
         max_gap_s: A frame gap larger than this (tracking dropout)
             terminates the current candidate window. ``None`` → derived
             from the effective sampling rate (2.5× the median interval),
@@ -114,6 +132,13 @@ def detect_fixations(
             dt = gaps[len(gaps) // 2]
     if max_gap_s is None:
         max_gap_s = max(0.25, 2.5 * dt) if dt > 0 else 0.25
+
+    # Rate-derived minimum duration (see the docstring). The floor is
+    # min_samples x the inter-sample interval; below that a "fixation"
+    # would rest on too few points for its dispersion to be meaningful.
+    if min_duration is None:
+        floor = min_samples * dt if dt > 0 else 0.0
+        min_duration = max(PREFERRED_MIN_DURATION_S, floor)
 
     def _valid(i: int) -> bool:
         x, y = xs[i], ys[i]
@@ -186,3 +211,47 @@ def detect_fixations_df(gaze_df: "Any", **kwargs) -> list[Fixation]:
         df["gaze_video_ny"].astype(float).tolist(),
         **kwargs,
     )
+
+# ──────────────────────────────────────────────────────────────────
+# Saccades
+# ──────────────────────────────────────────────────────────────────
+
+import math  # noqa: E402  (kept local to the saccade section)
+
+def saccade_metrics(fixations: list, px_per_deg: float,
+                    screen_w_px: int, screen_h_px: int) -> dict:
+    """Inter-fixation transitions, derived from the fixation sequence.
+
+    HONEST LIMITATION, to be reported with the numbers: at 21-30 Hz the
+    saccade itself is not observed — typically no sample falls during it.
+    What is measured is the DISPLACEMENT between consecutive fixation
+    centroids. That is a valid amplitude estimate, but velocity, peak
+    velocity and duration are NOT recoverable at this sampling rate and
+    must not be reported.
+
+    Fixations that I-DT merged also remove the saccade between them, so
+    the count is biased DOWN by the same mechanism that biases the
+    fixation count.
+    """
+    if len(fixations) < 2:
+        return {"saccade_count": 0, "amplitudes_deg": [],
+                "note": "fewer than two fixations"}
+    amps = []
+    for a, b in zip(fixations[:-1], fixations[1:]):
+        dx = (b["nx"] - a["nx"]) * screen_w_px
+        dy = (b["ny"] - a["ny"]) * screen_h_px
+        amps.append(math.hypot(dx, dy) / px_per_deg if px_per_deg else 0.0)
+    amps_sorted = sorted(amps)
+    n = len(amps_sorted)
+    return {
+        "saccade_count": n,
+        "amplitude_median_deg": round(amps_sorted[n // 2], 2),
+        "amplitude_mean_deg": round(sum(amps_sorted) / n, 2),
+        "amplitude_p90_deg": round(amps_sorted[min(n - 1, int(0.9 * n))], 2),
+        "amplitude_min_deg": round(amps_sorted[0], 2),
+        "amplitude_max_deg": round(amps_sorted[-1], 2),
+        "measurement_note": "Amplitude is the displacement between "
+                            "consecutive fixation centroids. Saccade "
+                            "velocity and duration are NOT measurable at "
+                            "this sampling rate and are not reported.",
+    }

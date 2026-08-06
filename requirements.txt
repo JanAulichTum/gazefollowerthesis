@@ -32,3 +32,8 @@ MNN>=3.0
 
 # Legacy pupil-detection fallback (pygazetracker/ package)
 opencv-python>=4.8
+
+# Machine telemetry: CPU load, clock, RAM, battery. Without it every
+# system metric in telemetry.py is silently absent, and a session that
+# ran slowly cannot be attributed to the machine after the fact.
+psutil>=5.9

@@ -968,8 +968,13 @@ class Service:
         measurement, would perturb the session it is supposed to observe.
 
         Returns {} rather than raising if the tracker is not running.
+
+        NOTE the ``ok`` key is REQUIRED. ``reply()`` sends this dict
+        verbatim, and every caller gates on ``reply.get("ok")`` — a bare
+        dict is silently discarded, which is exactly what happened for a
+        whole session's telemetry before this was fixed.
         """
-        out: dict = {}
+        out: dict = {"ok": True}
         try:
             stamps = list(self._live_stamps)
             if len(stamps) >= 3:
@@ -1352,6 +1357,31 @@ class Service:
 
     # Average human inter-pupillary distance (cm) — for a coarse
     # monocular distance estimate from the eyes' pixel separation.
+    @staticmethod
+    def _focal_px(image_w_px: int) -> "tuple[float, bool]":
+        """Camera focal length in px, and whether it was MEASURED.
+
+        Prefers a one-off calibration (camera_geometry.py --calibrate),
+        which removes the assumed field of view entirely. Falls back to
+        the assumption, which is worth roughly +-10 % on the distance —
+        and therefore the same on every reported degree figure.
+        """
+        try:
+            import camera_geometry
+
+            geom = camera_geometry.load()
+            if geom.get("focal_px"):
+                focal = float(geom["focal_px"])
+                cal_w = geom.get("image_w_px") or image_w_px
+                if cal_w and image_w_px and cal_w != image_w_px:
+                    focal *= image_w_px / float(cal_w)
+                return focal, True
+        except Exception:  # noqa: BLE001 — never block the guide
+            pass
+        return ((image_w_px / 2.0)
+                / math.tan(math.radians(Service._ASSUMED_HFOV_DEG) / 2.0),
+                False)
+
     _REAL_IOD_CM = 6.3
     # Assumed webcam horizontal field of view (deg) — typical laptop
     # cameras are ~55–65°. Logged with every estimate so the assumption
@@ -1504,9 +1534,15 @@ class Service:
             m["roll_deg"] = round(math.degrees(
                 math.atan2(rc[1] - lc[1], abs(rc[0] - lc[0]) or 1)), 1)
             if iod > 1:
-                focal = w / (2 * math.tan(
-                    math.radians(self._ASSUMED_HFOV_DEG) / 2))
+                focal, measured = self._focal_px(w)
                 m["est_distance_cm"] = round(self._REAL_IOD_CM * focal / iod, 1)
+                m["focal_px"] = round(focal, 1)
+                # Whether the distance rests on a MEASURED focal length or
+                # on the assumed field of view. Every degree figure in the
+                # thesis divides by this distance, so which one it was is
+                # a methods fact, not a detail.
+                m["focal_measured"] = measured
+                m["distance_rel_sd_pct"] = 6.5 if measured else 11.8
         if op_l and op_r and float(op_l) > 0 and float(op_r) > 0:
             m["openness_ratio"] = round(
                 max(float(op_l), float(op_r)) / min(float(op_l), float(op_r)),
@@ -1640,8 +1676,7 @@ class Service:
             if iod_px and iod_px > 1:
                 import math
 
-                focal_px = w / (2 * math.tan(
-                    math.radians(self._ASSUMED_HFOV_DEG) / 2))
+                focal_px, _measured = self._focal_px(w)
                 est_cm = round(self._REAL_IOD_CM * focal_px / iod_px, 1)
 
             m = {"face_center_x": cx, "face_center_y": cy, "eyes_y": eyes_y,

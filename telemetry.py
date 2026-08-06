@@ -102,8 +102,18 @@ def _package_versions() -> dict:
     for name in _PACKAGES:
         def _get(n=name):
             mod = __import__(n)
-            return getattr(mod, "__version__", None) \
-                or getattr(mod, "version", None) or "unknown"
+            for attr in ("__version__", "version", "VERSION"):
+                val = getattr(mod, attr, None)
+                # MNN exposes `version` as a FUNCTION, so a bare getattr
+                # records "<built-in function version>" instead of a
+                # version. Call it, and only accept a string either way.
+                if callable(val):
+                    val = _safe(val)
+                if isinstance(val, (str, bytes)):
+                    return val.decode() if isinstance(val, bytes) else val
+                if isinstance(val, tuple):
+                    return ".".join(str(p) for p in val)
+            return "unknown"
         out[name] = _safe(_get, "not installed")
     return out
 

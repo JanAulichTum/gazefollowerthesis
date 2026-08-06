@@ -16,6 +16,7 @@ Checks (no server or camera needed):
 
 import json
 import logging
+import math
 import os
 import py_compile
 import re
@@ -1234,6 +1235,29 @@ try:
           "self._live_stamps.append(time.perf_counter())" in _tsvc2)
     check("telemetry IPC uses a short timeout so it cannot queue up",
           '{"cmd": "telemetry"}, 2' in _gs2)
+    # THE CONTRACT THAT BROKE A WHOLE SESSION'S TELEMETRY: reply() sends
+    # the command's dict verbatim and the caller gates on ok, so a probe
+    # that omits the key is discarded silently — 134 samples of nothing.
+    check("cmd_telemetry returns ok=True (callers gate on it)",
+          'out: dict = {"ok": True}' in _tsvc2[
+              _tsvc2.index("def cmd_telemetry"):
+              _tsvc2.index("def _install_stage_timers")])
+    check("the ok-key requirement is documented where it can be broken",
+          "dict is silently discarded" in _tsvc2)
+    # Simulate the round trip: a reply missing ok must not be accepted.
+    _probe_reply = {"sampling_hz": 25.0}          # the old, broken shape
+    check("a reply without ok would be rejected by the caller",
+          not _probe_reply.get("ok"))
+    check("psutil is a declared dependency (every system metric needs it)",
+          "psutil" in read("requirements.txt")
+          and "psutil" in read("environment.yml"))
+    check("package versions survive a callable .version (MNN)",
+          "MNN exposes `version` as a FUNCTION" in _tel_src)
+    _vers = _tel._package_versions()
+    check("no version is recorded as a function object",
+          not any("built-in" in str(v) or "function" in str(v)
+                  for v in _vers.values()), str(_vers))
+
     check("telemetry command is dispatched", 'cmd == "telemetry"' in _tsvc2)
 
     # Wiring.
@@ -1306,6 +1330,22 @@ try:
           "CRITICAL" not in [f[0] for f in _clean_found],
           str([f[1] for f in _clean_found])[:80])
 
+    # A SILENT ALL-CLEAR ON NO DATA is the worst possible output — it
+    # reads as a clean session. This happened for real (134 samples, all
+    # timestamp-only, reported as "Nothing flagged").
+    _empty = {"series": [{"t": i} for i in range(134)],
+              "environment": {"packages": {"psutil": "not installed"}}}
+    _ef = _dns["find_anomalies"](_empty)
+    check("an all-timestamp series is CRITICAL, not 'nothing flagged'",
+          _ef and _ef[0][0] == "CRITICAL"
+          and "NO MEASUREMENTS" in _ef[0][1], str(_ef)[:80])
+    check("the empty-series verdict names both possible causes",
+          any("psutil" in f[2] and "ok=True" in f[2] for f in _ef))
+    check("a missing psutil is flagged on its own",
+          any("psutil is not installed" in f[1] for f in _dns["find_anomalies"](
+              {"series": [{"t": 1, "sampling_hz": 29.0}],
+               "environment": {"packages": {"psutil": "not installed"}}})))
+
     # ── The A/B switch must fail SAFE ──
     # `set GF_PERF_MODE=` in cmd.exe deletes the variable; in other
     # shells it leaves an empty string. Both must mean ENABLED, because
@@ -1368,6 +1408,341 @@ try:
 except Exception as exc:  # noqa: BLE001
     _blocked = environment_block(exc)
     check("capture-loop instrumentation", False, _blocked or repr(exc))
+
+# ── 10. Metrics spec, claim correspondence, verifier ───────────────────
+print("\n[10] Metrics specification and RQ3 correspondence")
+try:
+    import metrics_spec as _SPEC
+    import claim_check as _CC
+    import fixations as _FX
+
+    _ppd = _SPEC.px_per_degree()
+    check("1 deg is ~58 px at the collection geometry",
+          57 <= _ppd <= 59, "%.1f px" % _ppd)
+
+    # I-DT floor derived from the rate, not from taste.
+    for _hz in (21, 25, 30):
+        _got = _SPEC.fixation_min_duration_for(_hz)
+        check("min fixation duration at %d Hz is the 3-sample floor" % _hz,
+              abs(_got - max(0.10, 3.0 / _hz)) < 1e-9,
+              "%.0f ms" % (_got * 1000))
+    check("the floor never drops below the ~100 ms literature default",
+          _SPEC.fixation_min_duration_for(200) == 0.10)
+    _t = [i / 30.0 for i in range(20)]
+    check("detect_fixations derives min_duration when not given",
+          len(_FX.detect_fixations(_t, [0.3] * 20, [0.4] * 20)) == 1)
+    check("an explicit min_duration still overrides the derivation",
+          len(_FX.detect_fixations(_t, [0.3] * 20, [0.4] * 20,
+                                   min_duration=5.0)) == 0)
+
+    # Saccades: amplitude only, never velocity.
+    _sc = _FX.saccade_metrics(
+        [{"nx": .5, "ny": .6}, {"nx": .5, "ny": .15}, {"nx": .1, "ny": .6}],
+        _ppd, 1920, 1080)
+    check("saccade count is fixations - 1", _sc["saccade_count"] == 2)
+    check("velocity and duration are explicitly NOT claimed",
+          "not measurable" in _sc["measurement_note"].lower())
+
+    # ── RQ3 correspondence: the AOI-free check ──
+    _samples = ([(t / 10.0, 0.15, 0.60, True) for t in range(0, 80)]
+                + [(t / 10.0, 0.50, 0.60, True) for t in range(80, 160)])
+    _sup = _CC.check_claim(
+        {"t_start": 0, "t_end": 8, "attended": "left student",
+         "bbox": [0.02, 0.35, 0.30, 0.55]}, _samples, 2.2, _ppd, 1920, 1080)
+    check("a claim matching the gaze is SUPPORTED",
+          _sup["verdict"] == _CC.SUPPORTED, str(_sup["verdict"]))
+    _con = _CC.check_claim(
+        {"t_start": 8, "t_end": 16, "attended": "whiteboard",
+         "bbox": [0.30, 0.00, 0.40, 0.30]}, _samples, 2.2, _ppd, 1920, 1080)
+    check("a claim contradicted by the gaze is CONTRADICTED",
+          _con["verdict"] == _CC.CONTRADICTED, str(_con["verdict"]))
+    _tiny = _CC.check_claim(
+        {"t_start": 8, "t_end": 16, "attended": "a pen",
+         "bbox": [0.49, 0.59, 0.02, 0.02]}, _samples, 2.2, _ppd, 1920, 1080)
+    check("an object smaller than the error is UNTESTABLE, not a pass",
+          _tiny["verdict"] == _CC.UNTESTABLE, str(_tiny["verdict"]))
+    _nob = _CC.check_claim(
+        {"t_start": 0, "t_end": 4, "attended": "the room", "bbox": None},
+        _samples, 2.2, _ppd, 1920, 1080)
+    check("an unlocalised claim is NO_BBOX, not silently passed",
+          _nob["verdict"] == _CC.NO_BOX)
+    check("the box is padded by the session's measured accuracy",
+          _sup["tolerance_px"] == round(2.2 * _ppd))
+    _all = _CC.check_all(
+        [{"t_start": 0, "t_end": 8, "attended": "a",
+          "bbox": [0.02, 0.35, 0.30, 0.55]},
+         {"t_start": 8, "t_end": 16, "attended": "b",
+          "bbox": [0.30, 0.00, 0.40, 0.30]}],
+        _samples, 2.2, _ppd, 1920, 1080)
+    check("correspondence %% is computed over TESTABLE claims only",
+          _all["correspondence_pct"] == 50.0 and _all["n_testable"] == 2,
+          str(_all["correspondence_pct"]))
+
+    # The prompt must actually request the box, or none of this runs.
+    check("the LLM is asked for a bbox with every spatial claim",
+          _app2.count("bbox") >= 4)
+    check("the prompt explains WHY the box is needed",
+          "checkable against" in _app2)
+
+    # Spec bookkeeping.
+    check("AOI metrics are recorded as NOT APPLICABLE, not omitted",
+          hasattr(_SPEC, "NOT_APPLICABLE") and _SPEC.NOT_APPLICABLE)
+    check("the design choice (no hand-drawn AOIs) is written down",
+          "deliberately uses NO hand-drawn AOIs" in read("metrics_spec.py"))
+    check("kappa is still flagged as the remaining RQ3 gap",
+          any(i[0] == "human_agreement_kappa" and i[3] == "missing"
+              for i in _SPEC.RQ3_FEEDBACK))
+    check("inclusion criteria are dated in the spec",
+          "decided_on" in _SPEC.INCLUSION)
+
+    # Verifier: inclusion failures must block, and old data is filterable.
+    _vm = read("verify_metrics.py")
+    check("verifier grades a sub-threshold rate as DEGENERATE",
+          "FAILS the %.0f Hz inclusion criterion" in _vm)
+    check("verifier grades sub-threshold data loss as DEGENERATE",
+          "FAILS the %.0f %% inclusion criterion" in _vm)
+    check("verifier grades over-threshold accuracy as DEGENERATE",
+          "FAILS the %.1f deg inclusion criterion" in _vm)
+    check("verifier flags a missing post-validation as blocking",
+          "NO POST-STIMULUS VALIDATION" in _vm)
+    check("verifier warns that in-sample accuracy is not accuracy",
+          "IN-SAMPLE, do not report as " in _vm)
+    check("verifier can restrict to today / a cutoff date",
+          "--today" in _vm and "_session_date" in _vm)
+
+    # ── Multi-model comparison (N models, RQ3 generalisation) ──
+    import model_comparison as _MC
+
+    check("any number of models can be configured",
+          isinstance(_MC.load_models(), list))
+    check("providers cover gemini / openai / anthropic + a keyless mock",
+          {"gemini", "openai", "anthropic", "mock"} <= set(_MC.PROVIDERS))
+    check("a model with no API key fails loudly, not silently",
+          _MC.run_models([{"text": "x"}], [
+              {"name": "n", "provider": "openai", "model": "m",
+               "api_key_env": "DEFINITELY_NOT_SET_XYZ"}])["n"]["ok"] is False)
+    check("an unknown provider is reported, not skipped",
+          "unknown provider" in _MC.run_models(
+              [{"text": "x"}], [{"name": "n", "provider": "nope"}]
+          )["n"]["error"])
+
+    # Payload conversion must carry IMAGES, not just text.
+    _p = [{"text": "hi"},
+          {"inline_data": {"mime_type": "image/jpeg", "data": "QUJD"}}]
+    _oa = _MC._parts_to_openai(_p)
+    _an = _MC._parts_to_anthropic(_p)
+    check("openai conversion keeps the image",
+          any(b["type"] == "image_url" for b in _oa) and len(_oa) == 2)
+    check("anthropic conversion keeps the image",
+          any(b["type"] == "image" for b in _an) and len(_an) == 2)
+    check("base64 image data survives conversion",
+          "QUJD" in json.dumps(_oa) and "QUJD" in json.dumps(_an))
+
+    # Fleiss kappa edge cases.
+    check("Fleiss kappa is 1.0 on perfect agreement",
+          _MC.fleiss_kappa([[True] * 3, [False] * 3]) == 1.0)
+    check("Fleiss kappa goes negative on systematic disagreement",
+          _MC.fleiss_kappa([[True, False, True],
+                            [False, True, False]]) < 0)
+    check("Fleiss kappa returns None when an item lacks a rating",
+          _MC.fleiss_kappa([[True, None, True]]) is None)
+    check("Fleiss kappa returns None with too few items",
+          _MC.fleiss_kappa([[True, True, True]]) is None)
+
+    # End-to-end with mock models: correspondence must separate them.
+    _pp = _SPEC.px_per_degree()
+    _smp = ([(t / 10.0, 0.15, 0.60, True) for t in range(0, 80)]
+            + [(t / 10.0, 0.50, 0.60, True) for t in range(80, 160)])
+    _good = json.dumps([{"t_start": 0, "t_end": 8, "attended": "left",
+                         "bbox": [0.02, 0.35, 0.30, 0.55],
+                         "criteria_met": True}])
+    _bad = json.dumps([{"t_start": 0, "t_end": 8, "attended": "board",
+                        "bbox": [0.30, 0.00, 0.40, 0.30],
+                        "criteria_met": True}])
+    _res = _MC.run_models([{"text": "x"}], [
+        {"name": "A", "provider": "mock",
+         "canned_response": "```json\n%s\n```" % _good},
+        {"name": "B", "provider": "mock",
+         "canned_response": "```json\n%s\n```" % _bad}])
+    _cmp = _MC.compare(_res, _smp, 2.2, _pp, 1920, 1080)
+    check("a model whose claims match the gaze scores 100 %",
+          _cmp["per_model"]["A"]["correspondence_pct"] == 100.0)
+    check("a model whose claims contradict the gaze scores 0 %",
+          _cmp["per_model"]["B"]["correspondence_pct"] == 0.0)
+    check("the report states that cross-model agreement is NOT validity",
+          "RELIABILITY, not validity" in _cmp["kappa_note"])
+    check("mismatched phase counts are flagged, not silently aligned",
+          "phase_counts_match" in _cmp)
+
+    # The app must save a replayable, byte-identical payload.
+    check("app saves the exact payload for fair comparison",
+          "llm_replay" in _app2 and '"parts": parts,' in _app2)
+    check("the replay carries the accuracy the boxes are padded with",
+          '"accuracy_deg"' in _app2)
+    check("replay saving can never block feedback generation",
+          "never block feedback generation" in _app2)
+
+    # ── Fixed-unit "windows" mode: what makes kappa interpretable ──
+    check("a fixed-window detail mode exists",
+          '"windows"' in _app2 and 'detail not in ("phases", "fixations", "windows")'
+          in _app2)
+    check("the window length is configurable, not hardcoded",
+          "LLM_WINDOW_SECONDS" in read("config.py")
+          and "LLM_WINDOW_SECONDS" in _app2)
+    check("the model is forbidden from choosing its own boundaries",
+          "Do NOT choose your own boundaries" in _app2)
+    check("windows may not be merged or skipped",
+          "do not merge windows" in _app2 and "do not skip any" in _app2)
+    check("the reason (identical units across raters) is stated in code",
+          "confounds SEGMENTATION with JUDGMENT" in _app2)
+    check("windows mode also requests a bbox",
+          _app2.count("makes the claim checkable") >= 1
+          or _app2.count("checkable against") >= 2)
+    check("windows mode gets the larger token budget",
+          'detail in ("fixations", "windows")' in _app2)
+    # Bin arithmetic: a 30.4 s clip at 5 s must give 6 equal units.
+    for _dur, _w, _want in ((30.4, 5.0, 6), (60.0, 5.0, 12),
+                            (12.0, 5.0, 2), (2.0, 5.0, 1)):
+        check("a %.0f s clip in %.0f s bins gives %d units"
+              % (_dur, _w, _want),
+              max(1, int(round(_dur / _w))) == _want)
+
+    # ── Truncation guard: silent partial answers would bias everything ──
+    _full = json.dumps([{"t_start": i, "t_end": i + 1, "attended": "left",
+                         "bbox": [0.02, 0.35, 0.30, 0.55],
+                         "criteria_met": True} for i in range(8)])
+    _short = json.dumps([{"t_start": i, "t_end": i + 1, "attended": "left",
+                          "bbox": [0.02, 0.35, 0.30, 0.55],
+                          "criteria_met": True} for i in range(5)])
+    _smp2 = [(t / 10.0, 0.15, 0.60, True) for t in range(0, 80)]
+    _r2 = _MC.run_models([{"text": "x"}], [
+        {"name": "complete", "provider": "mock",
+         "canned_response": "```json\n%s\n```" % _full},
+        {"name": "cut", "provider": "mock",
+         "canned_response": "```json\n%s\n```" % _short}])
+    _c2 = _MC.compare(_r2, _smp2, 2.2, _pp, 1920, 1080, expected_units=8)
+    check("a complete answer is marked complete",
+          _c2["per_model"]["complete"]["complete"] is True)
+    check("a short answer is detected as TRUNCATED",
+          _c2["per_model"]["cut"].get("truncated") is True)
+    check("the truncation note says the END of the video is missing",
+          "MISSING units are the end" in
+          _c2["per_model"]["cut"]["truncation_note"])
+    check("a truncated model is EXCLUDED from the agreement analysis",
+          "cut" not in _c2["models_compared"]
+          and "cut" in _c2["truncated_models"])
+    check("a model returning MORE units than requested is flagged too",
+          "ignored the unit definition" in read("model_comparison.py"))
+    check("the expected unit count is recorded in the replay payload",
+          '"expected_units"' in _app2 and '"unit_definition"' in _app2)
+    check("fixation mode declares its unit definition",
+          "one per detected fixation (I-DT)" in _app2)
+    check("truncation is explained where it is detected",
+          "biasing every downstream figure toward" in _app2)
+
+    # ── RQ2 event metrics must be PERSISTED, not just printed ──
+    import pandas as _pd
+    _blk = _app2[_app2.index("# Degree conversion for the event metrics"):
+                 _app2.index("def _fixation_summary")]
+    _ens = {"pd": _pd, "FIXATION_DISPERSION_NORM": 0.05}
+    exec(_blk, _ens)
+    _ev = _ens["_event_metrics"]
+
+    def _seg(hz, seconds=30.0):
+        rows = []
+        for i in range(int(hz * seconds)):
+            t = i / hz
+            nx, ny = (0.3, 0.4) if t < 10 else ((0.6, 0.5) if t < 20
+                                                else (0.2, 0.7))
+            rows.append({"video_time_s": t, "gaze_video_nx": nx,
+                         "gaze_video_ny": ny})
+        return _pd.DataFrame(rows)
+
+    _r21 = _ev(_seg(21.0))
+    _r32 = _ev(_seg(32.0))
+    check("event metrics are computed for a stimulus segment",
+          _r21["fixation_count"] > 0 and "saccades" in _r21)
+    check("the I-DT minimum duration follows the MEASURED rate",
+          abs(_r21["idt_min_duration_s"] - 3 / 21.0) < 1e-3
+          and _r32["idt_min_duration_s"] == 0.1,
+          "%.0f / %.0f ms" % (1000 * _r21["idt_min_duration_s"],
+                              1000 * _r32["idt_min_duration_s"]))
+    check("the three-sample floor is recorded next to the value used",
+          "idt_min_duration_floor_s" in _r21)
+    check("duration uncertainty is one inter-sample interval",
+          abs(_r21["fixation_duration_uncertainty_ms"] - 1000 / 21.0) < 2,
+          "%s ms" % _r21["fixation_duration_uncertainty_ms"])
+    check("the dispersion threshold is reported in DEGREES",
+          1.0 < _r21["idt_dispersion_deg"] < 3.0,
+          "%.2f deg" % _r21["idt_dispersion_deg"])
+    check("fixation_rate_per_s is reported alongside the count",
+          "fixation_rate_per_s" in _r21)
+    check("the bias caveat travels with the numbers",
+          "biased DOWN" in _r21["interpretation"])
+    check("saccades report amplitude but not velocity",
+          "amplitude_median_deg" in _r21["saccades"]
+          and not any("velocity" in k for k in _r21["saccades"]))
+    _off = _seg(30.0)
+    _off.loc[_off.index[:150], "gaze_video_nx"] = 1.4
+    check("gaze leaving the video frame is measured",
+          abs(_ev(_off)["gaze_off_video_pct"] - 16.7) < 0.2)
+    check("a segment without video coordinates fails safe",
+          "error" in _ev(_pd.DataFrame({"x": [1]})))
+    check("event metrics reach the manifest",
+          '"events": counts.get("__events__")' in _app2)
+    check("a stats failure can never lose a session",
+          "never lose a session over stats" in _app2)
+    check("px-per-degree is shared with the metrics spec, not re-derived",
+          "from metrics_spec import px_per_degree" in _app2)
+
+    # ── Viewing distance: measured, not assumed ──
+    import camera_geometry as _CG
+
+    _cal = _CG.calibrate(iod_px=58.0, known_distance_cm=62.5, image_w_px=640)
+    check("focal length solves from ONE measured distance",
+          abs(_cal["focal_px"] - 58.0 * 62.5 / 6.3) < 0.5,
+          "%.0f px" % _cal["focal_px"])
+    check("the calibration reports the FOV it implies",
+          50 < _cal["implied_hfov_deg"] < 75,
+          "%.1f deg" % _cal["implied_hfov_deg"])
+    check("calibrating shrinks the distance uncertainty",
+          _CG.estimate_distance(62.0, geometry=_cal)["relative_sd_pct"]
+          < _CG.estimate_distance(62.0, geometry={})["relative_sd_pct"])
+    check("measuring the participant's IOD shrinks it further",
+          _CG.estimate_distance(62.0, geometry=_cal, iod_cm=6.1
+                                )["relative_sd_pct"]
+          < _CG.estimate_distance(62.0, geometry=_cal)["relative_sd_pct"])
+    check("the estimate states which assumptions remain",
+          any("ASSUMED" in x for x in
+              _CG.estimate_distance(62.0, geometry={})["sources"])
+          and any("MEASURED" in x for x in
+                  _CG.estimate_distance(62.0, geometry=_cal)["sources"]))
+    check("uncertainty sources combine in quadrature, not additively",
+          abs(_CG.estimate_distance(62.0, geometry={})["relative_sd_pct"]
+              - 100 * math.hypot(0.10, 0.4 / 6.3)) < 0.2)
+    # Degrees must carry the distance uncertainty through.
+    _d = _CG.degrees_with_uncertainty(129.7, 58.5, 3.8)
+    check("degrees are reported with a 95 % interval",
+          _d["deg_lo"] < _d["deg"] < _d["deg_hi"],
+          "%.2f (%.2f-%.2f)" % (_d["deg"], _d["deg_lo"], _d["deg_hi"]))
+    check("a NEARER viewer yields a LARGER angle",
+          _CG.degrees_with_uncertainty(129.7, 45.0)["deg"]
+          > _CG.degrees_with_uncertainty(129.7, 80.0)["deg"])
+    check("the interval note says the pixel measurement is exact",
+          "pixel" in _d["interval_note"] and "exact" in _d["interval_note"])
+    check("a missing distance fails safe rather than guessing",
+          _CG.degrees_with_uncertainty(129.7, 0)["deg"] is None)
+    # The tracker must PREFER a calibration when one exists.
+    check("the tracker prefers a measured focal length",
+          "def _focal_px" in _tsvc2
+          and "focal, measured = self._focal_px(w)" in _tsvc2)
+    check("the tracker records whether the focal length was measured",
+          '"focal_measured"' in _tsvc2)
+    check("a broken calibration file cannot block the position guide",
+          "never block the guide" in _tsvc2)
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("metrics specification", False, _blocked or repr(exc))
 
 # ── Summary ────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)

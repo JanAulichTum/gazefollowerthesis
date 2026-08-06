@@ -59,6 +59,13 @@ LLM_LOG_DIR = os.path.join(DATA_DIR, "llm_logs")
 # Upper bound for the repeated-generation consistency mode (n_runs).
 LLM_N_RUNS_MAX = int(os.environ.get("LLM_N_RUNS_MAX", "10"))
 
+# Bin length (seconds) for the "windows" feedback mode. In that mode the
+# model describes each fixed time bin rather than choosing its own phase
+# boundaries. Fixed units are what inter-rater agreement (Cohen's /
+# Fleiss' kappa) assumes: if raters segment differently, disagreement
+# confounds segmentation with judgment and kappa is uninterpretable.
+LLM_WINDOW_SECONDS = float(os.environ.get("LLM_WINDOW_SECONDS", "5"))
+
 # ---------------------------------------------------------------------------
 # Validation & preregistered data-quality thresholds
 # (report these in the methods section; decided BEFORE data collection)
