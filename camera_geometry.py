@@ -377,11 +377,22 @@ def measure_live(seconds: float = 6.0, camera: int = 0,
                 # measured is not.
                 print("  (first frame produced no iris reading — "
                       "continuing, but expect this to fail)")
-            # Outer eye corners: the same pair GazeFollower's geometry
-            # uses, so the focal length stays consistent with the runtime.
+            # IRIS CENTRES (468, 473) — the actual pupil centres in the
+            # refined mesh, and therefore the only pair whose separation
+            # is the INTER-PUPILLARY distance that POPULATION_IOD_CM
+            # (6.3 cm) describes.
+            #
+            # This used landmarks 33 and 263, which are the OUTER EYE
+            # CORNERS. Outer-canthal separation is ~8.4 cm in adults, not
+            # 6.3 — so dividing it by 6.3 inflated the focal length by
+            # exactly that ratio and produced a spurious 24.7 % quarrel
+            # with the iris. Both numbers were measuring the camera
+            # correctly; one of them was being told the wrong thing about
+            # the face. The cross-check is meant to catch a bad landmark
+            # fit, so a cross-check that cries wolf is worse than none.
             try:
-                lx, ly = lm[33].x * w, lm[33].y * h
-                rx, ry = lm[263].x * w, lm[263].y * h
+                lx, ly = lm[468].x * w, lm[468].y * h
+                rx, ry = lm[473].x * w, lm[473].y * h
                 iod_vals.append(float(np.hypot(rx - lx, ry - ly)))
             except Exception as exc:  # noqa: BLE001
                 _note("IOD read raised %s" % type(exc).__name__)
@@ -535,6 +546,16 @@ def main() -> int:
             data["focal_px"] = round(iris_focal, 1)
             data["focal_basis"] = ("iris (11.7 mm +- 0.5); the IOD figure "
                                    "is retained for comparison")
+            # RECOMPUTE the derived FOV fields. calibrate() filled them
+            # from the IOD focal, and overwriting focal_px without them
+            # left a record whose implied_hfov_deg described a focal
+            # length no longer in the file — the report printed 40.4 deg
+            # next to a 655.9 px focal that actually implies 52.0.
+            implied = 2 * math.degrees(
+                math.atan((args.image_w / 2.0) / iris_focal))
+            data["implied_hfov_deg"] = round(implied, 1)
+            data["hfov_error_vs_assumption_pct"] = round(
+                100 * (implied / FALLBACK_HFOV_DEG - 1), 1)
         save(data)
         print()
         for k, v in data.items():

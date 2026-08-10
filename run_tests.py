@@ -2056,6 +2056,32 @@ try:
 
     check("the eager-default trap is documented where it bit",
           "evaluates a default" in read("iris_distance.py"))
+
+    # ── The cross-check that cried wolf ──────────────────────────────
+    # The IOD arm used landmarks 33/263 (OUTER EYE CORNERS, ~8.4 cm
+    # apart in adults) and divided by POPULATION_IOD_CM = 6.3, the
+    # INTER-PUPILLARY distance. That inflated the focal length by 8.4/6.3
+    # and manufactured a 24.7 % disagreement with the iris on a
+    # calibration that was actually correct to 0.4 %. A cross-check
+    # exists to catch a bad landmark fit; one that fires on good data
+    # trains you to ignore it.
+    check("the IOD arm uses the iris CENTRES (true inter-pupillary), "
+          "not the outer eye corners",
+          "lm[468]" in _cg and "lm[473]" in _cg
+          and "lm[33]" not in _cg and "lm[263]" not in _cg)
+    check("choosing the iris focal recomputes the derived FOV fields",
+          'data["implied_hfov_deg"] = round(implied, 1)' in _cg)
+
+    # The arithmetic itself, on the numbers actually measured.
+    _scale = 12.79 / 1.17                     # px per cm at 60 cm
+    check("the measured 91.43 px separation is outer-canthal, not "
+          "inter-pupillary",
+          8.0 <= 91.43 / _scale <= 8.8,
+          "%.2f cm apart" % (91.43 / _scale))
+    check("outer-canthal cm reconciles the two focal estimates to <2 %",
+          abs(91.43 * 60 / 8.4 - 12.79 * 60 / 1.17)
+          / (12.79 * 60 / 1.17) < 0.02,
+          "%.1f vs %.1f px" % (91.43 * 60 / 8.4, 12.79 * 60 / 1.17))
     check("duty prefers total callback cost over model cost",
           'or (live_cb or {}).get("callback_ms_median")' in _tsvc3)
     check("a duty figure computed from models alone is marked as such",
