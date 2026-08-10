@@ -1995,6 +1995,113 @@ try:
           "(so they cannot disagree)",
           "if (this.collecting) this.samples.push([x, y]);" in _js3
           and "this.gazeDot.style.left" in _js3)
+
+    # ── Tape-measure focal calibration ───────────────────────────────
+    _cg = read("camera_geometry.py")
+    check("calibration can read the camera itself, not just prompt",
+          "def measure_live" in _cg and "--measure" in _cg)
+    check("the refined mesh is requested (iris points 468-477 need it)",
+          "refine_landmarks=True" in _cg)
+    check("focal length is solved from the IRIS, the tighter prior",
+          "focal_px_from_iris" in _cg and "focal_basis" in _cg)
+    check("the IOD-based figure is kept for comparison, not discarded",
+          "focal_px_from_iod" in _cg)
+    check("iris/IOD disagreement is flagged (it means a bad landmark fit)",
+          "focal_disagreement_pct" in _cg)
+    check("head movement during the measurement is detected and named",
+          "iris_spread_pct" in _cg and "that is head movement" in _cg)
+    check("the instruction says lens-to-nose, not to the laptop edge",
+          "front edge of the laptop" in _cg)
+    check("the calibration reads mean_px, the key iris_diameter_px "
+          "actually returns",
+          'iris.get("mean_px")' in _cg and 'iris.get("iris_px")' not in _cg)
+    check("a failed measurement reports WHY, not just 'no usable frames'",
+          "Your face WAS detected" in _cg and "def _note" in _cg)
+
+    # ── The landmark-form bug that green tests could not see ─────────
+    # _xy used getattr(landmark, "x", landmark[0]). Python evaluates a
+    # default argument EAGERLY, so landmark[0] ran even when .x existed.
+    # A MediaPipe NormalizedLandmark is a protobuf message with .x/.y and
+    # NO __getitem__, so every real camera frame raised TypeError on the
+    # default and reported "iris landmarks unusable" — while the suite
+    # stayed green, because it passes tuples and numpy rows, which ARE
+    # indexable. Test all three forms, not just the convenient ones.
+    import importlib
+
+    sys.path.insert(0, BASE)
+    _iris_mod = importlib.import_module("iris_distance")
+    importlib.reload(_iris_mod)
+
+    class _Proto:                 # attributes only, like MediaPipe
+        __slots__ = ("x", "y", "z")
+
+        def __init__(self, x, y):
+            self.x, self.y, self.z = x, y, 0.0
+
+    def _mesh(factory, w=640, h=480):
+        lm = [factory(0.5, 0.5) for _ in range(478)]
+        for i, (px, py) in {469: (306, 240), 471: (294, 240),
+                            474: (406, 240), 476: (394, 240)}.items():
+            lm[i] = factory(px / w, py / h)
+        return lm
+
+    for _label, _fac in (
+            ("MediaPipe-style landmark (attributes, NOT indexable)", _Proto),
+            ("plain tuple", lambda x, y: (x, y)),
+            ("numpy row", lambda x, y: __import__("numpy").array([x, y]))):
+        _r = _iris_mod.iris_diameter_px(_mesh(_fac), 640, 480)
+        check("iris diameter reads a %s" % _label,
+              _r.get("mean_px") == 12.0,
+              _r.get("error") or str(_r.get("mean_px")))
+
+    check("the eager-default trap is documented where it bit",
+          "evaluates a default" in read("iris_distance.py"))
+
+    # ── The cross-check that cried wolf ──────────────────────────────
+    # The IOD arm used landmarks 33/263 (OUTER EYE CORNERS, ~8.4 cm
+    # apart in adults) and divided by POPULATION_IOD_CM = 6.3, the
+    # INTER-PUPILLARY distance. That inflated the focal length by 8.4/6.3
+    # and manufactured a 24.7 % disagreement with the iris on a
+    # calibration that was actually correct to 0.4 %. A cross-check
+    # exists to catch a bad landmark fit; one that fires on good data
+    # trains you to ignore it.
+    check("the IOD arm uses the iris CENTRES (true inter-pupillary), "
+          "not the outer eye corners",
+          "lm[468]" in _cg and "lm[473]" in _cg
+          and "lm[33]" not in _cg and "lm[263]" not in _cg)
+    check("choosing the iris focal recomputes the derived FOV fields",
+          'data["implied_hfov_deg"] = round(implied, 1)' in _cg)
+
+    # The arithmetic itself, on the numbers actually measured.
+    _scale = 12.79 / 1.17                     # px per cm at 60 cm
+    check("the measured 91.43 px separation is outer-canthal, not "
+          "inter-pupillary",
+          8.0 <= 91.43 / _scale <= 8.8,
+          "%.2f cm apart" % (91.43 / _scale))
+    check("outer-canthal cm reconciles the two focal estimates to <2 %",
+          abs(91.43 * 60 / 8.4 - 12.79 * 60 / 1.17)
+          / (12.79 * 60 / 1.17) < 0.02,
+          "%.1f vs %.1f px" % (91.43 * 60 / 8.4, 12.79 * 60 / 1.17))
+
+    # ── The review summary must not call a measurement an assumption ──
+    # The line read "viewing distance 60 cm (assumed)" unconditionally,
+    # including on sessions where the iris measurement had succeeded.
+    # It is the one line a researcher reads to judge a session, and the
+    # distance is the denominator of every degree on the page.
+    _rev = read("templates/review.html")
+    check("the quality API carries the measured distance through",
+          '"distance_measured"' in _app3 and 'out["distance"] = _dists[-1]'
+          in _app3)
+    check("the review page no longer hard-codes '(assumed)'",
+          "' cm (assumed)');" not in _rev)
+    check("a measured distance is labelled MEASURED, with its source",
+          "(MEASURED" in _rev and "q.distance.source" in _rev)
+    check("an assumed distance says what it contaminates",
+          "every degree on this page inherits this" in _rev)
+    check("the distance row is styled pass/fail, not neutral",
+          "q.distance_measured ? 'pass' : 'fail'" in _rev)
+    check("a disagreement between the two rulers is surfaced here too",
+          "estimates_agree === false" in _rev)
     check("duty prefers total callback cost over model cost",
           'or (live_cb or {}).get("callback_ms_median")' in _tsvc3)
     check("a duty figure computed from models alone is marked as such",
