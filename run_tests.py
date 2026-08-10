@@ -1995,6 +1995,23 @@ try:
           "(so they cannot disagree)",
           "if (this.collecting) this.samples.push([x, y]);" in _js3
           and "this.gazeDot.style.left" in _js3)
+
+    # ── Tape-measure focal calibration ───────────────────────────────
+    _cg = read("camera_geometry.py")
+    check("calibration can read the camera itself, not just prompt",
+          "def measure_live" in _cg and "--measure" in _cg)
+    check("the refined mesh is requested (iris points 468-477 need it)",
+          "refine_landmarks=True" in _cg)
+    check("focal length is solved from the IRIS, the tighter prior",
+          "focal_px_from_iris" in _cg and "focal_basis" in _cg)
+    check("the IOD-based figure is kept for comparison, not discarded",
+          "focal_px_from_iod" in _cg)
+    check("iris/IOD disagreement is flagged (it means a bad landmark fit)",
+          "focal_disagreement_pct" in _cg)
+    check("head movement during the measurement is detected and named",
+          "iris_spread_pct" in _cg and "that is head movement" in _cg)
+    check("the instruction says lens-to-nose, not to the laptop edge",
+          "front edge of the laptop" in _cg)
     check("duty prefers total callback cost over model cost",
           'or (live_cb or {}).get("callback_ms_median")' in _tsvc3)
     check("a duty figure computed from models alone is marked as such",

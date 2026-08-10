@@ -49,9 +49,17 @@ That is a stronger claim, and it is honest about what was measured.
 
 Usage::
 
-    python camera_geometry.py --calibrate 62.5     # sit at a measured 62.5 cm
+    # ONE command: sit at a tape-measured distance and hold still.
+    python camera_geometry.py --calibrate 62.5 --measure
+
     python camera_geometry.py --show
     python camera_geometry.py --sensitivity 129.7  # how much does it matter?
+
+Measure from the CAMERA LENS to the bridge of your nose — not to the
+front edge of the laptop, which on a 15" machine is a good 10 cm short
+and would put a 17 % error into every degree figure in the study.
+
+Stop the experiment server first; only one process can own the webcam.
 """
 
 from __future__ import annotations
@@ -60,7 +68,9 @@ import argparse
 import json
 import math
 import os
+import statistics
 import sys
+import time
 from datetime import datetime
 
 try:
@@ -255,10 +265,126 @@ def _sensitivity(error_px: float) -> int:
     return 0
 
 
+def measure_live(seconds: float = 6.0, camera: int = 0,
+                 width: int = 640, height: int = 480) -> "dict | None":
+    """Read the iris and inter-ocular pixel sizes straight from the camera.
+
+    WHY THIS EXISTS
+    ---------------
+    Calibration previously required running the app, opening the
+    position guide, reading a number off the screen while holding a tape
+    measure, and typing it into a second terminal. Every one of those
+    steps is a chance to move, and moving is the entire error term. This
+    does it in one command: sit still at the measured distance and it
+    samples for a few seconds.
+
+    Returns MEDIANS over the window, plus the spread. The spread is not
+    decoration — it is how you know whether you actually held still. A
+    5 % spread in iris pixels at 60 cm is 3 cm of head movement, which
+    is larger than the error the calibration is trying to remove.
+
+    Both rulers are measured because they have different priors:
+
+        iris   11.7 mm +- 0.5  (~4 %)  — a physiological constant, and
+                                         nearly yaw-invariant
+        IOD    6.3 cm +- 0.4   (~11 %) — population mean, and it
+                                         foreshortens as the head turns
+
+    The iris is the better basis and is what the runtime prefers, so it
+    is what the focal length is solved from — but computing both and
+    comparing them catches a bad landmark fit, which would otherwise
+    bake a silent error into every distance in the study.
+    """
+    try:
+        import cv2
+        import mediapipe as mp
+        import numpy as np
+    except Exception as exc:  # noqa: BLE001
+        print("Missing dependency: %s" % exc)
+        return None
+
+    import iris_distance
+
+    cap = cv2.VideoCapture(camera, cv2.CAP_DSHOW) \
+        if sys.platform.startswith("win") else cv2.VideoCapture(camera)
+    if not cap or not cap.isOpened():
+        print("Could not open camera %d — is the experiment server running? "
+              "It owns the webcam." % camera)
+        return None
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+
+    # refine_landmarks=True is REQUIRED: the iris points (468-477) do not
+    # exist in the coarse 468-point mesh, and without them this silently
+    # measures nothing.
+    mesh = mp.solutions.face_mesh.FaceMesh(
+        static_image_mode=False, max_num_faces=1,
+        refine_landmarks=True, min_detection_confidence=0.5,
+        min_tracking_confidence=0.5)
+
+    iris_vals: list = []
+    iod_vals: list = []
+    frames = 0
+    t_end = time.perf_counter() + seconds
+    try:
+        while time.perf_counter() < t_end:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frames += 1
+            h, w = frame.shape[:2]
+            res = mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            if not res.multi_face_landmarks:
+                continue
+            lm = res.multi_face_landmarks[0].landmark
+            try:
+                iris = iris_distance.iris_diameter_px(lm, w, h)
+                if iris.get("iris_px"):
+                    iris_vals.append(float(iris["iris_px"]))
+            except Exception:  # noqa: BLE001
+                pass
+            # Outer eye corners: the same pair GazeFollower's geometry
+            # uses, so the focal length stays consistent with the runtime.
+            try:
+                lx, ly = lm[33].x * w, lm[33].y * h
+                rx, ry = lm[263].x * w, lm[263].y * h
+                iod_vals.append(float(np.hypot(rx - lx, ry - ly)))
+            except Exception:  # noqa: BLE001
+                pass
+    finally:
+        cap.release()
+        try:
+            mesh.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    if len(iris_vals) < 10:
+        print("Only %d usable frames out of %d — was your face visible, lit, "
+              "and facing the camera?" % (len(iris_vals), frames))
+        return None
+
+    def _spread(vals) -> float:
+        med = statistics.median(vals)
+        return 100.0 * (statistics.pstdev(vals) / med) if med else 0.0
+
+    return {
+        "iris_px": statistics.median(iris_vals),
+        "iris_spread_pct": _spread(iris_vals),
+        "iod_px": statistics.median(iod_vals) if iod_vals else None,
+        "iod_spread_pct": _spread(iod_vals) if iod_vals else None,
+        "n_frames": len(iris_vals),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--calibrate", type=float, metavar="CM",
                     help="your MEASURED distance from the screen, in cm")
+    ap.add_argument("--measure", action="store_true",
+                    help="read the iris/IOD pixels from the camera instead "
+                         "of prompting for them (recommended)")
+    ap.add_argument("--seconds", type=float, default=6.0,
+                    help="how long to sample when using --measure")
     ap.add_argument("--iod-px", type=float,
                     help="observed inter-ocular pixels (from the position "
                          "guide); omit to be prompted")
@@ -289,16 +415,76 @@ def main() -> int:
 
     if args.calibrate:
         iod_px = args.iod_px
+        live = None
+        if args.measure and not iod_px:
+            print("=" * 68)
+            print("  MEASURING — sit at exactly %.1f cm and HOLD STILL"
+                  % args.calibrate)
+            print("=" * 68)
+            print("  Measure from the CAMERA LENS to the bridge of your")
+            print("  nose, not to the front edge of the laptop. Look at")
+            print("  the camera. Sampling for %.0f s…" % args.seconds)
+            print()
+            live = measure_live(args.seconds, width=args.image_w)
+            if not live:
+                return 1
+            iod_px = live["iod_px"]
+            print("  iris   %6.2f px  (spread %.1f %% over %d frames)"
+                  % (live["iris_px"], live["iris_spread_pct"],
+                     live["n_frames"]))
+            if live.get("iod_px"):
+                print("  IOD    %6.2f px  (spread %.1f %%)"
+                      % (live["iod_px"], live["iod_spread_pct"]))
+            print()
+            # A wide spread means the head moved, and head movement is
+            # the whole error term this calibration exists to remove.
+            # Calibrating on a moving head bakes that motion into a
+            # constant used by every distance in the study.
+            worst = max(live["iris_spread_pct"],
+                        live.get("iod_spread_pct") or 0.0)
+            if worst > 3.0:
+                print("  *** SPREAD %.1f %% — that is head movement, not"
+                      % worst)
+                print("      measurement noise. At 60 cm it is roughly")
+                print("      %.0f cm of drift. Re-run and hold still; a"
+                      % (0.6 * worst))
+                print("      calibration is only as good as the moment it")
+                print("      was taken. ***")
+                print()
         if not iod_px:
             print("Start the app, open the position guide, and read off the")
             print("inter-ocular pixel value while sitting at exactly %.1f cm."
                   % args.calibrate)
+            print("(Or just re-run with --measure and skip all that.)")
             try:
                 iod_px = float(input("inter_ocular_px: ").strip())
             except (ValueError, EOFError):
                 print("Not a number — aborted.")
                 return 1
         data = calibrate(iod_px, args.calibrate, args.iod_cm, args.image_w)
+        if live:
+            # Solve the focal length from the IRIS as well. Same physical
+            # constant, much tighter prior (11.7 mm +- 0.5 is ~4 %, versus
+            # ~11 % for a population-mean IOD), and it is the ruler the
+            # runtime actually prefers. If the two disagree by more than a
+            # few percent the landmark fit is suspect and neither number
+            # should be trusted.
+            import iris_distance
+
+            iris_focal = (live["iris_px"] * args.calibrate
+                          / (iris_distance.IRIS_DIAMETER_MM / 10.0))
+            data["focal_px_from_iris"] = round(iris_focal, 1)
+            data["iris_px_observed"] = round(live["iris_px"], 2)
+            data["iris_spread_pct"] = round(live["iris_spread_pct"], 2)
+            data["focal_disagreement_pct"] = round(
+                100.0 * abs(iris_focal - data["focal_px"])
+                / data["focal_px"], 1)
+            # Prefer the iris. Keep the IOD figure alongside it so the
+            # choice is visible and reversible rather than silent.
+            data["focal_px_from_iod"] = data["focal_px"]
+            data["focal_px"] = round(iris_focal, 1)
+            data["focal_basis"] = ("iris (11.7 mm +- 0.5); the IOD figure "
+                                   "is retained for comparison")
         save(data)
         print()
         for k, v in data.items():
@@ -307,6 +493,16 @@ def main() -> int:
         print("  Saved to %s" % os.path.relpath(GEOMETRY_FILE, BASE))
         print("  The %.0f deg FOV assumption is now GONE — distance is "
               "derived from a measured focal length." % FALLBACK_HFOV_DEG)
+        dis = data.get("focal_disagreement_pct")
+        if dis is not None and dis > 8.0:
+            print()
+            print("  *** The iris and the IOD imply focal lengths %.1f %% "
+                  "apart. *** " % dis)
+            print("      They measure the same camera, so a gap this wide")
+            print("      means the landmark fit is off (glasses, head yaw,")
+            print("      or poor lighting) — or your own IPD is far from")
+            print("      the 6.3 cm population mean. Re-run facing the")
+            print("      camera squarely before trusting this.")
         return 0
 
     ap.print_help()
