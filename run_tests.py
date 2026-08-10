@@ -1970,6 +1970,31 @@ try:
     check("a timer that failed to install says so rather than reading "
           "as zero cost",
           "the timer did not install" in _tsvc3)
+
+    # ── The accuracy check reads the PREVIEW stream ──────────────────
+    # onGaze both positions the reassurance dot and appends to
+    # this.samples, so the green dot and the validation are the same
+    # numbers — but that means the poll interval, not the tracker rate,
+    # sets how many samples land per target and over what interval
+    # precision is computed. At 7 Hz a 1.6 s window gives ~10 samples
+    # with 150 ms of drift between each pair.
+    _app3 = read("app.py")
+    check("the preview interval is configurable, not hard-coded at 150 ms",
+          "PREVIEW_INTERVAL_S" in _app3
+          and 'state.get("preview_interval_s"' in _app3)
+    check("the validation asks for the full tracker rate",
+          "VALIDATION_INTERVAL_S" in _app3
+          and "start_gaze_preview', { interval_s: 1 / 30 }" in _js3)
+    check("the poll rate is clamped below the tracker rate (a faster "
+          "poll would re-emit the same sample and fake perfect precision)",
+          "MIN_PREVIEW_INTERVAL_S" in _app3
+          and "max(MIN_PREVIEW_INTERVAL_S" in _app3)
+    check("the rate a validation sampled at is recorded with it",
+          '"sampled_at_hz"' in _app3 or "sampled_at_hz" in _app3)
+    check("the dot and the validation samples come from ONE handler "
+          "(so they cannot disagree)",
+          "if (this.collecting) this.samples.push([x, y]);" in _js3
+          and "this.gazeDot.style.left" in _js3)
     check("duty prefers total callback cost over model cost",
           'or (live_cb or {}).get("callback_ms_median")' in _tsvc3)
     check("a duty figure computed from models alone is marked as such",

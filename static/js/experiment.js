@@ -693,7 +693,14 @@ class ValidationTest {
         const positions = VALIDATION_POSITIONS[phase] || VALIDATION_POSITIONS.pre;
 
         socket.on('gaze_preview', this.onGaze);
-        socket.emit('start_gaze_preview', {});
+        // Ask for the FULL tracker rate, not the 7 Hz the reassurance
+        // dot runs at. The accuracy check reads this same stream, and
+        // its precision metric is a sample-to-sample RMS: at 7 Hz that
+        // is ~10 samples per target with 150 ms of drift accumulating
+        // between each pair, which inflates scatter and is not
+        // comparable to a published precision figure. The tracker
+        // already produces 30 Hz; the poll interval was discarding it.
+        socket.emit('start_gaze_preview', { interval_s: 1 / 30 });
 
         // AWAIT the fullscreen transition. It was previously fired and
         // forgotten, so the FIRST target was positioned using the

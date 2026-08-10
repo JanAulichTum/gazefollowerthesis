@@ -2481,6 +2481,17 @@ def handle_validation_result(payload: dict):
     # browser-side check exposes it.
     record["screen_space"] = _screen_space_check(payload.get("screen") or {})
 
+    # The rate this check SAMPLED at. Not the tracker's rate: the
+    # validation reads the preview stream, so the poll interval sets how
+    # many samples land per target and, more importantly, the interval
+    # over which precision (a sample-to-sample RMS) is computed. Two
+    # sessions measured at different poll rates do not have comparable
+    # precision figures, so the rate belongs in the record rather than
+    # being inferred from the sample counts afterwards.
+    record["sampled_at_hz"] = round(
+        1.0 / max(1e-6, state.get("preview_interval_s",
+                                  PREVIEW_INTERVAL_S)), 1)
+
     # ── AUTHORITATIVE degrees, recomputed server-side ────────────────
     # The browser converts px to degrees using window.measuredDistanceCm,
     # which is only set if the OPTIONAL position guide ran and produced a
@@ -2853,13 +2864,40 @@ def handle_rate_gate_override(payload: dict = None):
     emit("rate_gate", gate)
 
 
+#: Preview poll interval. 150 ms (~7 Hz) is plenty for a dot that only
+#: has to reassure a participant the calibration took.
+PREVIEW_INTERVAL_S = 0.15
+#: ...but the accuracy check MEASURES this same stream, and at 7 Hz a
+#: 1.6 s window yields ~10 samples per target, of which the precision
+#: metric is a sample-to-sample RMS. Precision quoted at 7 Hz is not
+#: comparable to any published figure and overstates scatter, because
+#: 150 ms of drift accumulates between consecutive samples. The tracker
+#: itself runs at 30 Hz, so the resolution is there — it was being
+#: thrown away by the poll interval. Validation asks for this instead.
+VALIDATION_INTERVAL_S = 1.0 / 30.0
+#: Never poll faster than the tracker can produce, or the same sample is
+#: emitted repeatedly and precision reads as artificially perfect.
+MIN_PREVIEW_INTERVAL_S = 1.0 / 60.0
+
+
 @socketio.on("start_gaze_preview")
 def handle_start_gaze_preview(_payload=None):
-    """Stream live gaze estimates to the browser (~7 Hz) so the
-    participant can VERIFY the calibration worked: a dot on the page
-    follows their gaze. Runs until stopped or recording starts."""
+    """Stream live gaze estimates to the browser so the participant can
+    VERIFY the calibration worked: a dot on the page follows their gaze.
+
+    ``payload["interval_s"]`` raises the rate for the accuracy check,
+    which reads this same stream (see VALIDATION_INTERVAL_S). Runs until
+    stopped or recording starts.
+    """
     sid = request.sid  # type: ignore[attr-defined]
     state = _get_session_state(sid)
+    try:
+        interval = float((_payload or {}).get("interval_s")
+                         or PREVIEW_INTERVAL_S)
+    except (TypeError, ValueError):
+        interval = PREVIEW_INTERVAL_S
+    interval = max(MIN_PREVIEW_INTERVAL_S, min(1.0, interval))
+    state["preview_interval_s"] = interval
     # RACE FIX. The old code returned early if a preview was still
     # "active", but stop_gaze_preview only sets a flag the loop checks
     # every 150 ms. Stopping and immediately restarting — exactly what
@@ -2896,7 +2934,8 @@ def handle_start_gaze_preview(_payload=None):
                     },
                     to=sid,
                 )
-            socketio.sleep(0.15)
+            socketio.sleep(state.get("preview_interval_s",
+                                     PREVIEW_INTERVAL_S))
         # Only the CURRENT generation may clear the shared flag; a
         # retiring older loop must not switch off its replacement.
         if state.get("preview_generation") == generation:
@@ -2904,7 +2943,9 @@ def handle_start_gaze_preview(_payload=None):
         logger.info("Gaze preview loop ended (gen %d) – sid=%s",
                     generation, sid)
 
-    logger.info("Gaze preview started – sid=%s", sid)
+    logger.info("Gaze preview started at %.0f Hz – sid=%s",
+                1.0 / max(1e-6, state.get("preview_interval_s",
+                                          PREVIEW_INTERVAL_S)), sid)
     socketio.start_background_task(_loop)
 
 
