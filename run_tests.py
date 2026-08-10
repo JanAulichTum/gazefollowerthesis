@@ -2176,6 +2176,50 @@ try:
           'manifest.get("events")' in _vm)
     check("the saccade block is unwrapped, not reported missing",
           'stim_block.get("saccades")' in _vm)
+
+    # ── Offset analysis: whose fault is a low correspondence? ────────
+    # "0 % inside" cannot tell a model that put the box in the wrong
+    # place from a tracker with a systematic displacement, and the two
+    # have opposite fixes.
+    check("the offset VECTOR is recorded, not just the fraction inside",
+          "offset_px" in _cc and "def offset_analysis" in _cc)
+    check("consistency uses SIGN AGREEMENT, not a ratio of medians "
+          "(which reads 1.0 on a 4-3 split)",
+          "def _agree" in _cc and "(v > 0) == (med > 0)" in _cc)
+
+    import random as _rnd
+
+    _boxes = [[0.05 + 0.3 * (i % 3), 0.05 + 0.3 * (i // 3), 0.25, 0.25]
+              for i in range(12)]
+
+    def _synth(shift):
+        _s, _c = [], []
+        for i, b in enumerate(_boxes):
+            t = 1.0 + i * 2.0
+            cx, cy = b[0] + b[2] / 2, b[1] + b[3] / 2
+            dx, dy = shift(i)
+            for k in range(10):
+                _s.append((t - 0.1 + k * 0.02, cx + dx, cy + dy, True))
+            _c.append({"t_start": t, "t_end": t, "attended": "o%d" % i,
+                       "bbox": b})
+        return _ccmod.check_all(_c, _s, 2.13, 58.2, 1920,
+                                1080)["offset_analysis"]
+
+    _rnd.seed(7)
+    _sys = _synth(lambda i: (0.0, 0.16))
+    _sca = _synth(lambda i: (_rnd.uniform(-.2, .2), _rnd.uniform(-.2, .2)))
+    check("a uniform displacement is called SYSTEMATIC",
+          _sys["systematic"] is True,
+          "offset %s, agreement %s" % (_sys["median_offset_px"],
+                                       _sys["direction_consistency"]))
+    check("random misses are NOT called systematic",
+          _sca["systematic"] is False,
+          "offset %s, agreement %s" % (_sca["median_offset_px"],
+                                       _sca["direction_consistency"]))
+    check("untestable claims are framed as the resolution limit, not a "
+          "failure",
+          "resolution limit, not a failure" in _cc
+          and "not individual people" in _cc)
     check("running with no arguments says how to score a real session",
           "showing the DEMO on synthetic data" in _cc)
     check("duty prefers total callback cost over model cost",

@@ -156,6 +156,23 @@ def check_claim(claim: dict, samples: list, accuracy_deg: float,
     out["fraction_inside"] = round(frac, 3)
     out["tolerance_px"] = round(err_px)
 
+    # WHERE the gaze actually was, and how far that is from the middle
+    # of the claimed box. "0 % inside" is a verdict, not a diagnosis:
+    # it cannot distinguish a model that put the box in the wrong place
+    # from a tracker with a systematic offset. The offset VECTOR can —
+    # a consistent direction across many claims is a calibration fault,
+    # a scattered one is a localisation fault. They need entirely
+    # different fixes, and only one of them is the model's problem.
+    xs = sorted(s[1] for s in window)
+    ys = sorted(s[2] for s in window)
+    gx = xs[len(xs) // 2]
+    gy = ys[len(ys) // 2]
+    bx = float(bbox[0]) + float(bbox[2]) / 2.0
+    by = float(bbox[1]) + float(bbox[3]) / 2.0
+    out["gaze_median"] = [round(gx, 3), round(gy, 3)]
+    out["box_centre"] = [round(bx, 3), round(by, 3)]
+    out["offset_px"] = [round((gx - bx) * video_w), round((gy - by) * video_h)]
+
     # An object smaller than the tolerance cannot be distinguished from
     # its neighbours; scoring it either way would be false precision.
     obj_px = min(float(bbox[2]) * video_w, float(bbox[3]) * video_h)
@@ -193,6 +210,83 @@ def check_all(claims: list, samples: list, accuracy_deg: float,
         if results else None,
         "accuracy_deg_used": accuracy_deg,
         "support_threshold": SUPPORT_THRESHOLD,
+        "offset_analysis": offset_analysis(results, px_per_deg,
+                                           video_w, video_h),
+    }
+
+
+def offset_analysis(results: list, px_per_deg: float,
+                    video_w: int, video_h: int) -> "dict | None":
+    """Is the gaze systematically displaced from the claimed regions?
+
+    A low correspondence score has two very different causes:
+
+      SYSTEMATIC   every claim misses in the SAME direction. The model
+                   may be reading the scene correctly while the gaze
+                   itself is displaced — a calibration or gain fault.
+                   Fixing the model would be fixing the wrong thing.
+
+      SCATTERED    the misses point every which way. The gaze is where
+                   it is, and the boxes are not; that is a localisation
+                   or hallucination problem, and it IS the model's.
+
+    The discriminator is the ratio of the MEDIAN offset (which survives
+    only if the errors share a direction) to the median ABSOLUTE offset
+    (which survives regardless). Near 1 means every miss points the same
+    way; near 0 means they cancel out.
+    """
+    offs = [r["offset_px"] for r in results if r.get("offset_px")]
+    if len(offs) < 5:
+        return None
+
+    def _med(vals):
+        v = sorted(vals)
+        return v[len(v) // 2]
+
+    dx, dy = _med([o[0] for o in offs]), _med([o[1] for o in offs])
+    adx, ady = _med([abs(o[0]) for o in offs]), _med([abs(o[1]) for o in offs])
+
+    # SIGN AGREEMENT, not |median| / median|.|
+    # The ratio of medians looks decisive on small, bimodal samples: with
+    # seven claims split four one way and three the other, the median is
+    # as large as the median absolute value and the ratio reads 1.0 —
+    # "perfectly consistent" — for offsets that plainly are not. The
+    # share of claims that miss in the SAME DIRECTION as the median does
+    # not have that failure: four-of-seven reads 0.57, which is the
+    # coin-flip it actually is.
+    def _agree(vals) -> float:
+        nz = [v for v in vals if v]
+        if not nz:
+            return 0.0
+        med = _med(nz)
+        if med == 0:
+            return 0.0
+        same = sum(1 for v in nz if (v > 0) == (med > 0))
+        return same / len(nz)
+
+    consistency_x = _agree([o[0] for o in offs])
+    consistency_y = _agree([o[1] for o in offs])
+    mag_deg = ((dx ** 2 + dy ** 2) ** 0.5) / px_per_deg if px_per_deg else None
+    # 0.8 = four claims in five missing the same way. Chance alone gives
+    # 0.5, and 0.6 is reachable by accident on a dozen claims.
+    systematic = bool(max(consistency_x, consistency_y) >= 0.8
+                      and mag_deg and mag_deg > 1.0)
+    return {
+        "n": len(offs),
+        "median_offset_px": [dx, dy],
+        "median_offset_deg": round(mag_deg, 2) if mag_deg else None,
+        "median_abs_offset_px": [adx, ady],
+        "direction_consistency": [round(consistency_x, 2),
+                                  round(consistency_y, 2)],
+        "systematic": systematic,
+        "reading": (
+            "SYSTEMATIC — the gaze misses the claimed regions in a "
+            "consistent direction (%+d, %+d px). Suspect the tracker, "
+            "not the model." % (dx, dy)
+            if systematic else
+            "SCATTERED — the misses have no shared direction, so this "
+            "is not a calibration offset. The claims are landing in the "
+            "wrong places."),
     }
 
 
@@ -471,8 +565,9 @@ def main() -> int:
     print("  stimulus   : %s" % stimulus)
     print("  gaze       : %d samples (gain correction applied)"
           % len(samples))
+    acc_px = acc * ppd
     print("  tolerance  : %.2f deg = %.0f px, from the %s validation"
-          % (acc, acc * ppd, acc_src))
+          % (acc, acc_px, acc_src))
     print("  claims from: %s" % os.path.basename(src or "?"))
     # A tolerance this wide makes almost any claim near the gaze point
     # "supported", so a high correspondence score would be measuring the
@@ -499,6 +594,54 @@ def main() -> int:
           "claims were testable)"
           % (res["correspondence_pct"], res["n_testable"],
              res["testable_pct"], res["n_claims"]))
+
+    # Untestable claims are not a defect in the model or the tracker —
+    # they are the resolution limit stated in metrics_spec: an AOI must
+    # be at least twice the accuracy to be assignable. Reporting them
+    # without that framing invites the reader to treat them as failures.
+    n_unt = res["counts"][UNTESTABLE]
+    if n_unt and res["n_claims"]:
+        print()
+        print("  %d of %d claims (%.0f %%) name objects SMALLER than the"
+              % (n_unt, res["n_claims"], 100.0 * n_unt / res["n_claims"]))
+        print("  %.0f px measurement error, so they cannot be scored either"
+              % (acc_px,))
+        print("  way. That is the resolution limit, not a failure: an AOI")
+        print("  must be at least twice the accuracy to be assignable. At")
+        print("  %.2f deg this pipeline can resolve REGIONS of the scene,"
+              % res["accuracy_deg_used"])
+        print("  not individual people.")
+
+    oa = res.get("offset_analysis")
+    if oa:
+        print()
+        print("  " + "-" * 68)
+        print("  WHERE THE GAZE ACTUALLY WAS")
+        print("  " + "-" * 68)
+        print("  median offset from the claimed region: %+d, %+d px "
+              "(%.2f deg)"
+              % (oa["median_offset_px"][0], oa["median_offset_px"][1],
+                 oa["median_offset_deg"] or 0))
+        print("  direction consistency: x %.2f, y %.2f  "
+              "(1.0 = every miss the same way, 0 = they cancel)"
+              % (oa["direction_consistency"][0],
+                 oa["direction_consistency"][1]))
+        print()
+        for line in _wrap(oa["reading"], 68):
+            print("  " + line)
+
+
+def _wrap(text: str, width: int) -> list:
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        if len(cur) + len(w) + 1 > width:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = (cur + " " + w).strip()
+    if cur:
+        lines.append(cur)
+    return lines
     print()
     print("  A contradicted claim is not automatically a hallucination —")
     print("  it can also be a localisation error, or gaze error near a")
