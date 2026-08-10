@@ -1141,40 +1141,47 @@ class Service:
         if getattr(self, "_callback_timer_installed", False):
             return True
         cam = getattr(gf, "camera", None)
-        if cam is None:
-            return False
-        # The attribute holding the per-frame callback is not part of any
-        # public API and has been spelled several ways upstream. Find the
-        # first callable one rather than hard-coding a name that a
-        # version bump can silently invalidate.
-        attr = next((a for a in ("callback", "_callback",
-                                 "on_image_callback", "_on_image_callback",
-                                 "image_callback")
-                     if callable(getattr(cam, a, None))), None)
-        if attr is None:
-            log("Callback timer NOT installed: no callback attribute found "
-                "on %s — total per-frame cost will be unavailable and the "
-                "duty figure will understate the work."
-                % type(cam).__name__)
+        orig = getattr(gf, "process_frame", None)
+        if cam is None or not callable(orig):
+            log("Callback timer NOT installed (camera=%s, process_frame=%s) "
+                "— total per-frame cost will be unavailable and the duty "
+                "figure will understate the work."
+                % (type(cam).__name__ if cam else None, callable(orig)))
             return False
 
-        orig = getattr(cam, attr)
         self._callback_ms = collections.deque(maxlen=4000)
         self._frame_arrivals = collections.deque(maxlen=4000)
 
-        def timed_callback(*a, **kw):
+        def timed_process(state, timestamp, frame):
             t0 = time.perf_counter()
             self._frame_arrivals.append(t0)
             try:
-                return orig(*a, **kw)
+                return orig(state, timestamp, frame)
             finally:
                 self._callback_ms.append(
                     (time.perf_counter() - t0) * 1000.0)
 
-        setattr(cam, attr, timed_callback)
+        # BOTH, and in this order. ``gf.process_frame`` is the method
+        # GazeFollower calls internally; ``set_on_image_callback`` is what
+        # the camera thread actually invokes, and it captured a reference
+        # to the ORIGINAL bound method when sampling was first set up.
+        # Rebinding only the attribute would leave the camera calling the
+        # untimed original — a timer that installs cleanly, reports
+        # nothing, and is indistinguishable from "the callback is free".
+        # diagnose_rate.py does both for the same reason.
+        gf.process_frame = timed_process
+        try:
+            cam.set_on_image_callback(timed_process)
+        except Exception as exc:  # noqa: BLE001
+            gf.process_frame = orig
+            log("Callback timer NOT installed: set_on_image_callback failed "
+                "(%s). Total per-frame cost unavailable." % exc)
+            return False
+
         self._callback_timer_installed = True
-        log("Callback timer installed on %s.%s (total per-frame cost and "
-            "delivered camera rate)." % (type(cam).__name__, attr))
+        log("Callback timer installed on process_frame + "
+            "%s.set_on_image_callback (total per-frame cost and delivered "
+            "camera rate)." % type(cam).__name__)
         return True
 
     def _callback_stats(self) -> "dict | None":
@@ -1421,6 +1428,17 @@ class Service:
                 cam_slow = bool(delivered
                                 and delivered < 0.85 * NOMINAL_CAMERA_FPS)
                 result["delivered_hz"] = delivered
+                # THE non-circular data-loss figure. detected_pct is
+                # counted inside _on_sample, which only ever sees frames
+                # that already produced a sample — so it reports 100 %
+                # even when half the frames never got there. (The same
+                # self-referential trap as the old gaze_samples_pct.)
+                # Comparing samples OUT against frames IN to the callback
+                # is the first measurement here that can actually see a
+                # dropped frame.
+                if delivered:
+                    result["sample_yield_pct"] = round(
+                        100.0 * min(1.0, sustained / delivered), 1)
                 result["cpu_throttled"] = bool(low and busy)
                 result["camera_throttled"] = bool(
                     low and not busy and cam_slow)

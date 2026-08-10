@@ -1924,10 +1924,41 @@ try:
     check("the WHOLE callback is timed, not just the two model stages",
           "_install_callback_timer" in _tsvc3
           and "def _callback_stats" in _tsvc3)
-    check("callback timing is installed on the live camera object",
-          'getattr(gf, "camera", None)' in _tsvc3)
-    check("the callback attribute is discovered, not hard-coded",
-          '"on_image_callback"' in _tsvc3 and "next((a for a in" in _tsvc3)
+    # The camera thread captured a reference to the ORIGINAL bound
+    # process_frame when sampling was set up, so rebinding the attribute
+    # alone leaves the camera calling the untimed original — a timer
+    # that installs cleanly, reports nothing, and looks exactly like
+    # "the callback is free". Both paths, or neither.
+    check("callback timing rebinds process_frame AND re-registers with "
+          "the camera",
+          "gf.process_frame = timed_process" in _tsvc3
+          and "cam.set_on_image_callback(timed_process)" in _tsvc3)
+    check("a failed re-registration restores the original and reports it",
+          "gf.process_frame = orig" in _tsvc3
+          and "set_on_image_callback failed" in _tsvc3)
+    check("the live installer uses the same hook diagnose_rate.py proved",
+          "gf.camera.set_on_image_callback(timed_process)"
+          in read("diagnose_rate.py"))
+    check("sample yield is measured against frames IN, not the "
+          "self-referential detected_pct",
+          "sample_yield_pct" in _tsvc3
+          and "only ever sees frames" in _tsvc3)
+
+    # ── The session-only churn no offline benchmark reproduced ──
+    _dr = read("diagnose_rate.py")
+    check("diagnose_rate can reproduce the session's start/stop churn",
+          "churn" in _dr and '("churn", dict(' in _dr
+          and '("session", dict(' in _dr)
+    check("the churn scenarios also apply the camera fix (as a session "
+          "does)",
+          '("churn", dict(poll=False, camera_fix=True' in _dr)
+    check("subscriber count is read while sampling is still live",
+          "subs_after = _subs()" in _dr
+          and _dr.index("subs_after = _subs()") < _dr.index("gf.stop_sampling()", _dr.index("stop.set()")))
+    check("an over-budget total names the halving mechanism",
+          "OVER BUDGET" in _dr and "skips alternate frames" in _dr)
+    check("more than two subscribers is called out",
+          "EXPECTED 2" in _dr)
     check("duty prefers total callback cost over model cost",
           'or (live_cb or {}).get("callback_ms_median")' in _tsvc3)
     check("a duty figure computed from models alone is marked as such",
