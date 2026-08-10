@@ -2263,6 +2263,82 @@ try:
     check("the offset-to-accuracy ratio is reported, not just a verdict",
           _huge.get("offset_vs_accuracy") is not None,
           "%sx" % _huge.get("offset_vs_accuracy"))
+
+    # ══════════════════════════════════════════════════════════════
+    #  The two-grid validation protocol
+    # ══════════════════════════════════════════════════════════════
+    # Fitting the gain correction on grid A and reporting the error at
+    # grid A scores the fit on its training points. Re-measuring at the
+    # SAME positions with fresh samples is better but still not a
+    # generalisation estimate — the correction was tuned to minimise
+    # error at exactly those seven locations. Grid B is disjoint and
+    # matched on difficulty, so the corrected accuracy is out of sample
+    # in both space and time.
+    print("\n[17] Two-grid validation protocol")
+
+    def _grid(name):
+        m = re.search(name + r"\s*=\s*\[(.*?)\];", _js3, re.S)
+        return [tuple(int(v) for v in p)
+                for p in re.findall(r"\[\s*(\d+)\s*,\s*(\d+)\s*\]",
+                                    m.group(1))] if m else []
+
+    _A = _grid("VALIDATION_GRID")
+    _B = _grid("VALIDATION_CHECK_GRID")
+    _ecc = lambda g, i: sum(abs(p[i] - 50) for p in g) / len(g)
+
+    check("both grids exist and have the same number of targets",
+          len(_A) == 7 and len(_B) == 7, "A=%d B=%d" % (len(_A), len(_B)))
+    check("the grids share NO target position",
+          not (set(_A) & set(_B)), "shared: %s" % sorted(set(_A) & set(_B)))
+    check("horizontal eccentricity is matched (B is not an easier grid)",
+          abs(_ecc(_A, 0) - _ecc(_B, 0)) <= 2.0,
+          "A %.1f vs B %.1f" % (_ecc(_A, 0), _ecc(_B, 0)))
+    check("vertical eccentricity is matched",
+          abs(_ecc(_A, 1) - _ecc(_B, 1)) <= 2.0,
+          "A %.1f vs B %.1f" % (_ecc(_A, 1), _ecc(_B, 1)))
+    check("B spans as many vertical elevations as A (the y-correction "
+          "needs them)",
+          len({p[1] for p in _B}) >= len({p[1] for p in _A}))
+    check("post uses grid B, so drift pairs with pre_check like for like",
+          "post: VALIDATION_CHECK_GRID" in _js3)
+
+    check("the two pre-checks run as ONE user action",
+          "run('pre_fit'" in _js3 and "run('pre_check'" in _js3
+          and _js3.index("run('pre_fit'") < _js3.index("run('pre_check'"))
+    check("the validate button disables itself (a repeatable button "
+          "gets pressed until the number looks good)",
+          "this.validateBtn.disabled = true" in _js3)
+
+    check("ONLY the fit phase fits the correction",
+          'record["phase"] in ("pre_fit", "pre")' in _app3
+          and '_auto_fit_correction' in _app3)
+    check("a repeat attempt does NOT refit",
+          'record["attempt"] == 1' in _app3)
+    check("each validation records its role and grid",
+          'record["role"]' in _app3 and 'record["grid"]' in _app3
+          and 'record["canonical_accuracy"]' in _app3)
+    check("repeat attempts are counted and logged as a deviation",
+          'record["attempt"] = len(prior) + 1' in _app3
+          and "PROTOCOL:" in _app3)
+
+    check("verify_metrics treats pre_check as the canonical corrected "
+          "accuracy",
+          'v.get("phase") == "pre_check"' in _vm
+          and "canonical corrected accuracy" in _vm)
+    check("a legacy repeat at the FIT grid is graded DEGENERATE, not "
+          "reported as corrected accuracy",
+          "IN-SAMPLE, not a" in _vm)
+    check("drift is differenced on ONE basis",
+          'pre[-1].get("mean_err_deg_raw")' in _vm
+          and 'post[-1].get("mean_err_deg_raw")' in _vm)
+    check("a mixed-basis drift is graded DEGENERATE, not PRESENT",
+          "MIXED correction, not comparable" in _vm)
+
+    # The arithmetic, on the 2026-08-10 session's actual numbers.
+    check("the old drift computation mixed bases",
+          abs((2.13 - 4.52) - (-2.39)) < 0.01, "-2.39 = corrected − raw")
+    check("the corrected computation matches the review page",
+          abs((5.04 - 4.53) - 0.51) < 0.01, "+0.51 = raw − raw")
     check("running with no arguments says how to score a real session",
           "showing the DEMO on synthetic data" in _cc)
     check("duty prefers total callback cost over model cost",

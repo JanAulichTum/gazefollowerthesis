@@ -428,17 +428,34 @@ class NativeCalibration {
             }
         });
 
-        // Mandatory pre-validation → enables the videos
+        // Mandatory pre-validation → enables the videos.
+        //
+        // TWO checks, run back to back as ONE action. The first fits the
+        // gain correction on grid A; the second measures the corrected
+        // accuracy on grid B, which the correction has never seen.
+        //
+        // They are deliberately chained rather than offered as two
+        // buttons. A button that can be pressed again is a button that
+        // gets pressed until the number looks good, and choosing the
+        // best of several attempts is optimisation on the primary
+        // outcome measure — the single easiest thing for an examiner to
+        // attack. One press, two checks, both recorded, no discretion.
         this.validateBtn.addEventListener('click', () => {
             this.stopGazeVerification();
-            window.__validation.run('pre', () => {
-                // Validation submitted (pass or fail — the result is
-                // logged in the session manifest either way). Respect a
-                // failing rate gate: the accuracy check never waits for
-                // the measurement, but the VIDEOS do.
-                this.startVideosBtn.disabled =
-                    this.startVideosBtn.dataset.rateBlocked === '1';
-                this.startGazeVerification();
+            this.validateBtn.disabled = true;
+            window.__validation.run('pre_fit', () => {
+                // The server has now fitted the correction from grid A.
+                // Grid B measures what it generalises to.
+                window.__validation.run('pre_check', () => {
+                    // Validation submitted (pass or fail — the result is
+                    // logged in the session manifest either way).
+                    // Respect a failing rate gate: the accuracy check
+                    // never waits for the measurement, but the VIDEOS
+                    // do.
+                    this.startVideosBtn.disabled =
+                        this.startVideosBtn.dataset.rateBlocked === '1';
+                    this.startGazeVerification();
+                });
             });
         });
 
@@ -629,15 +646,57 @@ const VALIDATION_GRID = [
     [12, 12], [88, 12], [50, 31], [15, 50], [85, 50], [50, 69], [50, 88],
 ];
 
-// PRE and POST deliberately use the SAME target set. Drift (post − pre) is
-// only interpretable if both means are computed over identical screen
-// eccentricities — a reduced post set would make the difference partly an
-// artefact of which targets were dropped rather than a change in the
-// tracker. Keep these identical; if you ever shorten the post check, the
-// drift figure stops being a like-for-like comparison.
+// ── The CHECK grid: different points, same eccentricity ─────────────
+// Fitting the gain correction on grid A and then reporting the error at
+// grid A is scoring the fit on its own training points. Measuring again
+// at the SAME positions with fresh samples is better — the samples are
+// new — but it is still not a generalisation estimate, because the
+// correction was tuned to minimise error at exactly those seven
+// locations. The obvious question at a defence is "of course it does
+// well there; what does it do everywhere else?"
+//
+// So the second check uses seven DIFFERENT positions. They are chosen
+// to interleave with grid A and to match it on both eccentricity
+// measures, so the two accuracies are comparable rather than merely
+// different:
+//
+//     mean |x − 50|   A 20.9    B 20.7
+//     mean |y − 50|   A 21.7    B 21.7
+//     distinct y      A 5       B 5      (12/31/50/69/88)
+//     shared points   0
+//
+// Same difficulty, no overlap. The error measured here is out of sample
+// in BOTH space and time, which is the figure a corrected accuracy
+// claim needs.
+//
+// If you edit these, keep the two eccentricity means within ~1 % of
+// grid A's and keep the intersection EMPTY — run_tests asserts both.
+// A B-grid that is easier than A would turn "the correction
+// generalises" into "the second grid was nearer the centre".
+const VALIDATION_CHECK_GRID = [
+    [50, 12], [15, 31], [85, 31], [50, 50], [20, 69], [80, 69], [65, 88],
+];
+
+// THE THREE CHECKS, and why each exists.
+//
+//   pre_fit    grid A. Uncorrected. This is the tracker's NATIVE
+//              accuracy and it is also the set the gain correction is
+//              fitted on. Reported as the raw figure.
+//   pre_check  grid B. Correction active, evaluated at positions it was
+//              never fitted to. This is the CORRECTED accuracy that can
+//              be defended.
+//   post       grid B. Correction active. Differenced against pre_check
+//              on the UNCORRECTED basis to give drift.
+//
+// post uses grid B, not A, because drift is only a like-for-like
+// comparison when both ends sit at identical screen eccentricities —
+// and its partner is pre_check.
 const VALIDATION_POSITIONS = {
+    pre_fit: VALIDATION_GRID,
+    pre_check: VALIDATION_CHECK_GRID,
+    post: VALIDATION_CHECK_GRID,
+    // Legacy alias: sessions recorded before the split used 'pre'.
     pre: VALIDATION_GRID,
-    post: VALIDATION_GRID,
 };
 
 class ValidationTest {

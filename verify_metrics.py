@@ -102,36 +102,71 @@ def _grade(value, *, lo=None, hi=None, zero_ok=False):
 def check_session(manifest: dict, res: Result) -> None:
     # ── RQ1: validations ──────────────────────────────────────────
     vals = manifest.get("validations") or []
-    pre = [v for v in vals if v.get("phase") == "pre"]
+    # "pre", "pre_fit" and "pre_check" are all pre-stimulus checks.
+    pre = [v for v in vals if str(v.get("phase") or "").startswith("pre")]
     post = [v for v in vals if v.get("phase") == "post"]
 
-    if not pre:
+    # The two-grid protocol: pre_fit (grid A, uncorrected, the fit set)
+    # then pre_check (grid B, corrected, positions never fitted to).
+    fit = [v for v in pre if v.get("phase") in ("pre_fit", "pre")]
+    chk = [v for v in pre if v.get("phase") == "pre_check"]
+
+    if not fit:
         res.add("RQ1", "accuracy_raw_deg", MISSING, "",
                 "no pre-stimulus validation recorded")
     else:
-        s, v = _grade(pre[0].get("mean_err_deg"), lo=0.1, hi=20)
+        s, v = _grade(fit[0].get("mean_err_deg"), lo=0.1, hi=20)
         res.add("RQ1", "accuracy_raw_deg", s, v,
-                "first pre-validation = the fit set")
-        if len(pre) > 1:
-            res.add("RQ1", "accuracy_corrected_in_sample_deg", PRESENT,
-                    "%.3g" % (pre[-1].get("mean_err_deg") or 0),
-                    "%d pre-validations — IN-SAMPLE, do not report as "
-                    "accuracy" % len(pre))
+                "grid A, uncorrected — the tracker's native accuracy")
+        # More than one attempt at the SAME phase is a protocol
+        # deviation. It is not fatal, but it must be visible: choosing
+        # between attempts after seeing them is optimisation on the
+        # primary outcome, and it is the first thing an examiner probes.
+        if len(fit) > 1:
+            res.add("RQ1", "validation_attempts", DEGENERATE,
+                    "%d fit attempts" % len(fit),
+                    "PROTOCOL DEVIATION — the rule is ONE attempt per "
+                    "phase; the FIRST is canonical. Do not select the "
+                    "best.")
 
-    if not post:
-        res.add("RQ1", "accuracy_corrected_out_of_sample_deg", MISSING, "",
-                "NO POST-STIMULUS VALIDATION — this is the canonical "
-                "accuracy figure; the session cannot support an accuracy "
-                "claim without it")
-    else:
-        s, v = _grade(post[-1].get("mean_err_deg"), lo=0.1, hi=20)
+    if chk:
+        # Out of sample in BOTH space and time. This is the defensible
+        # corrected accuracy.
+        s, v = _grade(chk[0].get("mean_err_deg"), lo=0.1, hi=20)
         max_deg = SPEC.INCLUSION["max_validation_error_deg"]
-        err = post[-1].get("mean_err_deg") or 0
+        err = chk[0].get("mean_err_deg") or 0
         if s == PRESENT and err > max_deg:
             s = DEGENERATE
         res.add("RQ1", "accuracy_corrected_out_of_sample_deg", s, v,
                 "FAILS the %.1f deg inclusion criterion" % max_deg
-                if err > max_deg else "canonical accuracy for this session")
+                if err > max_deg
+                else "grid B — canonical corrected accuracy (the "
+                     "correction was never fitted to these positions)")
+    elif len(fit) > 1:
+        # Legacy sessions: a repeated pre at the SAME grid. The samples
+        # are new but the positions are the fit's own, so this is not a
+        # generalisation estimate and must not be reported as accuracy.
+        res.add("RQ1", "accuracy_corrected_in_sample_deg", DEGENERATE,
+                "%.3g" % (fit[-1].get("mean_err_deg") or 0),
+                "re-measured at the FIT positions — IN-SAMPLE, not a "
+                "corrected-accuracy claim. Re-record with the pre_fit / "
+                "pre_check protocol.")
+        res.add("RQ1", "accuracy_corrected_out_of_sample_deg", MISSING, "",
+                "no pre_check on an unseen grid")
+    else:
+        res.add("RQ1", "accuracy_corrected_out_of_sample_deg", MISSING, "",
+                "no pre_check recorded")
+
+    if not post:
+        res.add("RQ1", "accuracy_post_stimulus_deg", MISSING, "",
+                "NO POST-STIMULUS VALIDATION — without it there is no "
+                "drift estimate and no evidence the tracking held for "
+                "the duration of the recording")
+    else:
+        s, v = _grade(post[-1].get("mean_err_deg"), lo=0.1, hi=20)
+        res.add("RQ1", "accuracy_post_stimulus_deg", s, v,
+                "grid B after the stimuli — the accuracy during "
+                "recording lies between this and the pre_check")
 
     src = post or pre
     if src:
@@ -149,9 +184,31 @@ def check_session(manifest: dict, res: Result) -> None:
                     "%d targets" % len(errs), "expected 7")
 
     if pre and post:
-        d = (post[-1].get("mean_err_deg") or 0) - (pre[0].get("mean_err_deg") or 0)
-        res.add("RQ1", "drift_deg", PRESENT, "%+.2f" % d,
-                "post − pre; confirm it uses the UNCORRECTED basis")
+        # DRIFT MUST BE DIFFERENCED ON ONE BASIS.
+        # This subtracted a RAW pre from a CORRECTED post and reported
+        # the result as drift: on the 2026-08-10 session that gave
+        # -2.39 deg while the review page, differencing the uncorrected
+        # pair, gave +0.51. Same session, opposite sign, and the -2.39
+        # is not drift at all — it is mostly the gain correction's
+        # effect, which was fitted on the pre targets and so cannot
+        # legitimately appear in a before/after comparison.
+        #
+        # Drift means "did tracking degrade over the session", so both
+        # ends must be measured the same way. mean_err_deg_raw is the
+        # uncorrected figure recorded for exactly this purpose.
+        a = pre[-1].get("mean_err_deg_raw")
+        b = post[-1].get("mean_err_deg_raw")
+        basis = "uncorrected (both ends)"
+        if a is None or b is None:
+            a = pre[-1].get("mean_err_deg")
+            b = post[-1].get("mean_err_deg")
+            basis = ("as-reported — MIXED correction, not comparable; "
+                     "re-run with mean_err_deg_raw recorded")
+        if a is None or b is None:
+            res.add("RQ1", "drift_deg", MISSING, "", "no comparable pair")
+        else:
+            status = PRESENT if basis.startswith("uncorrected") else DEGENERATE
+            res.add("RQ1", "drift_deg", status, "%+.2f" % (b - a), basis)
     else:
         res.add("RQ1", "drift_deg", MISSING, "", "needs both validations")
 

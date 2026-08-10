@@ -819,7 +819,7 @@ def api_session_quality():
                 out["distance_measured"] = False
                 out["distance_reason"] = ((vals[-1].get("distance") or {})
                                           .get("reason") if vals else None)
-            pre = [v for v in vals if v["phase"] == "pre"
+            pre = [v for v in vals if str(v["phase"]).startswith("pre")
                    and v["mean_err_deg"] is not None]
             post = [v for v in vals if v["phase"] == "post"
                     and v["mean_err_deg"] is not None]
@@ -2581,10 +2581,50 @@ def handle_validation_result(payload: dict):
                                       "viewing_distance_cm")}
     except Exception:  # noqa: BLE001 — never lose a validation over this
         logger.exception("Could not recompute validation degrees")
+    # ── WHICH CHECK IS WHICH, decided here and recorded ──────────────
+    # pre_fit    grid A, uncorrected. Native accuracy AND the fit set.
+    # pre_check  grid B, corrected, positions the fit never saw. The
+    #            corrected accuracy that can be defended.
+    # post       grid B, corrected. Drift against pre_check, uncorrected
+    #            basis.
+    #
+    # The role is written into the record rather than inferred later
+    # from the order of the list, because "which validation counted"
+    # decided after seeing the numbers is exactly the criticism this
+    # design exists to answer.
+    ROLES = {
+        "pre_fit": ("fit set — uncorrected native accuracy; the gain "
+                    "correction is fitted on these targets, so its error "
+                    "here is IN-SAMPLE by construction"),
+        "pre_check": ("out-of-sample check — corrected accuracy at seven "
+                      "positions the correction was never fitted to. This "
+                      "is the canonical corrected accuracy"),
+        "post": ("drift check — same grid as pre_check, differenced on "
+                 "the UNCORRECTED basis"),
+        "pre": "legacy single pre-validation (recorded before the split)",
+    }
+    record["role"] = ROLES.get(record["phase"], "unknown")
+    record["grid"] = "A" if record["phase"] in ("pre_fit", "pre") else "B"
+    record["canonical_accuracy"] = bool(record["phase"] == "pre_check")
+    # How many times this phase has been attempted in this session. A
+    # protocol deviation must be visible in the data, not only in
+    # someone's memory of the session.
+    prior = [v for v in state.get("validations", [])
+             if v.get("phase") == record["phase"]]
+    record["attempt"] = len(prior) + 1
+    if record["attempt"] > 1:
+        logger.warning(
+            "PROTOCOL: %s validation attempt #%d. The pre-registered rule "
+            "is ONE attempt per phase; repeats are recorded and the FIRST "
+            "attempt remains canonical. Do not select between them.",
+            record["phase"], record["attempt"])
+
     state.setdefault("validations", []).append(record)
-    # A completed pre-validation is the data source for the automatic
-    # gain fit (see _auto_fit_correction).
-    if record["phase"] == "pre" and record.get("mean_err_px") is not None:
+    # Only the FIT phase may fit. Re-fitting on the check set would
+    # destroy the one property that makes the check meaningful.
+    if record["phase"] in ("pre_fit", "pre") \
+            and record.get("mean_err_px") is not None \
+            and record["attempt"] == 1:
         _auto_fit_correction(state, record, sid)
     # Log the things that distinguish a coordinate fault from bad
     # tracking, so a bad validation is diagnosable from the log alone.
