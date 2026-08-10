@@ -126,7 +126,20 @@ RQ1_QUALITY = [
     ("frame_size", "session", "px", "collected",
      "Delivered camera resolution; drives per-frame cost."),
     ("head_distance_cm", "session", "cm", "collected",
-     "Estimated from inter-ocular pixels. Degree conversions depend on it."),
+     "MEASURED at validation time from the IRIS (11.7 mm +- 0.5, a "
+     "physiological constant) rather than assumed. Every degree figure "
+     "divides by it, so it is not a detail: the same pixel error reads "
+     "2.97 deg at 45 cm and 1.67 deg at 80 cm."),
+    ("distance_estimates_agree", "session", "bool", "collected",
+     "Iris vs inter-ocular distance on the same frame. Both share a "
+     "focal length, so agreement does not prove correctness — but "
+     "DISAGREEMENT proves a measurement is broken (failed landmark fit, "
+     "eyeglasses, or head yaw, which foreshortens the IOD but not the "
+     "iris). At 35 deg yaw the IOD claims 73 cm for a head at 60."),
+    ("mean_err_deg_measured", "session", "deg", "collected",
+     "Accuracy recomputed server-side from the measured distance. The "
+     "browser's own figure used a hardcoded 60 cm and is retained only "
+     "for comparison."),
 ]
 
 RQ2_EVENTS = [

@@ -70,8 +70,23 @@ def _stats(values: list) -> dict:
 
 
 def run_scenario(name: str, seconds: float, poll: bool,
-                 camera_fix: bool) -> "dict | None":
-    """Measure one scenario. Returns timings, or None if setup failed."""
+                 camera_fix: bool, churn: int = 0) -> "dict | None":
+    """Measure one scenario. Returns timings, or None if setup failed.
+
+    ``churn`` repeats the start/stop sampling cycle before measuring.
+    THIS is the one thing every offline benchmark misses: they all start
+    sampling exactly once, while a real session starts and stops it
+    repeatedly — position guide, preview, calibration, verification,
+    validation, then recording. GazeFollower's ``start_sampling()``
+    APPENDS its writer to the subscriber list, and its removal deletes
+    from the list it is iterating over (the classic skip-every-other
+    bug), so duplicates can survive each cycle. Every duplicate is
+    another full CSV write and flush PER FRAME.
+
+    That mechanism predicts exactly the shape observed here: a rate
+    that starts near 30 Hz and settles at half after the setup steps
+    have run, while the model stages stay cheap.
+    """
     os.environ["GF_CAMERA_FIX"] = "1" if camera_fix else ""
 
     try:
@@ -174,7 +189,27 @@ def run_scenario(name: str, seconds: float, poll: bool,
             polls.append((time.perf_counter() - t0) * 1000)
             stop.wait(0.15)
 
+    def _subs() -> "int | None":
+        try:
+            s = getattr(gf, "subscribers", None)
+            return len(s) if s is not None else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    subs_before = _subs()
     try:
+        # Reproduce the session's sampling churn BEFORE measuring, so any
+        # duplicated subscriber is already in place when the clock starts.
+        for _ in range(max(0, churn)):
+            try:
+                gf.start_sampling()
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0.2)
+            try:
+                gf.stop_sampling()
+            except Exception:  # noqa: BLE001 — "not sampling" is expected
+                pass
         gf.start_sampling()
         if poll:
             threading.Thread(target=poller, daemon=True).start()
@@ -184,6 +219,9 @@ def run_scenario(name: str, seconds: float, poll: bool,
             outcomes[k] = 0
         time.sleep(seconds)
         stop.set()
+        # Read the count while sampling is still live — stop_sampling()
+        # is the very method whose removal logic is under suspicion.
+        subs_after = _subs()
     finally:
         try:
             gf.stop_sampling()
@@ -212,6 +250,11 @@ def run_scenario(name: str, seconds: float, poll: bool,
         "residual_ms": residual,
         "poll_ms": _stats(polls) if polls else None,
         "outcomes": dict(outcomes),
+        # 2 is correct: GazeFollower's own writer plus our handler. Each
+        # extra one costs a full CSV write and flush on every frame.
+        "subscribers": subs_after,
+        "subscribers_before": subs_before,
+        "churn": churn,
     }
 
 
@@ -240,8 +283,22 @@ def report(r: dict) -> None:
     print("                                       calibrate + filter +")
     print("                                       CSV write/flush")
     print("    ----------------------------------")
-    print("    TOTAL per frame      %6.1f | %6.1f ms"
-          % (r["frame"]["median"], r["frame"]["p90"]))
+    print("    TOTAL per frame      %6.1f | %6.1f ms%s"
+          % (r["frame"]["median"], r["frame"]["p90"],
+             "   <- OVER BUDGET: the callback runs inside the capture "
+             "loop, so the loop skips alternate frames and the rate HALVES"
+             if r["frame"]["median"] > BUDGET_MS else ""))
+    subs = r.get("subscribers")
+    if subs is not None:
+        print()
+        print("  subscribers     : %d%s" % (
+            subs,
+            "" if subs <= 2 else
+            "   <- EXPECTED 2 (GazeFollower's writer + our handler). "
+            "Each extra one is another CSV write+flush PER FRAME."))
+        if r.get("churn"):
+            print("                    (after %d start/stop cycles; was %s "
+                  "before)" % (r["churn"], r.get("subscribers_before")))
     over = r["frame"]["median"] - BUDGET_MS
     if over > 0:
         print("    -> %.1f ms OVER budget: the capture loop misses every "
@@ -378,14 +435,22 @@ def verdict(results: dict) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--seconds", type=float, default=20.0)
-    ap.add_argument("--only", choices=["idle", "polled", "camerafix"],
+    ap.add_argument("--only", choices=["idle", "polled", "camerafix",
+                                       "churn", "session"],
                     help="run a single scenario")
+    ap.add_argument("--cycles", type=int, default=6,
+                    help="start/stop sampling cycles for the churn "
+                         "scenarios (a real session does ~6)")
     args = ap.parse_args()
 
     scenarios = [
         ("idle", dict(poll=False, camera_fix=False)),
         ("polled", dict(poll=True, camera_fix=False)),
         ("camerafix", dict(poll=False, camera_fix=True)),
+        # The two that reproduce what a real session actually does. Every
+        # scenario above starts sampling once; a session does not.
+        ("churn", dict(poll=False, camera_fix=True, churn=args.cycles)),
+        ("session", dict(poll=True, camera_fix=True, churn=args.cycles)),
     ]
     if args.only:
         scenarios = [s for s in scenarios if s[0] == args.only]

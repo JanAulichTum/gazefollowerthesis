@@ -515,6 +515,32 @@ def login():
     session["screen_diag_inches"] = screen_diag or DEFAULT_SCREEN_DIAG_INCHES
     session["screen_diag_assumed"] = screen_diag is None
 
+    # --- Recording conditions (RQ1: "varying recording conditions") ---------
+    # Collection happens in DIFFERENT ROOMS with different light. That
+    # variation is the independent variable RQ1 asks about, but it is
+    # only analysable if it is recorded AT THE TIME. It cannot be
+    # reconstructed afterwards from the gaze data, and "I think that one
+    # was the bright room" is not a covariate.
+    #
+    # Free text is deliberately avoided for the categorical fields: a
+    # fixed vocabulary can be tabulated across 10 sessions, "quite
+    # bright I guess" cannot.
+    conditions = {
+        "room": (request.form.get("room", "").strip() or None),
+        "lighting": (request.form.get("lighting", "").strip() or None),
+        "glasses": (request.form.get("glasses", "").strip() or None),
+        "time_of_day": datetime.now().strftime("%H:%M"),
+        "notes": (request.form.get("condition_notes", "").strip() or None)[:300]
+        if request.form.get("condition_notes", "").strip() else None,
+    }
+    session["conditions"] = conditions
+    if not conditions["room"] or not conditions["lighting"]:
+        logger.warning(
+            "Recording conditions incomplete (room=%s, lighting=%s). RQ1 asks "
+            "about VARYING recording conditions; unrecorded conditions cannot "
+            "be analysed and cannot be recovered later.",
+            conditions["room"], conditions["lighting"])
+
     # --- Existing participant -----------------------------------------------
     existing = get_participant(participant_id)
 
@@ -1871,6 +1897,11 @@ def handle_connect():
     pid = session.get("participant_id")
     if pid:
         state["participant_id"] = pid
+    # Recording conditions live in the Flask session (set at login) but
+    # the manifest is built from the socket state, so they have to be
+    # carried across or they silently never reach the record.
+    if session.get("conditions"):
+        state["conditions"] = session["conditions"]
     logger.info("SocketIO connected: sid=%s, participant=%s", sid, pid)
     _start_telemetry(sid, pid)
 
@@ -1961,6 +1992,9 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
         # sampling rate. Previously computed only in quality_report.py and
         # never persisted.
         "events": counts.get("__events__"),
+        # Recording conditions, captured at login. RQ1 asks about
+        # varying recording conditions; this is the only record of them.
+        "conditions": state.get("conditions"),
         "rate_gate": state.get("rate_gate"),
         # Condensed background telemetry (full series in data/telemetry/).
         # Keeps the manifest readable while making the headline context —
@@ -2446,6 +2480,85 @@ def handle_validation_result(payload: dict):
     # factor, so calibration stays self-consistent and only the
     # browser-side check exposes it.
     record["screen_space"] = _screen_space_check(payload.get("screen") or {})
+
+    # The rate this check SAMPLED at. Not the tracker's rate: the
+    # validation reads the preview stream, so the poll interval sets how
+    # many samples land per target and, more importantly, the interval
+    # over which precision (a sample-to-sample RMS) is computed. Two
+    # sessions measured at different poll rates do not have comparable
+    # precision figures, so the rate belongs in the record rather than
+    # being inferred from the sample counts afterwards.
+    record["sampled_at_hz"] = round(
+        1.0 / max(1e-6, state.get("preview_interval_s",
+                                  PREVIEW_INTERVAL_S)), 1)
+
+    # ── AUTHORITATIVE degrees, recomputed server-side ────────────────
+    # The browser converts px to degrees using window.measuredDistanceCm,
+    # which is only set if the OPTIONAL position guide ran and produced a
+    # plausible value. In every session recorded so far it did not, so
+    # every reported degree silently used the hardcoded 60 cm — visible
+    # in the manifests as "viewing_distance_measured": false.
+    #
+    # The validation itself is mandatory and the tracker is sampling
+    # during it, so the distance is measured HERE, at the moment of
+    # measurement, and the degrees are recomputed from it. The browser's
+    # value is kept for comparison rather than overwritten: if the two
+    # differ, that difference is exactly the error the assumption caused.
+    try:
+        pos = gaze_service.position_info() or {}
+        dist = pos.get("est_distance_cm")
+        scr = payload.get("screen") or {}
+        if dist and 25 < float(dist) < 120 and record.get("mean_err_px"):
+            import camera_geometry
+
+            geom = {"w_px": int(scr.get("width_px") or 1920),
+                    "h_px": int(scr.get("height_px") or 1080),
+                    "diag_in": float(scr.get("diag_inches") or 15.6)}
+            rel_sd = float(pos.get("distance_rel_sd_pct") or 0) / 100.0
+            for field in ("mean_err", "mean_precision"):
+                px = record.get(field + "_px")
+                if px is None:
+                    continue
+                conv = camera_geometry.degrees_with_uncertainty(
+                    float(px), float(dist), float(dist) * rel_sd, **geom)
+                record[field + "_deg_measured"] = conv.get("deg")
+                if conv.get("deg_lo") is not None:
+                    record[field + "_deg_lo"] = conv["deg_lo"]
+                    record[field + "_deg_hi"] = conv["deg_hi"]
+            record["distance"] = {
+                "cm": dist,
+                "source": pos.get("distance_source"),
+                "rel_sd_pct": pos.get("distance_rel_sd_pct"),
+                "iris_cm": pos.get("distance_cm_iris"),
+                "iod_cm": pos.get("distance_cm_iod"),
+                "estimates_agree": pos.get("distance_estimates_agree"),
+                "warning": pos.get("distance_warning"),
+                "focal_measured": pos.get("focal_measured"),
+                "measured": True,
+            }
+            browser_deg = record.get("mean_err_deg")
+            if browser_deg and record.get("mean_err_deg_measured"):
+                shift = 100 * (record["mean_err_deg_measured"]
+                               / browser_deg - 1)
+                record["distance"]["browser_assumption_error_pct"] = round(
+                    shift, 1)
+                if abs(shift) > 10:
+                    logger.warning(
+                        "Validation degrees shift %.0f %% once the MEASURED "
+                        "distance (%.1f cm, via %s) replaces the browser's "
+                        "assumption: %.2f -> %.2f deg",
+                        shift, dist, pos.get("distance_source"),
+                        browser_deg, record["mean_err_deg_measured"])
+            if pos.get("distance_warning"):
+                logger.warning("DISTANCE: %s", pos["distance_warning"])
+        else:
+            record["distance"] = {"measured": False,
+                                  "reason": "no usable distance from the "
+                                            "tracker at validation time",
+                                  "assumed_cm": (scr or {}).get(
+                                      "viewing_distance_cm")}
+    except Exception:  # noqa: BLE001 — never lose a validation over this
+        logger.exception("Could not recompute validation degrees")
     state.setdefault("validations", []).append(record)
     # A completed pre-validation is the data source for the automatic
     # gain fit (see _auto_fit_correction).
@@ -2751,13 +2864,40 @@ def handle_rate_gate_override(payload: dict = None):
     emit("rate_gate", gate)
 
 
+#: Preview poll interval. 150 ms (~7 Hz) is plenty for a dot that only
+#: has to reassure a participant the calibration took.
+PREVIEW_INTERVAL_S = 0.15
+#: ...but the accuracy check MEASURES this same stream, and at 7 Hz a
+#: 1.6 s window yields ~10 samples per target, of which the precision
+#: metric is a sample-to-sample RMS. Precision quoted at 7 Hz is not
+#: comparable to any published figure and overstates scatter, because
+#: 150 ms of drift accumulates between consecutive samples. The tracker
+#: itself runs at 30 Hz, so the resolution is there — it was being
+#: thrown away by the poll interval. Validation asks for this instead.
+VALIDATION_INTERVAL_S = 1.0 / 30.0
+#: Never poll faster than the tracker can produce, or the same sample is
+#: emitted repeatedly and precision reads as artificially perfect.
+MIN_PREVIEW_INTERVAL_S = 1.0 / 60.0
+
+
 @socketio.on("start_gaze_preview")
 def handle_start_gaze_preview(_payload=None):
-    """Stream live gaze estimates to the browser (~7 Hz) so the
-    participant can VERIFY the calibration worked: a dot on the page
-    follows their gaze. Runs until stopped or recording starts."""
+    """Stream live gaze estimates to the browser so the participant can
+    VERIFY the calibration worked: a dot on the page follows their gaze.
+
+    ``payload["interval_s"]`` raises the rate for the accuracy check,
+    which reads this same stream (see VALIDATION_INTERVAL_S). Runs until
+    stopped or recording starts.
+    """
     sid = request.sid  # type: ignore[attr-defined]
     state = _get_session_state(sid)
+    try:
+        interval = float((_payload or {}).get("interval_s")
+                         or PREVIEW_INTERVAL_S)
+    except (TypeError, ValueError):
+        interval = PREVIEW_INTERVAL_S
+    interval = max(MIN_PREVIEW_INTERVAL_S, min(1.0, interval))
+    state["preview_interval_s"] = interval
     # RACE FIX. The old code returned early if a preview was still
     # "active", but stop_gaze_preview only sets a flag the loop checks
     # every 150 ms. Stopping and immediately restarting — exactly what
@@ -2794,7 +2934,8 @@ def handle_start_gaze_preview(_payload=None):
                     },
                     to=sid,
                 )
-            socketio.sleep(0.15)
+            socketio.sleep(state.get("preview_interval_s",
+                                     PREVIEW_INTERVAL_S))
         # Only the CURRENT generation may clear the shared flag; a
         # retiring older loop must not switch off its replacement.
         if state.get("preview_generation") == generation:
@@ -2802,7 +2943,9 @@ def handle_start_gaze_preview(_payload=None):
         logger.info("Gaze preview loop ended (gen %d) – sid=%s",
                     generation, sid)
 
-    logger.info("Gaze preview started – sid=%s", sid)
+    logger.info("Gaze preview started at %.0f Hz – sid=%s",
+                1.0 / max(1e-6, state.get("preview_interval_s",
+                                          PREVIEW_INTERVAL_S)), sid)
     socketio.start_background_task(_loop)
 
 

@@ -99,3 +99,8 @@ Thumbs.db
 #                                  weights themselves are excluded
 #   data/manifests_anonymised/     pseudonymised session metadata
 #   templates/, static/            the experiment UI
+
+# Vendored wheels. Install from PyPI / upstream instead. The GazeFollower
+# wheel bundles the CC BY-NC-SA model weights (res/model_weights/base.mnn),
+# which are not ours to publish -- same rule as models/*.mnn above.
+*.whl

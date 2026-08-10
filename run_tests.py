@@ -1044,8 +1044,58 @@ try:
           "_PROCESS_POWER_THROTTLING = 4" in _pm)
     check("priority boost is left ENABLED (bDisablePriorityBoost=False)",
           "SetProcessPriorityBoost(kernel32.GetCurrentProcess(), False)" in _pm)
-    check("core pinning is opt-in and documented as a heuristic",
-          "GF_PERF_PIN_CORES" in _pm and "HEURISTIC, not a guarantee" in _pm)
+    check("core pinning is opt-in", "GF_PERF_PIN_CORES" in _pm)
+    check("known hybrid topologies make pinning a fact, not a guess",
+          "KNOWN_P_CORE_THREADS" in _pm)
+    _P = _pmns2 if False else __import__("perf_mode")
+    check("the collection machine's P-core count is known (i9-13900H)",
+          _P.p_core_threads("13th Gen Intel(R) Core(TM) i9-13900H", 20) == 12)
+    check("an unrecognised CPU returns None rather than guessing",
+          _P.p_core_threads("AMD Ryzen 9 7940HS", 16) is None)
+
+    # ── The frozen collection configuration ──
+    _run = read("windows/run_session.bat")
+    check("the session launcher freezes perf mode ON",
+          "set GF_PERF_MODE=1" in _run)
+    check("the session launcher freezes the camera fix ON",
+          "set GF_CAMERA_FIX=1" in _run)
+    check("the launcher CLEARS the fake-camera switches",
+          "set GF_FAKE_CAMERA=\n" in _run.replace("\r", "")
+          and "set GF_FAKE_CALIBRATION=\n" in _run.replace("\r", ""))
+    check("the launcher explains WHY each setting is frozen",
+          "29.4 Hz -> 12.1 Hz" in _run and "21.4 Hz -> 32.0 Hz" in _run)
+    check("core pinning is present but commented out by default",
+          "REM set GF_PERF_PIN_CORES=12" in _run)
+    check("the launcher states the rate to expect",
+          "under 25 Hz" in _run)
+    _pre = read("windows/check_before_participant.bat")
+    check("pre-flight runs the test suite and stops on failure",
+          "run_tests.py" in _pre and "exit /b 1" in _pre)
+    check("pre-flight verifies performance mode",
+          "perf_mode.py --verify" in _pre)
+    check("pre-flight checks the previous sessions' metrics",
+          "verify_metrics.py --today" in _pre)
+
+    # ── Recording conditions (RQ1: "varying recording conditions") ──
+    _idx = read("templates/index.html")
+    for _f in ("room", "lighting", "glasses", "condition_notes"):
+        check("the login form captures '%s'" % _f,
+              'name="%s"' % _f in _idx)
+    check("lighting uses a FIXED vocabulary, not free text",
+          '<select class="form-input" id="lighting"' in _idx
+          and "backlit" in _idx)
+    check("eyewear is captured (it degrades the iris estimate ~4.3->4.8 %)",
+          'id="glasses"' in _idx)
+    check("conditions are read from the login form",
+          'request.form.get("room"' in _app2)
+    check("conditions reach the socket state, not just the cookie",
+          'state["conditions"] = session["conditions"]' in _app2)
+    check("conditions reach the manifest",
+          '"conditions": state.get("conditions")' in _app2)
+    check("incomplete conditions are warned about at login",
+          "cannot be recovered later" in _app2)
+    check("the reason conditions must be captured live is documented",
+          "reconstructed afterwards from the gaze data" in _app2)
     check("perf_mode is a no-op on platforms with no such mechanism",
           "no known background-demotion mechanism" in _pm)
     # Every function that calls into ctypes must swallow its own errors:
@@ -1754,9 +1804,294 @@ try:
           '"focal_measured"' in _tsvc2)
     check("a broken calibration file cannot block the position guide",
           "never block the guide" in _tsvc2)
+
+    # ── Iris ruler + the two-ruler cross-check ──
+    import iris_distance as _IR
+
+    def _mesh(iris_px, yaw=0.0, right_scale=1.0, w=640, h=480):
+        import math as _m
+        lm = [(0.5, 0.5)] * 478
+        f = _m.cos(_m.radians(yaw))
+        lcx = 320 - 58.2 / 2
+        rcx = lcx + 58.2 * f
+        for c, (a, b), sc in ((lcx, (469, 471), 1.0),
+                              (rcx, (474, 476), right_scale)):
+            lm[a] = ((c + iris_px * sc / 2) / w, 240 / h)
+            lm[b] = ((c - iris_px * sc / 2) / w, 240 / h)
+        return lm
+
+    check("iris diameter is the physiological constant 11.7 mm +- 0.5",
+          _IR.IRIS_DIAMETER_MM == 11.7 and _IR.IRIS_DIAMETER_SD_MM == 0.5)
+    check("the iris is a tighter ruler than the inter-ocular distance",
+          (_IR.IRIS_DIAMETER_SD_MM / _IR.IRIS_DIAMETER_MM) < (0.4 / 6.3))
+    _d = _IR.iris_diameter_px(_mesh(12.0), 640, 480)
+    check("iris diameter is recovered from the refined mesh",
+          abs(_d["mean_px"] - 12.0) < 0.05, "%.2f px" % _d["mean_px"])
+    check("HORIZONTAL diameter is used (eyelids clip the vertical)",
+          "Horizontal, not vertical" in read("iris_distance.py"))
+    check("a coarse 468-point mesh is refused, not silently misread",
+          "refined" in _IR.iris_diameter_px([(0, 0)] * 468, 640, 480)["error"])
+
+    _F = 320 / math.tan(math.radians(30))          # assumed-FOV focal
+    _true = 60.0
+    _iod_px, _iris_px = 6.3 * _F / _true, 1.17 * _F / _true
+    check("iris distance recovers the true distance",
+          abs(_IR.distance_from_iris(_iris_px, _F)["distance_cm"] - 60.0) < 0.6,
+          "%.1f cm" % _IR.distance_from_iris(_iris_px, _F)["distance_cm"])
+
+    # THE POINT: the IOD foreshortens with yaw, the iris does not.
+    for _yaw, _agree in ((0, True), (20, True), (35, False), (50, False)):
+        _e = _IR.estimate(_mesh(_iris_px, _yaw),
+                          _iod_px * math.cos(math.radians(_yaw)), _F)
+        _c = _e["check"]
+        check("at %d deg yaw the iris still reads ~60 cm" % _yaw,
+              abs(_c["iris_cm"] - 60.0) < 1.0, "%.1f cm" % _c["iris_cm"])
+        check("at %d deg yaw the two rulers %s"
+              % (_yaw, "agree" if _agree else "DISAGREE"),
+              _c["agree"] is _agree,
+              "iod says %.1f cm, diff %.1f %%"
+              % (_c["iod_cm"], _c["difference_pct"]))
+    check("disagreement carries an explanation naming head yaw",
+          "yaw" in _IR.estimate(_mesh(_iris_px, 50),
+                                _iod_px * 0.64, _F)["check"]["warning"])
+    check("a lopsided iris fit is flagged separately",
+          "asymmetry" in str(_IR.estimate(_mesh(_iris_px, 0, right_scale=1.6),
+                                          _iod_px, _F)["check"]))
+    check("one estimate alone is reported, not silently averaged",
+          _IR.cross_check(60.0, None)["distance_cm"] == 60.0
+          and _IR.cross_check(60.0, None)["ok"] is False)
+
+    # The tracker must PREFER the iris, and must NOT fall back to the
+    # worse ruler when they disagree — that would substitute the number
+    # most likely to be wrong exactly when something is known to be wrong.
+    check("the tracker prefers the iris estimate",
+          'm["distance_source"] = "iris"' in _tsvc2)
+    check("disagreement is a WARNING, not a fallback to the IOD",
+          "not a reason" in _tsvc2 and "distance_disagreement" in _tsvc2)
+    check("math is imported at MODULE level (the static method needs it)",
+          "\nimport math\n" in _tsvc2
+          and "_focal_px() is a @staticmethod" in _tsvc2)
+
+    # ── Degrees recomputed server-side from the MEASURED distance ──
+    check("validation degrees are recomputed from a measured distance",
+          "mean_err_deg_measured" in _app2)
+    check("the browser value is kept for comparison, not overwritten",
+          "browser_assumption_error_pct" in _app2)
+    check("a large shift from the assumption is logged",
+          "once the MEASURED" in _app2)
+    check("an unmeasurable distance is recorded as such",
+          '"measured": False' in _app2)
+    check("the distance block records which ruler was used",
+          '"iris_cm": pos.get("distance_cm_iris")' in _app2)
 except Exception as exc:  # noqa: BLE001
     _blocked = environment_block(exc)
     check("metrics specification", False, _blocked or repr(exc))
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Bottleneck attribution: is a low rate the CPU or the CAMERA?
+# ══════════════════════════════════════════════════════════════════════
+# These two causes need opposite fixes, and for most of this project the
+# rate gate assumed the CPU: it told the researcher to change the power
+# plan even when the models were finishing in a third of the frame
+# interval, which is the signature of a camera throttling itself with
+# auto-exposure. Wrong advice at the rate gate costs a participant slot,
+# so the discriminator is tested rather than trusted.
+print("\n[16] Bottleneck attribution (CPU vs camera)")
+try:
+    _tsvc3 = read("tracker_service.py")
+    _js3 = read("static/js/experiment.js")
+    _camp = read("camera_patch.py")
+
+    check("the rate check attributes a low rate to the camera, the CPU, "
+          "or downstream loss",
+          "camera_throttled" in _tsvc3 and "cpu_throttled" in _tsvc3
+          and "frames_discarded" in _tsvc3)
+    check("attribution uses per-frame cost vs the frame interval, not the "
+          "rate alone",
+          "pipeline_duty_pct" in _tsvc3 and "frame_interval_ms" in _tsvc3)
+    check("no verdict fires while the rate is acceptable",
+          "low = sustained < 0.85 * NOMINAL_CAMERA_FPS" in _tsvc3)
+
+    # ── The regression that produced a confidently wrong diagnosis ──
+    # Duty was computed from the two MODEL stages as if they were the
+    # whole callback. 18 ms of models in a 66.7 ms interval read as
+    # "27 % duty, the pipeline is idle, blame the camera" — and the
+    # camera then measured 31.2 fps standalone. The remainder of the
+    # callback (filter, subscriber dispatch, CSV write+flush) is where
+    # the time actually goes, and it must be measured on a REAL webcam,
+    # not only under the fake camera.
+    check("the WHOLE callback is timed, not just the two model stages",
+          "_install_callback_timer" in _tsvc3
+          and "def _callback_stats" in _tsvc3)
+    # The camera thread captured a reference to the ORIGINAL bound
+    # process_frame when sampling was set up, so rebinding the attribute
+    # alone leaves the camera calling the untimed original — a timer
+    # that installs cleanly, reports nothing, and looks exactly like
+    # "the callback is free". Both paths, or neither.
+    check("callback timing rebinds process_frame AND re-registers with "
+          "the camera",
+          "gf.process_frame = timed_process" in _tsvc3
+          and "cam.set_on_image_callback(timed_process)" in _tsvc3)
+    check("a failed re-registration restores the original and reports it",
+          "gf.process_frame = orig" in _tsvc3
+          and "set_on_image_callback failed" in _tsvc3)
+    check("the live installer uses the same hook diagnose_rate.py proved",
+          "gf.camera.set_on_image_callback(timed_process)"
+          in read("diagnose_rate.py"))
+    check("sample yield is measured against frames IN, not the "
+          "self-referential detected_pct",
+          "sample_yield_pct" in _tsvc3
+          and "only ever sees frames" in _tsvc3)
+
+    # ── The session-only churn no offline benchmark reproduced ──
+    _dr = read("diagnose_rate.py")
+    check("diagnose_rate can reproduce the session's start/stop churn",
+          "churn" in _dr and '("churn", dict(' in _dr
+          and '("session", dict(' in _dr)
+    check("the churn scenarios also apply the camera fix (as a session "
+          "does)",
+          '("churn", dict(poll=False, camera_fix=True' in _dr)
+    check("subscriber count is read while sampling is still live",
+          "subs_after = _subs()" in _dr
+          and _dr.index("subs_after = _subs()") < _dr.index("gf.stop_sampling()", _dr.index("stop.set()")))
+    check("an over-budget total names the halving mechanism",
+          "OVER BUDGET" in _dr and "skips alternate frames" in _dr)
+    check("more than two subscribers is called out",
+          "EXPECTED 2" in _dr)
+    # A control measurement is only useful if it exists for the healthy
+    # case. diagnose_rate.py measured 31.1 Hz / 17.1 ms / 0.2 ms of
+    # non-model work in-process; the live app must print the comparable
+    # figures on EVERY run, not only when the gate already failed,
+    # otherwise there is nothing to compare a bad session against.
+    check("the live callback figures are logged pass or fail",
+          "Callback (live): total" in _tsvc3
+          and "Callback (live): NOT MEASURED" in _tsvc3)
+    check("a timer that failed to install says so rather than reading "
+          "as zero cost",
+          "the timer did not install" in _tsvc3)
+
+    # ── The accuracy check reads the PREVIEW stream ──────────────────
+    # onGaze both positions the reassurance dot and appends to
+    # this.samples, so the green dot and the validation are the same
+    # numbers — but that means the poll interval, not the tracker rate,
+    # sets how many samples land per target and over what interval
+    # precision is computed. At 7 Hz a 1.6 s window gives ~10 samples
+    # with 150 ms of drift between each pair.
+    _app3 = read("app.py")
+    check("the preview interval is configurable, not hard-coded at 150 ms",
+          "PREVIEW_INTERVAL_S" in _app3
+          and 'state.get("preview_interval_s"' in _app3)
+    check("the validation asks for the full tracker rate",
+          "VALIDATION_INTERVAL_S" in _app3
+          and "start_gaze_preview', { interval_s: 1 / 30 }" in _js3)
+    check("the poll rate is clamped below the tracker rate (a faster "
+          "poll would re-emit the same sample and fake perfect precision)",
+          "MIN_PREVIEW_INTERVAL_S" in _app3
+          and "max(MIN_PREVIEW_INTERVAL_S" in _app3)
+    check("the rate a validation sampled at is recorded with it",
+          '"sampled_at_hz"' in _app3 or "sampled_at_hz" in _app3)
+    check("the dot and the validation samples come from ONE handler "
+          "(so they cannot disagree)",
+          "if (this.collecting) this.samples.push([x, y]);" in _js3
+          and "this.gazeDot.style.left" in _js3)
+    check("duty prefers total callback cost over model cost",
+          'or (live_cb or {}).get("callback_ms_median")' in _tsvc3)
+    check("a duty figure computed from models alone is marked as such",
+          "work_is_models_only" in _tsvc3)
+    check("the camera is only blamed when it was MEASURED to be slow",
+          "cam_slow = bool(delivered" in _tsvc3
+          and "and cam_slow)" in _tsvc3)
+    check("an unmeasured camera yields UNRESOLVED, not a guess",
+          "bottleneck_unclear" in _tsvc3 and "UNRESOLVED" in _tsvc3)
+    check("the halving mechanism (synchronous callback) is named in the "
+          "CPU verdict",
+          "skip alternate frames" in _tsvc3)
+    check("the subscriber count is surfaced with the verdict",
+          "each\n                        \"extra one is another CSV write "
+          "per frame)" in _tsvc3 or "extra one is another CSV write" in _tsvc3)
+    check("capture_limited no longer claims per-frame work is expensive "
+          "without checking the budget",
+          "over_frame_budget" in _tsvc3
+          and "the camera itself is delivering slowly" in _tsvc3)
+
+    # Assert on tokens that survive line re-wrapping. An earlier version
+    # of these checks matched phrases that happened to span a string
+    # concatenation and failed on a purely cosmetic edit, which trains
+    # you to ignore the suite.
+    check("the browser blames the camera, not AC power, when the camera "
+          "was measured slow",
+          "g.camera_throttled" in _js3
+          and "This is a CAMERA " in _js3
+          and "g.delivered_hz" in _js3)
+    check("the camera branch is tested BEFORE the machine branch",
+          _js3.index("g.camera_throttled") < _js3.index("g.cpu_throttled"))
+    check("the camera advice names lighting rather than the power plan",
+          "lamp on " in _js3 and "your FACE" in _js3
+          and "power plan will not help" in _js3)
+    check("the browser has a branch for frames arriving and being "
+          "discarded",
+          "g.frames_discarded" in _js3
+          and "Neither the lighting nor the power plan" in _js3)
+    check("the browser admits when the bottleneck is unresolved",
+          "g.bottleneck_unclear" in _js3
+          and "cannot be told apart yet" in _js3)
+    check("the CPU branch quotes total work, not model cost",
+          "g.work_ms_median" in _js3)
+
+    # ── camera_remedy: exposure lives in the DEVICE, not the handle ──
+    # The first real run showed '320x240, auto exposure' at brightness
+    # 25/255 while the baseline read 141/255 — a manual exposure set two
+    # conditions earlier had survived cap.release(). Every condition
+    # after a manual one was contaminated, and the camera was left
+    # pinned dark for the next process.
+    check("each condition resets to auto exposure before measuring",
+          "_restore_auto_exposure(cap, cv2)" in read("camera_remedy.py"))
+    check("a manual-exposure condition restores auto on the way out",
+          read("camera_remedy.py").count("_restore_auto_exposure") >= 3)
+
+    check("the camera measures its DELIVERED fps, not the property it "
+          "reports",
+          "_measure_fps" in _camp and "actually DELIVERS" in _camp)
+    check("a camera slower than requested is called out at open time",
+          "THE CAMERA IS THE BOTTLENECK" in _camp)
+    check("exposure capping exists and is opt-in",
+          "GF_CAM_EXPOSURE" in _camp and 'return "auto"' in _camp)
+    check("a capped exposure that darkens the image reverts itself",
+          "REVERTED" in _camp
+          and "MIN_USABLE_BRIGHTNESS" in _camp)
+    check("the exposure cap fits inside one frame period",
+          (1000.0 * 2 ** -5) < 33.4)
+
+    # ── camera_remedy: it must not "fix" the rate by ruining the frame ──
+    _rem = read("camera_remedy.py")
+    check("the remedy sweep measures brightness alongside fps",
+          "MIN_BRIGHTNESS" in _rem and "MAX_BRIGHTNESS" in _rem)
+    check("a fast but unusable frame cannot win",
+          "def usable(r)" in _rem
+          and "MIN_BRIGHTNESS <= b <= MAX_BRIGHTNESS" in _rem)
+    check("the least invasive workable condition wins, not the fastest",
+          "next((r for r in results if r.get(\"ok\") and usable(r))" in _rem)
+    check("baseline is measured first so a gain can be attributed",
+          _rem.index('"baseline 640x480') < _rem.index('"640x480 MJPG'))
+    check("resolution change is ranked last (it changes model input)",
+          _rem.rindex("320x240") > _rem.index('"640x480 MJPG'))
+    check("each condition reopens the camera (settings are sticky)",
+          "cap = _open(cv2, index)" in _rem and "cap.release()" in _rem)
+    check("auto-exposure is given time to settle before measuring",
+          "t_warm" in _rem)
+    check("no workable condition points at lighting, not more settings",
+          "NO SETTING REACHED" in _rem and "lamp on the participant" in _rem)
+    check("FOURCC is wired into the real camera, not only the sweep",
+          "GF_CAM_FOURCC" in _camp and "CAP_PROP_FOURCC" in _camp)
+    check("FOURCC is applied BEFORE resolution (it renegotiates the "
+          "stream)",
+          _camp.index("CAP_PROP_FOURCC")
+          < _camp.index("self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, "
+                        "self.img_width)"))
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("bottleneck attribution", False, _blocked or repr(exc))
 
 # ── Summary ────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)

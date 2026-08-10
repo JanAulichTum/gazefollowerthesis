@@ -206,14 +206,57 @@ class NativeCalibration {
                     + 'level, sit about 60 cm away so your face fills more '
                     + 'of the frame, and put light on your face rather '
                     + 'than behind you. Then measure again.';
-            } else if (g.turbo_drop) {
+            } else if (g.camera_throttled) {
+                // The camera was MEASURED delivering slowly to the
+                // callback while the callback itself was cheap. Only
+                // this combination justifies naming the camera — an
+                // earlier version inferred it from cheap models alone
+                // and was wrong, because "cheap models" is not "cheap
+                // frame".
+                why = 'The camera delivered only ' + g.delivered_hz
+                    + ' Hz to the tracker, while the per-frame work took '
+                    + g.work_ms_median + ' ms of the '
+                    + g.frame_interval_ms + ' ms between frames ('
+                    + g.pipeline_duty_pct + ' % duty). This is a CAMERA '
+                    + 'problem, not a compute problem: in dim light a '
+                    + 'webcam lengthens its exposure, and because it '
+                    + 'cannot expose for longer than one frame it halves '
+                    + 'the frame rate instead (30 → 15). Put a lamp on '
+                    + 'your FACE (not behind you, not aimed at the '
+                    + 'screen), raise the screen brightness, and measure '
+                    + 'again. Changing the power plan will not help.';
+            } else if (g.frames_discarded) {
+                why = 'The camera delivered ' + g.delivered_hz + ' Hz and '
+                    + 'the per-frame work took only ' + g.work_ms_median
+                    + ' ms of the ' + g.frame_interval_ms + ' ms between '
+                    + 'frames, yet only ' + g.sustained_hz + ' Hz of gaze '
+                    + 'samples came out — so frames are arriving and being '
+                    + 'discarded. Neither the lighting nor the power plan '
+                    + 'will help. Restart the session; if it persists, run '
+                    + '"python diagnose_rate.py" and check the subscriber '
+                    + 'count in the log.';
+            } else if (g.cpu_throttled || g.turbo_drop) {
                 why = 'Frames arrived at ' + g.initial_hz + ' Hz at first '
                     + 'and settled to ' + g.sustained_hz + ' Hz, with '
                     + (det === null || det === undefined ? 'good' : det + ' %')
-                    + ' detection — so this is the machine slowing down, '
-                    + 'not a tracking problem. Plug in AC power, set the '
-                    + 'power plan to best performance, and close other '
-                    + 'apps. Then measure again.';
+                    + ' detection, and the per-frame work ('
+                    + g.work_ms_median + ' ms) is filling the '
+                    + g.frame_interval_ms + ' ms frame interval — so the '
+                    + 'COMPUTER is the limit. Because that work happens '
+                    + 'inside the capture loop, going over the frame '
+                    + 'budget makes the rate halve rather than sag. Check '
+                    + 'the log says "perf_mode … ACTIVE", close other '
+                    + 'apps, set the power plan to best performance, and '
+                    + 'measure again.';
+            } else if (g.bottleneck_unclear) {
+                why = 'Frames settled to ' + g.sustained_hz + ' Hz, and '
+                    + 'the per-frame work (' + g.work_ms_median + ' ms of '
+                    + g.frame_interval_ms + ' ms) is NOT the limit — but '
+                    + 'the camera’s own delivery rate could not be '
+                    + 'measured, so the camera and downstream frame loss '
+                    + 'cannot be told apart yet. Stop the server and run '
+                    + '"python camera_remedy.py" to measure the camera '
+                    + 'directly.';
             } else {
                 why = 'Frames are arriving slowly (' + g.sustained_hz
                     + ' Hz) with '
@@ -650,7 +693,14 @@ class ValidationTest {
         const positions = VALIDATION_POSITIONS[phase] || VALIDATION_POSITIONS.pre;
 
         socket.on('gaze_preview', this.onGaze);
-        socket.emit('start_gaze_preview', {});
+        // Ask for the FULL tracker rate, not the 7 Hz the reassurance
+        // dot runs at. The accuracy check reads this same stream, and
+        // its precision metric is a sample-to-sample RMS: at 7 Hz that
+        // is ~10 samples per target with 150 ms of drift accumulating
+        // between each pair, which inflates scatter and is not
+        // comparable to a published precision figure. The tracker
+        // already produces 30 Hz; the poll interval was discarding it.
+        socket.emit('start_gaze_preview', { interval_s: 1 / 30 });
 
         // AWAIT the fullscreen transition. It was previously fired and
         // forgotten, so the FIRST target was positioned using the
