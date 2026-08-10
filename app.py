@@ -795,8 +795,30 @@ def api_session_quality():
                     "mean_err_deg_raw": v.get("mean_err_deg_raw"),
                     "n_targets": len(v.get("targets") or []),
                     "screen_space": v.get("screen_space"),
+                    # Carried through so the summary can stop saying
+                    # "(assumed)" over a distance that was measured.
+                    "distance": v.get("distance"),
+                    "mean_err_deg_measured": v.get("mean_err_deg_measured"),
+                    "sampled_at_hz": v.get("sampled_at_hz"),
                 })
             out["validations"] = vals
+            # The distance that was actually in force. Reported at the
+            # top level because it applies to the whole session's degree
+            # figures, not to one validation — and because the review
+            # summary previously printed "(assumed)" unconditionally,
+            # which is the single line a researcher reads to decide
+            # whether a session is usable. Telling them an assumption was
+            # made when it was in fact measured is the wrong error to
+            # make in that sentence.
+            _dists = [v.get("distance") for v in vals
+                      if (v.get("distance") or {}).get("cm")]
+            if _dists:
+                out["distance"] = _dists[-1]
+                out["distance_measured"] = True
+            else:
+                out["distance_measured"] = False
+                out["distance_reason"] = ((vals[-1].get("distance") or {})
+                                          .get("reason") if vals else None)
             pre = [v for v in vals if v["phase"] == "pre"
                    and v["mean_err_deg"] is not None]
             post = [v for v in vals if v["phase"] == "post"

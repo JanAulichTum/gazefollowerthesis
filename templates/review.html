@@ -330,11 +330,33 @@
                 }
             }
             if (q.screen) {
+                // The distance is the denominator of every degree figure
+                // on this page, so whether it was MEASURED or assumed is
+                // not a footnote. This line said "(assumed)" no matter
+                // what, including on sessions where the iris measurement
+                // had worked — which is the one line a researcher reads
+                // to judge a session.
+                var dist;
+                if (q.distance_measured && q.distance && q.distance.cm) {
+                    dist = q.distance.cm.toFixed(1) + ' cm (MEASURED'
+                        + (q.distance.source ? ', ' + q.distance.source : '')
+                        + (q.distance.rel_sd_pct
+                            ? ' ±' + q.distance.rel_sd_pct + ' %' : '')
+                        + ')';
+                    if (q.distance.estimates_agree === false) {
+                        dist += ' ⚠ iris and pupil estimates disagree';
+                    }
+                } else {
+                    dist = q.screen.viewing_distance_cm + ' cm (ASSUMED — '
+                        + 'every degree on this page inherits this'
+                        + (q.distance_reason ? ': ' + q.distance_reason : '')
+                        + ')';
+                }
                 row('Screen:', q.screen.width_px + '×' + q.screen.height_px
                     + ' px · ' + q.screen.diag_inches + '″'
                     + (q.screen.diag_assumed ? ' (assumed)' : '')
-                    + ' · viewing distance ' + q.screen.viewing_distance_cm
-                    + ' cm (assumed)');
+                    + ' · viewing distance ' + dist,
+                    q.distance_measured ? 'pass' : 'fail');
             }
             if (q.quality_thresholds) {
                 row('Preregistered thresholds:', '≤ '

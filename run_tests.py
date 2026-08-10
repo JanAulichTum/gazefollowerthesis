@@ -2082,6 +2082,26 @@ try:
           abs(91.43 * 60 / 8.4 - 12.79 * 60 / 1.17)
           / (12.79 * 60 / 1.17) < 0.02,
           "%.1f vs %.1f px" % (91.43 * 60 / 8.4, 12.79 * 60 / 1.17))
+
+    # ── The review summary must not call a measurement an assumption ──
+    # The line read "viewing distance 60 cm (assumed)" unconditionally,
+    # including on sessions where the iris measurement had succeeded.
+    # It is the one line a researcher reads to judge a session, and the
+    # distance is the denominator of every degree on the page.
+    _rev = read("templates/review.html")
+    check("the quality API carries the measured distance through",
+          '"distance_measured"' in _app3 and 'out["distance"] = _dists[-1]'
+          in _app3)
+    check("the review page no longer hard-codes '(assumed)'",
+          "' cm (assumed)');" not in _rev)
+    check("a measured distance is labelled MEASURED, with its source",
+          "(MEASURED" in _rev and "q.distance.source" in _rev)
+    check("an assumed distance says what it contaminates",
+          "every degree on this page inherits this" in _rev)
+    check("the distance row is styled pass/fail, not neutral",
+          "q.distance_measured ? 'pass' : 'fail'" in _rev)
+    check("a disagreement between the two rulers is surfaced here too",
+          "estimates_agree === false" in _rev)
     check("duty prefers total callback cost over model cost",
           'or (live_cb or {}).get("callback_ms_median")' in _tsvc3)
     check("a duty figure computed from models alone is marked as such",
