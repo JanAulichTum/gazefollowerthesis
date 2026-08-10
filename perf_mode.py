@@ -257,13 +257,44 @@ def _set_priority(name: str) -> "str | None":
         return str(exc)[:120]
 
 
+# Known hybrid topologies, so pinning is a FACT on these parts rather
+# than the usual "P-cores are probably enumerated first" hope. Windows
+# enumerates all P-core threads (including hyperthread siblings) before
+# any E-core, so pinning to the first N logical CPUs pins to P-cores.
+#
+#   i9-13900H (Raptor Lake-H): 6 P x2 HT = 12 logical, then 8 E = 20 total
+#
+# Verify on an unlisted CPU before trusting it: pin, then compare the
+# per-frame stage split against the unpinned run.
+KNOWN_P_CORE_THREADS = {
+    "13900h": 12, "13900hx": 16, "13700h": 12, "13620h": 12,
+    "12900h": 12, "12700h": 12,
+    "155h": 12, "185h": 12,            # Meteor Lake Core Ultra
+}
+
+
+def p_core_threads(processor_name: str = "",
+                   logical: int = 0) -> "int | None":
+    """Logical CPUs belonging to P-cores, if the part is recognised."""
+    name = (processor_name or "").lower().replace("-", "").replace(" ", "")
+    for key, n in KNOWN_P_CORE_THREADS.items():
+        if key in name:
+            return n if not logical or n < logical else None
+    return None
+
+
 def pin_to_fast_cores(n: int) -> "str | None":
     """Restrict the process to the first *n* logical CPUs.
 
-    HEURISTIC, not a guarantee: on Intel hybrid parts firmware normally
-    enumerates P-cores first, but nothing in the architecture requires
-    it. Off by default for that reason — use it as an experiment, and
-    verify with a measurement rather than trusting the ordering.
+    On Intel hybrid parts Windows enumerates every P-core thread before
+    any E-core, so this pins to P-cores. See KNOWN_P_CORE_THREADS for the
+    parts where that count is known; on an unlisted CPU, confirm with a
+    measurement rather than assuming.
+
+    Note this is a BLUNTER instrument than the EcoQoS opt-out, which is
+    why it stays opt-in: pinning also prevents the scheduler from using
+    E-cores for genuinely background work, and on a machine with only a
+    few P-cores that can hurt more than it helps.
     """
     if n <= 0:
         return "no cores requested"

@@ -1044,8 +1044,14 @@ try:
           "_PROCESS_POWER_THROTTLING = 4" in _pm)
     check("priority boost is left ENABLED (bDisablePriorityBoost=False)",
           "SetProcessPriorityBoost(kernel32.GetCurrentProcess(), False)" in _pm)
-    check("core pinning is opt-in and documented as a heuristic",
-          "GF_PERF_PIN_CORES" in _pm and "HEURISTIC, not a guarantee" in _pm)
+    check("core pinning is opt-in", "GF_PERF_PIN_CORES" in _pm)
+    check("known hybrid topologies make pinning a fact, not a guess",
+          "KNOWN_P_CORE_THREADS" in _pm)
+    _P = _pmns2 if False else __import__("perf_mode")
+    check("the collection machine's P-core count is known (i9-13900H)",
+          _P.p_core_threads("13th Gen Intel(R) Core(TM) i9-13900H", 20) == 12)
+    check("an unrecognised CPU returns None rather than guessing",
+          _P.p_core_threads("AMD Ryzen 9 7940HS", 16) is None)
     check("perf_mode is a no-op on platforms with no such mechanism",
           "no known background-demotion mechanism" in _pm)
     # Every function that calls into ctypes must swallow its own errors:
