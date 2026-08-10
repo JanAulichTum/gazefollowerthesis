@@ -701,6 +701,150 @@ def review():
     return render_template("review.html")
 
 
+@app.route("/coder")
+def coder():
+    """Human coding of individual fixations — the study's only human anchor.
+
+    Everything else in RQ3 is one model's output checked against another
+    measurement. That establishes correspondence, not correctness: a
+    model and a tracker can agree and both be describing the wrong
+    thing. Only a person looking at the frame can say whether "the
+    participant looked at the girl in the red shirt" is true.
+
+    It is also the only route to a reliability coefficient. Cohen's
+    kappa needs two raters assigning the same labels to the same units;
+    with no human ratings at all there is nothing to correlate, and
+    "the model agreed with itself across runs" is consistency, not
+    validity.
+    """
+    return render_template("coder.html")
+
+
+@app.route("/api/coding_units")
+def api_coding_units():
+    """The fixations to code, each with the model's claim about it."""
+    participant = request.args.get("participant", "")
+    stimulus = request.args.get("stimulus", "")
+    session = request.args.get("session", "")
+
+    df = _load_gaze_table()
+    if df is None or df.empty:
+        return {"units": [], "error": "no data file yet"}
+    sel = df[(df["participant_id"] == participant)
+             & (df["stimulus_name"] == stimulus)]
+    if session and "session_id" in sel.columns:
+        sel = sel[sel["session_id"].fillna("legacy") == session]
+    if sel.empty:
+        return {"units": [], "error": "no samples for that recording"}
+
+    try:
+        from fixations import detect_fixations_df
+
+        fixations = detect_fixations_df(sel)
+    except Exception as exc:  # noqa: BLE001
+        return {"units": [], "error": "fixation detection failed: %s" % exc}
+
+    # The model's claims, if a feedback run has been stored.
+    claims = []
+    mpath = os.path.join(GAZEFOLLOWER_CSV_DIR, session + "_manifest.json")
+    accuracy_deg = None
+    if os.path.isfile(mpath):
+        try:
+            with open(mpath, encoding="utf-8") as fh:
+                man = json.load(fh)
+            claims = ((man.get("llm") or {}).get(stimulus) or {}).get(
+                "structured") or []
+            import claim_check
+
+            accuracy_deg = claim_check._accuracy_deg(man)[0]
+        except Exception:  # noqa: BLE001
+            pass
+
+    units = []
+    for i, f in enumerate(fixations):
+        mid = f.t_start + (f.duration / 2.0)
+        near = [c for c in claims
+                if isinstance(c, dict)
+                and abs(float(c.get("t_start") or 0) - mid) <= 0.6]
+        units.append({
+            "index": i,
+            "t_start": round(f.t_start, 3),
+            "t_end": round(f.t_start + f.duration, 3),
+            "t_mid": round(mid, 3),
+            "duration_ms": int(1000 * f.duration),
+            "x": round(f.nx, 4),
+            "y": round(f.ny, 4),
+            "model_claim": (near[0].get("attended") if near else None),
+            "model_bbox": (near[0].get("bbox") if near else None),
+            "model_confidence": (near[0].get("confidence") if near else None),
+        })
+    return {"units": units, "stimulus": stimulus,
+            "participant": participant, "session": session,
+            "accuracy_deg": accuracy_deg,
+            "n_claims": len(claims)}
+
+
+@app.route("/api/coding_save", methods=["POST"])
+def api_coding_save():
+    """Persist one coder's verdicts.
+
+    Written per CODER, never merged. Two coders' judgments must stay
+    separable or there is no kappa to compute — and a merged file
+    silently becomes one rater with no way back.
+    """
+    payload = request.get_json(silent=True) or {}
+    coder = _safe_filename(str(payload.get("coder") or "").strip())
+    session = _safe_filename(str(payload.get("session") or "").strip())
+    stimulus = _safe_filename(
+        os.path.splitext(str(payload.get("stimulus") or ""))[0])
+    if not (coder and session and stimulus):
+        return {"ok": False, "error": "coder, session and stimulus required"}, 400
+
+    out_dir = os.path.join(DATA_DIR, "coding")
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "%s__%s__%s.json" % (session, stimulus, coder))
+    record = {
+        "coder": payload.get("coder"),
+        "session": payload.get("session"),
+        "stimulus": payload.get("stimulus"),
+        "saved_utc": datetime.now(timezone.utc).isoformat(),
+        "codes": payload.get("codes") or {},
+        # The rubric the coder was working to. Judgments made under
+        # different instructions are not the same variable, so a file
+        # without this cannot safely be pooled with another.
+        "instructions": payload.get("instructions"),
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(record, fh, indent=2)
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}, 500
+    logger.info("Coding saved: %s (%d units)", os.path.basename(path),
+                len(record["codes"]))
+    return {"ok": True, "path": os.path.basename(path),
+            "n_coded": len(record["codes"])}
+
+
+@app.route("/api/coding_load")
+def api_coding_load():
+    """Any verdicts this coder already recorded for this recording."""
+    coder = _safe_filename(request.args.get("coder", ""))
+    session = _safe_filename(request.args.get("session", ""))
+    stimulus = _safe_filename(
+        os.path.splitext(request.args.get("stimulus", ""))[0])
+    path = os.path.join(DATA_DIR, "coding",
+                        "%s__%s__%s.json" % (session, stimulus, coder))
+    if not os.path.isfile(path):
+        return {"codes": {}, "found": False}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rec = json.load(fh)
+        return {"codes": rec.get("codes") or {}, "found": True,
+                "saved_utc": rec.get("saved_utc")}
+    except (OSError, ValueError) as exc:
+        return {"codes": {}, "found": False, "error": str(exc)}
+
+
 @app.route("/api/review_index")
 def api_review_index():
     """Distinct (participant, stimulus) recordings available for replay."""
@@ -819,7 +963,7 @@ def api_session_quality():
                 out["distance_measured"] = False
                 out["distance_reason"] = ((vals[-1].get("distance") or {})
                                           .get("reason") if vals else None)
-            pre = [v for v in vals if v["phase"] == "pre"
+            pre = [v for v in vals if str(v["phase"]).startswith("pre")
                    and v["mean_err_deg"] is not None]
             post = [v for v in vals if v["phase"] == "post"
                     and v["mean_err_deg"] is not None]
@@ -1583,7 +1727,8 @@ def api_llm_feedback():
             "fenced code block starting with ```json — a JSON array of "
             "EXACTLY %d objects, one per window, in order: "
             "[{\"t_start\": <s>, \"t_end\": <s>, "
-            "\"attended\": \"<object/area>\", \"bbox\": [x, y, w, h], "
+            "\"attended\": \"<object/area>\", "
+            "\"bbox\": [x, y, w, h], "
             "\"criteria_met\": <true|false|null>, "
             "\"confidence\": \"<low|medium|high>\"}]. "
             "\"bbox\" is the region of the VIDEO FRAME occupied by the "
@@ -1646,7 +1791,8 @@ def api_llm_feedback():
             "3. AFTER the prose, output a machine-readable summary as a "
             "fenced code block starting with ```json — a JSON array of "
             "the SAME phases (max 8): [{\"t_start\": <s>, \"t_end\": <s>, "
-            "\"attended\": \"<object/area>\", \"bbox\": [x, y, w, h], "
+            "\"attended\": \"<object/area>\", "
+            "\"bbox\": [x, y, w, h], "
             "\"criteria_met\": <true|false|null>, "
             "\"confidence\": \"<low|medium|high>\"}]. "
             "\"bbox\" is the region of the VIDEO FRAME occupied by the "
@@ -1727,6 +1873,25 @@ def api_llm_feedback():
                 "structured": _extract_structured(text),
             })
         first = runs[0]
+        # RQ3's primary outcome belongs in the session record, not in a
+        # log directory. Until now the feedback was returned to the
+        # browser and written to data/llm_logs/, so llm_model_id,
+        # llm_claims_structured and claim_metric_correspondence all
+        # reported MISSING — the operationalisation of RQ3 existed but
+        # left no trace in the data a reader would be given.
+        _persist_llm_result(session, stimulus, {
+            "llm_model_id": GEMINI_MODEL,
+            "detail": detail,
+            "rubric": rubric or None,
+            "n_runs": n_runs,
+            "keyframe_method": frames[0]["method"] if frames else None,
+            "frames_used": len(frames),
+            "chained": bool(scene_description),
+            "measured_error_px": error_px,
+            "structured": first["structured"],
+            "consistency": _consistency(runs) if n_runs > 1 else None,
+            "requested_at_utc": datetime.now(timezone.utc).isoformat(),
+        })
         return {
             "feedback": first["feedback"],
             "structured": first["structured"],
@@ -2000,11 +2165,25 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
         # Post-hoc gain correction applied to the corrected_* columns
         # and the video-normalized coordinates (raw columns untouched)
         "gain_correction": _correction_payload(state.get("correction")),
-        # Head-position snapshot from the pre-calibration guide: the
-        # MEASURED viewing distance (from inter-ocular pixels) replaces
-        # the assumed constant where available — so the deg-of-visual-
-        # angle conversion rests on data, not a guess.
+        # Head-position snapshot from the pre-calibration guide. OPTIONAL
+        # — the guide is a convenience for seating the participant, and
+        # in most sessions nobody opens it, so this is usually null.
         "head_position": state.get("position_snapshot"),
+        # ── THE VIEWING DISTANCE, from the MANDATORY validation ───────
+        # Every degree figure in this study divides by this number, so it
+        # cannot depend on whether someone happened to open an optional
+        # guide. It is measured during the accuracy check, which always
+        # runs, at the moment the participant is sitting exactly as they
+        # will for the stimuli.
+        #
+        # It was already being measured there and written into the
+        # validation record — and then nothing read it. verify_metrics
+        # looked in head_position.distance_cm: a block only the optional
+        # guide fills, under a key ("distance_cm") that even the guide
+        # does not use (it writes "est_distance_cm"). Two mismatches in
+        # series, so head_distance_cm reported MISSING on every session
+        # ever recorded while the correct value sat in the manifest.
+        "distance": _session_distance(state),
         # Pre-session rate gate: the sustained sampling rate measured
         # BEFORE calibration, and whether the researcher overrode a
         # failing verdict. Lets analysis separate "we knew this session
@@ -2581,10 +2760,50 @@ def handle_validation_result(payload: dict):
                                       "viewing_distance_cm")}
     except Exception:  # noqa: BLE001 — never lose a validation over this
         logger.exception("Could not recompute validation degrees")
+    # ── WHICH CHECK IS WHICH, decided here and recorded ──────────────
+    # pre_fit    grid A, uncorrected. Native accuracy AND the fit set.
+    # pre_check  grid B, corrected, positions the fit never saw. The
+    #            corrected accuracy that can be defended.
+    # post       grid B, corrected. Drift against pre_check, uncorrected
+    #            basis.
+    #
+    # The role is written into the record rather than inferred later
+    # from the order of the list, because "which validation counted"
+    # decided after seeing the numbers is exactly the criticism this
+    # design exists to answer.
+    ROLES = {
+        "pre_fit": ("fit set — uncorrected native accuracy; the gain "
+                    "correction is fitted on these targets, so its error "
+                    "here is IN-SAMPLE by construction"),
+        "pre_check": ("out-of-sample check — corrected accuracy at seven "
+                      "positions the correction was never fitted to. This "
+                      "is the canonical corrected accuracy"),
+        "post": ("drift check — same grid as pre_check, differenced on "
+                 "the UNCORRECTED basis"),
+        "pre": "legacy single pre-validation (recorded before the split)",
+    }
+    record["role"] = ROLES.get(record["phase"], "unknown")
+    record["grid"] = "A" if record["phase"] in ("pre_fit", "pre") else "B"
+    record["canonical_accuracy"] = bool(record["phase"] == "pre_check")
+    # How many times this phase has been attempted in this session. A
+    # protocol deviation must be visible in the data, not only in
+    # someone's memory of the session.
+    prior = [v for v in state.get("validations", [])
+             if v.get("phase") == record["phase"]]
+    record["attempt"] = len(prior) + 1
+    if record["attempt"] > 1:
+        logger.warning(
+            "PROTOCOL: %s validation attempt #%d. The pre-registered rule "
+            "is ONE attempt per phase; repeats are recorded and the FIRST "
+            "attempt remains canonical. Do not select between them.",
+            record["phase"], record["attempt"])
+
     state.setdefault("validations", []).append(record)
-    # A completed pre-validation is the data source for the automatic
-    # gain fit (see _auto_fit_correction).
-    if record["phase"] == "pre" and record.get("mean_err_px") is not None:
+    # Only the FIT phase may fit. Re-fitting on the check set would
+    # destroy the one property that makes the check meaningful.
+    if record["phase"] in ("pre_fit", "pre") \
+            and record.get("mean_err_px") is not None \
+            and record["attempt"] == 1:
         _auto_fit_correction(state, record, sid)
     # Log the things that distinguish a coordinate fault from bad
     # tracking, so a bad validation is diagnosable from the log alone.
@@ -3011,6 +3230,113 @@ def handle_start_position_check(_payload=None):
         state["position_active"] = False
 
     socketio.start_background_task(_loop)
+
+
+def _persist_llm_result(session: str, stimulus: str, block: dict) -> None:
+    """Write the LLM result AND its correspondence score into the manifest.
+
+    Scoring happens here, at write time, rather than being left to a
+    separate command someone has to remember. RQ3's headline number is
+    "of the claims that could be checked, what share does the recorded
+    gaze support" — computing it automatically means a session either
+    has that number or visibly does not.
+
+    Never raises: feedback that was generated must not be lost because
+    the scoring step failed.
+    """
+    if not session:
+        return
+    path = os.path.join(GAZEFOLLOWER_CSV_DIR, "%s_manifest.json" % session)
+    if not os.path.isfile(path):
+        logger.warning("No manifest at %s — LLM result not persisted", path)
+        return
+    try:
+        with open(path, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+
+        try:
+            import claim_check
+
+            claims = block.get("structured") or []
+            samples, err = claim_check.load_gaze(manifest, path, stimulus)
+            acc, acc_src = claim_check._accuracy_deg(manifest)
+            if claims and not err and acc:
+                scr = manifest.get("screen") or {}
+                dist = ((manifest.get("distance") or {}).get("cm")
+                        or VIEWING_DISTANCE_CM)
+                ppd = claim_check._px_per_degree(
+                    int(scr.get("width_px") or 1920),
+                    int(scr.get("height_px") or 1080),
+                    float(scr.get("diag_inches") or 15.6), float(dist))
+                rect = next(s["video_rect"] for s in manifest["stimuli"]
+                            if s.get("stimulus") == stimulus)
+                import regions
+
+                vw = int(rect.get("w") or 1920)
+                vh = int(rect.get("h") or 1080)
+                grid = regions.admissible_grid(acc * ppd, vw, vh)
+                scored = claim_check.check_all(
+                    claims, samples, acc, ppd, vw, vh, grid)
+                scored["grid"] = {k: grid.get(k) for k in
+                                  ("cols", "rows", "cell_px",
+                                   "required_px", "admissible", "rule")}
+                scored["accuracy_source"] = acc_src
+                block["correspondence"] = scored
+            else:
+                block["correspondence"] = {
+                    "error": err or ("no claims" if not claims
+                                     else "no validation accuracy")}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Correspondence scoring failed")
+            block["correspondence"] = {"error": str(exc)[:200]}
+
+        manifest.setdefault("llm", {})[stimulus] = block
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=2)
+        corr = (block.get("correspondence") or {}).get("correspondence_pct")
+        logger.info("LLM result persisted to the manifest – %s / %s | "
+                    "correspondence %s %%", session, stimulus, corr)
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not persist the LLM result")
+
+
+def _session_distance(state: dict) -> dict:
+    """The viewing distance in force for this session, and its provenance.
+
+    Preference order, and the reason for it:
+
+      pre_check   measured at the accuracy check whose error is the
+                  canonical accuracy — same moment, same posture, so the
+                  distance and the degrees it converts belong together.
+      pre_fit     the earlier check, if pre_check has no usable reading.
+      post        after the stimuli; still measured, still better than
+                  an assumption.
+      guide       the optional position guide, if someone opened it.
+      assumed     nothing measured. Say so loudly: this is the state
+                  every session was silently in.
+    """
+    vals = state.get("validations") or []
+    order = ("pre_check", "pre_fit", "pre", "post")
+    for phase in order:
+        for v in vals:
+            if v.get("phase") != phase:
+                continue
+            d = v.get("distance") or {}
+            if d.get("cm"):
+                out = dict(d)
+                out["measured"] = True
+                out["from_phase"] = phase
+                return out
+    snap = state.get("position_snapshot") or {}
+    if snap.get("est_distance_cm"):
+        return {"cm": snap["est_distance_cm"], "measured": True,
+                "source": "position guide (inter-ocular)",
+                "from_phase": "guide"}
+    return {"measured": False, "cm": None,
+            "assumed_cm": VIEWING_DISTANCE_CM,
+            "reason": "no usable distance at any validation; every "
+                      "degree figure in this session divides by the "
+                      "assumed %.0f cm" % VIEWING_DISTANCE_CM}
 
 
 @socketio.on("stop_position_check")

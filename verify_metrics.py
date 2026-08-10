@@ -102,36 +102,71 @@ def _grade(value, *, lo=None, hi=None, zero_ok=False):
 def check_session(manifest: dict, res: Result) -> None:
     # ── RQ1: validations ──────────────────────────────────────────
     vals = manifest.get("validations") or []
-    pre = [v for v in vals if v.get("phase") == "pre"]
+    # "pre", "pre_fit" and "pre_check" are all pre-stimulus checks.
+    pre = [v for v in vals if str(v.get("phase") or "").startswith("pre")]
     post = [v for v in vals if v.get("phase") == "post"]
 
-    if not pre:
+    # The two-grid protocol: pre_fit (grid A, uncorrected, the fit set)
+    # then pre_check (grid B, corrected, positions never fitted to).
+    fit = [v for v in pre if v.get("phase") in ("pre_fit", "pre")]
+    chk = [v for v in pre if v.get("phase") == "pre_check"]
+
+    if not fit:
         res.add("RQ1", "accuracy_raw_deg", MISSING, "",
                 "no pre-stimulus validation recorded")
     else:
-        s, v = _grade(pre[0].get("mean_err_deg"), lo=0.1, hi=20)
+        s, v = _grade(fit[0].get("mean_err_deg"), lo=0.1, hi=20)
         res.add("RQ1", "accuracy_raw_deg", s, v,
-                "first pre-validation = the fit set")
-        if len(pre) > 1:
-            res.add("RQ1", "accuracy_corrected_in_sample_deg", PRESENT,
-                    "%.3g" % (pre[-1].get("mean_err_deg") or 0),
-                    "%d pre-validations — IN-SAMPLE, do not report as "
-                    "accuracy" % len(pre))
+                "grid A, uncorrected — the tracker's native accuracy")
+        # More than one attempt at the SAME phase is a protocol
+        # deviation. It is not fatal, but it must be visible: choosing
+        # between attempts after seeing them is optimisation on the
+        # primary outcome, and it is the first thing an examiner probes.
+        if len(fit) > 1:
+            res.add("RQ1", "validation_attempts", DEGENERATE,
+                    "%d fit attempts" % len(fit),
+                    "PROTOCOL DEVIATION — the rule is ONE attempt per "
+                    "phase; the FIRST is canonical. Do not select the "
+                    "best.")
 
-    if not post:
-        res.add("RQ1", "accuracy_corrected_out_of_sample_deg", MISSING, "",
-                "NO POST-STIMULUS VALIDATION — this is the canonical "
-                "accuracy figure; the session cannot support an accuracy "
-                "claim without it")
-    else:
-        s, v = _grade(post[-1].get("mean_err_deg"), lo=0.1, hi=20)
+    if chk:
+        # Out of sample in BOTH space and time. This is the defensible
+        # corrected accuracy.
+        s, v = _grade(chk[0].get("mean_err_deg"), lo=0.1, hi=20)
         max_deg = SPEC.INCLUSION["max_validation_error_deg"]
-        err = post[-1].get("mean_err_deg") or 0
+        err = chk[0].get("mean_err_deg") or 0
         if s == PRESENT and err > max_deg:
             s = DEGENERATE
         res.add("RQ1", "accuracy_corrected_out_of_sample_deg", s, v,
                 "FAILS the %.1f deg inclusion criterion" % max_deg
-                if err > max_deg else "canonical accuracy for this session")
+                if err > max_deg
+                else "grid B — canonical corrected accuracy (the "
+                     "correction was never fitted to these positions)")
+    elif len(fit) > 1:
+        # Legacy sessions: a repeated pre at the SAME grid. The samples
+        # are new but the positions are the fit's own, so this is not a
+        # generalisation estimate and must not be reported as accuracy.
+        res.add("RQ1", "accuracy_corrected_in_sample_deg", DEGENERATE,
+                "%.3g" % (fit[-1].get("mean_err_deg") or 0),
+                "re-measured at the FIT positions — IN-SAMPLE, not a "
+                "corrected-accuracy claim. Re-record with the pre_fit / "
+                "pre_check protocol.")
+        res.add("RQ1", "accuracy_corrected_out_of_sample_deg", MISSING, "",
+                "no pre_check on an unseen grid")
+    else:
+        res.add("RQ1", "accuracy_corrected_out_of_sample_deg", MISSING, "",
+                "no pre_check recorded")
+
+    if not post:
+        res.add("RQ1", "accuracy_post_stimulus_deg", MISSING, "",
+                "NO POST-STIMULUS VALIDATION — without it there is no "
+                "drift estimate and no evidence the tracking held for "
+                "the duration of the recording")
+    else:
+        s, v = _grade(post[-1].get("mean_err_deg"), lo=0.1, hi=20)
+        res.add("RQ1", "accuracy_post_stimulus_deg", s, v,
+                "grid B after the stimuli — the accuracy during "
+                "recording lies between this and the pre_check")
 
     src = post or pre
     if src:
@@ -149,9 +184,31 @@ def check_session(manifest: dict, res: Result) -> None:
                     "%d targets" % len(errs), "expected 7")
 
     if pre and post:
-        d = (post[-1].get("mean_err_deg") or 0) - (pre[0].get("mean_err_deg") or 0)
-        res.add("RQ1", "drift_deg", PRESENT, "%+.2f" % d,
-                "post − pre; confirm it uses the UNCORRECTED basis")
+        # DRIFT MUST BE DIFFERENCED ON ONE BASIS.
+        # This subtracted a RAW pre from a CORRECTED post and reported
+        # the result as drift: on the 2026-08-10 session that gave
+        # -2.39 deg while the review page, differencing the uncorrected
+        # pair, gave +0.51. Same session, opposite sign, and the -2.39
+        # is not drift at all — it is mostly the gain correction's
+        # effect, which was fitted on the pre targets and so cannot
+        # legitimately appear in a before/after comparison.
+        #
+        # Drift means "did tracking degrade over the session", so both
+        # ends must be measured the same way. mean_err_deg_raw is the
+        # uncorrected figure recorded for exactly this purpose.
+        a = pre[-1].get("mean_err_deg_raw")
+        b = post[-1].get("mean_err_deg_raw")
+        basis = "uncorrected (both ends)"
+        if a is None or b is None:
+            a = pre[-1].get("mean_err_deg")
+            b = post[-1].get("mean_err_deg")
+            basis = ("as-reported — MIXED correction, not comparable; "
+                     "re-run with mean_err_deg_raw recorded")
+        if a is None or b is None:
+            res.add("RQ1", "drift_deg", MISSING, "", "no comparable pair")
+        else:
+            status = PRESENT if basis.startswith("uncorrected") else DEGENERATE
+            res.add("RQ1", "drift_deg", status, "%+.2f" % (b - a), basis)
     else:
         res.add("RQ1", "drift_deg", MISSING, "", "needs both validations")
 
@@ -200,19 +257,57 @@ def check_session(manifest: dict, res: Result) -> None:
     fs = _get(gate, "stages", "frame_size")
     res.add("RQ1", "frame_size", PRESENT if fs else MISSING, fs or "",
             "" if not fs or fs == "640x480" else "larger than 640x480")
-    hd = _get(manifest, "head_position", "distance_cm")
+    # The MANDATORY validation measures this; the optional position
+    # guide is only a fallback. Reading head_position.distance_cm meant
+    # reading a block only the guide fills, under a key the guide does
+    # not even write ("est_distance_cm") — so this reported MISSING on
+    # every session while the correct value sat in the manifest.
+    dist = manifest.get("distance") or {}
+    hd = (dist.get("cm")
+          or _get(manifest, "head_position", "est_distance_cm")
+          or _get(manifest, "head_position", "distance_cm"))
     s, v = _grade(hd, lo=25, hi=120)
-    res.add("RQ1", "head_distance_cm", s, v,
-            "assumed 60 cm used if missing" if s == MISSING else "")
+    note = ""
+    if s == MISSING:
+        note = ("NOT MEASURED — every degree in this session divides by "
+                "the assumed %s cm" % (dist.get("assumed_cm") or 60))
+    else:
+        note = "measured at the %s check via %s" % (
+            dist.get("from_phase") or "?", dist.get("source") or "?")
+        if dist.get("estimates_agree") is False:
+            s = DEGENERATE
+            note += " — iris and pupil estimates DISAGREE"
+    res.add("RQ1", "head_distance_cm", s, v, note)
 
     # ── RQ2: events ───────────────────────────────────────────────
-    fixes = manifest.get("fixations") or {}
-    if not fixes:
-        for n, _l, _u, status, _w in SPEC.RQ2_EVENTS:
-            if status == "collected":
-                res.add("RQ2", n, MISSING, "",
-                        "fixations are computed by quality_report.py but "
-                        "not stored in the manifest — see recommendation")
+    # app.py writes these per stimulus under manifest["events"] (from
+    # counts["__events__"]). This block looked for manifest["fixations"],
+    # which nothing ever writes — so every RQ2 metric reported MISSING
+    # on sessions that had computed all of them and printed them to the
+    # log at finalisation. A verifier that cannot find data it already
+    # has is worse than none: it sends you to re-collect.
+    events = manifest.get("events") or manifest.get("fixations") or {}
+    # Saccade figures are nested one level deeper.
+    def _event(stim_block: dict, name: str):
+        if name in stim_block:
+            return stim_block[name]
+        sacc = stim_block.get("saccades") or {}
+        if name == "saccade_amplitude_median_deg":
+            return sacc.get("amplitude_median_deg")
+        return sacc.get(name)
+
+    for n, _l, _u, status, _w in SPEC.RQ2_EVENTS:
+        if status != "collected":
+            continue
+        found = [(stim, _event(blk, n)) for stim, blk in events.items()
+                 if isinstance(blk, dict) and _event(blk, n) is not None]
+        if not found:
+            res.add("RQ2", n, MISSING, "",
+                    "not in manifest['events'] — was the session "
+                    "finalised? (events are written at finalisation)")
+            continue
+        for stim, val in found:
+            res.add("RQ2", "%s [%s]" % (n, stim), PRESENT, val, "")
     # AOI + saccades are computed by aoi_metrics.py; they are only in the
     # manifest if the analysis step has been run and written back.
     for name in ("saccade_count", "saccade_amplitude_median_deg"):
@@ -247,13 +342,67 @@ def check_session(manifest: dict, res: Result) -> None:
             "stored normalised (screen-dependent); record in degrees")
 
     # ── RQ3 ───────────────────────────────────────────────────────
+    # manifest["llm"] is keyed by stimulus: one feedback run per video.
     llm = manifest.get("llm") or {}
-    res.add("RQ3", "llm_model_id", PRESENT if llm.get("model") else MISSING,
-            llm.get("model", ""))
-    res.add("RQ3", "llm_claims_structured",
-            PRESENT if llm.get("feedback") else MISSING, "")
-    res.add("RQ3", "claim_metric_correspondence", MISSING, "",
-            "not implemented — this is the operationalisation of RQ3")
+    blocks = [(k, v) for k, v in llm.items() if isinstance(v, dict)]
+    if not blocks:
+        for n in ("llm_model_id", "llm_claims_structured",
+                  "claim_metric_correspondence"):
+            res.add("RQ3", n, MISSING, "",
+                    "no feedback run recorded for any stimulus — open the "
+                    "review tool and generate it")
+    for stim, blk in blocks:
+        tag = "[%s]" % str(stim)[:18]
+        res.add("RQ3", "llm_model_id %s" % tag,
+                PRESENT if blk.get("llm_model_id") else MISSING,
+                blk.get("llm_model_id", ""),
+                "pin this exact string in the methods section")
+
+        claims = blk.get("structured") or []
+        # Claims with no bbox cannot be scored, so a run that produced
+        # only unlocalised claims has not operationalised RQ3 even
+        # though it produced text.
+        boxed = [c for c in claims
+                 if isinstance(c, dict) and c.get("bbox")]
+        st = PRESENT if boxed else (DEGENERATE if claims else MISSING)
+        res.add("RQ3", "llm_claims_structured %s" % tag, st,
+                "%d claims, %d localised" % (len(claims), len(boxed)),
+                "" if boxed else
+                "claims carry no bbox — nothing to check against the gaze")
+
+        corr = blk.get("correspondence") or {}
+        pct = corr.get("correspondence_pct")
+        testable = corr.get("n_testable") or 0
+        if pct is None:
+            res.add("RQ3", "claim_metric_correspondence %s" % tag, MISSING,
+                    "", corr.get("error") or "not scored")
+        elif testable < 10:
+            # A proportion over a handful of units is not an estimate.
+            res.add("RQ3", "claim_metric_correspondence %s" % tag,
+                    DEGENERATE, "%.1f %%" % pct,
+                    "only %d testable claims — too few to report as a "
+                    "rate" % testable)
+        else:
+            res.add("RQ3", "claim_metric_correspondence %s" % tag, PRESENT,
+                    "%.1f %% of %d" % (pct, testable),
+                    "scored against the recorded gaze, tolerance from the "
+                    "%s" % (corr.get("accuracy_source") or "validation"))
+
+        # The evaluative half of RQ3. With no rubric the prompt tells
+        # the model to return criteria_met: null, so there is no
+        # judgment for a human coder to agree or disagree with and
+        # Cohen's kappa is undefined.
+        judged = [c for c in claims
+                  if isinstance(c, dict) and c.get("criteria_met") is not None]
+        if not blk.get("rubric"):
+            res.add("RQ3", "criteria_met %s" % tag, MISSING, "",
+                    "NO RUBRIC was supplied, so every criteria_met is null "
+                    "and the evaluative half of RQ3 has no data — kappa "
+                    "against human coders is undefined")
+        else:
+            res.add("RQ3", "criteria_met %s" % tag,
+                    PRESENT if judged else DEGENERATE,
+                    "%d/%d judged" % (len(judged), len(claims)))
 
 
 def report(path: str) -> int:

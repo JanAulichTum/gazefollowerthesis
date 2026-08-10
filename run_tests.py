@@ -370,9 +370,16 @@ try:
         check("grid spans 5 vertical elevations (quadratic y fit needs >=3)",
               len(_ys) >= 5, "got %d" % len(_ys))
     _pos = re.search(r"const VALIDATION_POSITIONS = \{(.*?)\};", _js, re.S)
-    check("pre and post reference the same grid",
-          bool(_pos) and "pre: VALIDATION_GRID" in _pos.group(1)
-          and "post: VALIDATION_GRID" in _pos.group(1))
+    # SUPERSEDED by the two-grid protocol (section [17]). Drift still
+    # needs a like-for-like pair, but that pair is now pre_check/post on
+    # grid B — not pre/post on grid A. The fit set is deliberately a
+    # DIFFERENT grid, because measuring the correction where it was
+    # fitted is not a generalisation estimate.
+    check("drift's pair (pre_check, post) share one grid",
+          bool(_pos) and "pre_check: VALIDATION_CHECK_GRID" in _pos.group(1)
+          and "post: VALIDATION_CHECK_GRID" in _pos.group(1))
+    check("the fit set uses the OTHER grid",
+          bool(_pos) and "pre_fit: VALIDATION_GRID" in _pos.group(1))
     check("config records equal pre/post target counts",
           "VALIDATION_TARGETS_PRE = 7" in _cfg
           and "VALIDATION_TARGETS_POST = 7" in _cfg)
@@ -1523,8 +1530,14 @@ try:
     _tiny = _CC.check_claim(
         {"t_start": 8, "t_end": 16, "attended": "a pen",
          "bbox": [0.49, 0.59, 0.02, 0.02]}, _samples, 2.2, _ppd, 1920, 1080)
-    check("an object smaller than the error is UNTESTABLE, not a pass",
-          _tiny["verdict"] == _CC.UNTESTABLE, str(_tiny["verdict"]))
+    # SUPERSEDED (section [19]). A tiny object the gaze is sitting on is
+    # now SUPPORTED with resolvable=False, rather than refused: the
+    # claim may well be right, and the caveat belongs on the claim, not
+    # in place of it.
+    check("a tiny object is scored, and marked unresolvable",
+          _tiny["verdict"] != _CC.UNTESTABLE
+          and _tiny["resolvable"] is False,
+          "%s, resolvable=%s" % (_tiny["verdict"], _tiny["resolvable"]))
     _nob = _CC.check_claim(
         {"t_start": 0, "t_end": 4, "attended": "the room", "bbox": None},
         _samples, 2.2, _ppd, 1920, 1080)
@@ -1570,7 +1583,7 @@ try:
     check("verifier flags a missing post-validation as blocking",
           "NO POST-STIMULUS VALIDATION" in _vm)
     check("verifier warns that in-sample accuracy is not accuracy",
-          "IN-SAMPLE, do not report as " in _vm)
+          "IN-SAMPLE, not a" in _vm)
     check("verifier can restrict to today / a cutoff date",
           "--today" in _vm and "_session_date" in _vm)
 
@@ -2102,6 +2115,513 @@ try:
           "q.distance_measured ? 'pass' : 'fail'" in _rev)
     check("a disagreement between the two rulers is surfaced here too",
           "estimates_agree === false" in _rev)
+
+    # ── claim_check on a REAL session, not just the demo ─────────────
+    # The manifest path used to print "wire in the gaze CSV" and exit,
+    # so `python claim_check.py` silently fell through to --demo and
+    # looked like it had run. RQ3's only automatic validity measure was
+    # a stub.
+    _cc = read("claim_check.py")
+    check("claim_check scores a real manifest, not only the demo",
+          "def load_gaze" in _cc and "def load_claims" in _cc
+          and "Wire in the gaze CSV" not in _cc)
+    check("screen pixels are mapped into VIDEO coordinates via video_rect",
+          "video_rect" in _cc and "(sx - rx) / rw" in _cc)
+    check("the session's gain correction is applied before scoring",
+          "gain correction applied" in _cc and "(sx - cx) * gx" in _cc)
+    check("invalid samples are marked, not scored as 'outside the box'",
+          'row.get("status"' in _cc)
+    check("only samples inside the stimulus window are used",
+          "if ts < t0 or ts > t1" in _cc)
+    check("tolerance uses the OUT-OF-SAMPLE post validation",
+          'v.get("phase") == "post"' in _cc
+          and "IN-SAMPLE — optimistic" in _cc)
+    check("a session with no validation is refused, not scored as perfect",
+          "Refusing." in _cc)
+    check("an over-threshold tolerance is called an upper bound",
+          "UPPER bound" in _cc)
+
+    # ── The window bug that made RQ3 unmeasurable ────────────────────
+    # In "fixations" detail mode the model answers with a single instant
+    # (t_start == t_end). Widening that by 1 ms gave a window narrower
+    # than the 32 ms sampling interval, so 59 of 60 claims scored
+    # UNTESTABLE "no valid gaze samples" and correspondence was computed
+    # from ONE claim. A metric derived from a single unit is not a
+    # metric.
+    check("a zero-length claim is widened to a fixation, not a "
+          "millisecond",
+          "MIN_CLAIM_WINDOW_S" in _cc and "t1 - t0 < MIN_CLAIM_WINDOW_S"
+          in _cc)
+    check("the widening is recorded on the claim, not silent",
+          "window_widened_to_s" in _cc)
+    sys.path.insert(0, BASE)
+    _ccmod = importlib.import_module("claim_check")
+    importlib.reload(_ccmod)
+    check("the claim window matches this pipeline's median fixation",
+          0.15 <= _ccmod.MIN_CLAIM_WINDOW_S <= 0.35,
+          "%.3f s" % _ccmod.MIN_CLAIM_WINDOW_S)
+
+    # Behavioural, on the exact geometry of the 2026-08-10 session:
+    # 31.2 Hz, 2.13 deg accuracy, claims at single instants.
+    _hz = 31.2
+    _samp = [(i / _hz, 0.50, 0.60, True) for i in range(int(30 * _hz))]
+
+    def _score(bbox):
+        return _ccmod.check_claim(
+            {"t_start": 0.3, "t_end": 0.3, "attended": "x", "bbox": bbox},
+            _samp, 2.13, 58.2, 1920, 1080)
+
+    _on = _score([0.40, 0.50, 0.20, 0.20])
+    _off = _score([0.05, 0.05, 0.20, 0.20])
+    check("a single-instant claim now collects samples at 31 Hz",
+          _on.get("n_samples", 0) >= 5, "%d samples" % _on.get("n_samples", 0))
+    check("gaze inside the claimed box scores SUPPORTED",
+          _on["verdict"] == _ccmod.SUPPORTED, _on["verdict"])
+    check("gaze outside it scores CONTRADICTED, not UNTESTABLE",
+          _off["verdict"] == _ccmod.CONTRADICTED, _off["verdict"])
+    # SUPERSEDED (section [19]): refusing every small object discarded
+    # 77 % of a session and equated "18 px from a hand" with "across the
+    # room". Small objects are now graded by distance and flagged
+    # unresolvable, not refused.
+    check("a small object is graded, and flagged as unresolvable",
+          _score([0.49, 0.59, 0.02, 0.02])["resolvable"] is False)
+
+    # ── RQ2 metrics exist; the verifier was looking in the wrong place ─
+    _vm = read("verify_metrics.py")
+    check("verify_metrics reads manifest['events'], where app.py writes "
+          "them",
+          'manifest.get("events")' in _vm)
+    check("the saccade block is unwrapped, not reported missing",
+          'stim_block.get("saccades")' in _vm)
+
+    # ── Offset analysis: whose fault is a low correspondence? ────────
+    # "0 % inside" cannot tell a model that put the box in the wrong
+    # place from a tracker with a systematic displacement, and the two
+    # have opposite fixes.
+    check("the offset VECTOR is recorded, not just the fraction inside",
+          "offset_px" in _cc and "def offset_analysis" in _cc)
+    check("consistency uses SIGN AGREEMENT, not a ratio of medians "
+          "(which reads 1.0 on a 4-3 split)",
+          "def _agree" in _cc and "(v > 0) == (med > 0)" in _cc)
+
+    import random as _rnd
+
+    _boxes = [[0.05 + 0.3 * (i % 3), 0.05 + 0.3 * (i // 3), 0.25, 0.25]
+              for i in range(12)]
+
+    def _synth(shift):
+        _s, _c = [], []
+        for i, b in enumerate(_boxes):
+            t = 1.0 + i * 2.0
+            cx, cy = b[0] + b[2] / 2, b[1] + b[3] / 2
+            dx, dy = shift(i)
+            for k in range(10):
+                _s.append((t - 0.1 + k * 0.02, cx + dx, cy + dy, True))
+            _c.append({"t_start": t, "t_end": t, "attended": "o%d" % i,
+                       "bbox": b})
+        return _ccmod.check_all(_c, _s, 2.13, 58.2, 1920,
+                                1080)["offset_analysis"]
+
+    _rnd.seed(7)
+    _sys = _synth(lambda i: (0.0, 0.16))
+    _sca = _synth(lambda i: (_rnd.uniform(-.2, .2), _rnd.uniform(-.2, .2)))
+    check("a uniform displacement is called SYSTEMATIC",
+          _sys["systematic"] is True,
+          "offset %s, agreement %s" % (_sys["median_offset_px"],
+                                       _sys["direction_consistency"]))
+    check("random misses are NOT called systematic",
+          _sca["systematic"] is False,
+          "offset %s, agreement %s" % (_sca["median_offset_px"],
+                                       _sca["direction_consistency"]))
+    check("untestable claims are framed as the resolution limit, not a "
+          "failure",
+          "resolution limit, not a failure" in _cc
+          and "not individual people" in _cc)
+
+    # ── The tracker's alibi ──────────────────────────────────────────
+    # A consistent direction alone convicted the tracker, and on the
+    # 2026-08-10 session that produced "+160, +404 px (7.46 deg),
+    # suspect the tracker" — for a session whose out-of-sample
+    # validation had measured 2.13 deg against KNOWN targets minutes
+    # earlier on the same gaze stream. Both cannot be true. The
+    # validation bounds how wrong the gaze can be, so it is the alibi.
+    check("the validation accuracy is used to exonerate the tracker",
+          "tracker_exonerated" in _cc and "THE TRACKER'S ALIBI" in _cc)
+
+    _big = _synth_offset = None
+
+    def _offset_case(shift, acc):
+        _s, _c = [], []
+        _bx = [[0.05 + 0.3 * (i % 3), 0.05 + 0.22 * (i // 3), 0.25, 0.25]
+               for i in range(12)]
+        for i, b in enumerate(_bx):
+            t = 1.0 + i * 2.0
+            cx, cy = b[0] + b[2] / 2, b[1] + b[3] / 2
+            dx, dy = shift(i)
+            for k in range(10):
+                _s.append((t - 0.1 + k * 0.02, cx + dx, cy + dy, True))
+            _c.append({"t_start": t, "t_end": t, "attended": "o%d" % i,
+                       "bbox": b})
+        return _ccmod.check_all(_c, _s, acc, 58.2, 1680,
+                                945)["offset_analysis"]
+
+    _huge = _offset_case(lambda i: (0.095, 0.43), 2.13)
+    _small = _offset_case(lambda i: (0.0, 0.04), 2.13)
+    check("a displacement far larger than the measured accuracy does "
+          "NOT blame the tracker",
+          _huge["tracker_exonerated"] is True
+          and "NOT THE TRACKER" in _huge["reading"],
+          "%.2f deg vs %.2f measured" % (_huge["median_offset_deg"], 2.13))
+    check("...and it is named as an RQ3 localisation result instead",
+          "localising it from a prior" in _huge["reading"])
+    check("a displacement WITHIN the tracker's measured error still "
+          "points at the tracker",
+          _small["tracker_exonerated"] is False)
+    check("the offset-to-accuracy ratio is reported, not just a verdict",
+          _huge.get("offset_vs_accuracy") is not None,
+          "%sx" % _huge.get("offset_vs_accuracy"))
+
+    # ══════════════════════════════════════════════════════════════
+    #  The two-grid validation protocol
+    # ══════════════════════════════════════════════════════════════
+    # Fitting the gain correction on grid A and reporting the error at
+    # grid A scores the fit on its training points. Re-measuring at the
+    # SAME positions with fresh samples is better but still not a
+    # generalisation estimate — the correction was tuned to minimise
+    # error at exactly those seven locations. Grid B is disjoint and
+    # matched on difficulty, so the corrected accuracy is out of sample
+    # in both space and time.
+    print("\n[17] Two-grid validation protocol")
+
+    def _grid(name):
+        m = re.search(name + r"\s*=\s*\[(.*?)\];", _js3, re.S)
+        return [tuple(int(v) for v in p)
+                for p in re.findall(r"\[\s*(\d+)\s*,\s*(\d+)\s*\]",
+                                    m.group(1))] if m else []
+
+    _A = _grid("VALIDATION_GRID")
+    _B = _grid("VALIDATION_CHECK_GRID")
+    _ecc = lambda g, i: sum(abs(p[i] - 50) for p in g) / len(g)
+
+    check("both grids exist and have the same number of targets",
+          len(_A) == 7 and len(_B) == 7, "A=%d B=%d" % (len(_A), len(_B)))
+    check("the grids share NO target position",
+          not (set(_A) & set(_B)), "shared: %s" % sorted(set(_A) & set(_B)))
+    check("horizontal eccentricity is matched (B is not an easier grid)",
+          abs(_ecc(_A, 0) - _ecc(_B, 0)) <= 2.0,
+          "A %.1f vs B %.1f" % (_ecc(_A, 0), _ecc(_B, 0)))
+    check("vertical eccentricity is matched",
+          abs(_ecc(_A, 1) - _ecc(_B, 1)) <= 2.0,
+          "A %.1f vs B %.1f" % (_ecc(_A, 1), _ecc(_B, 1)))
+    check("B spans as many vertical elevations as A (the y-correction "
+          "needs them)",
+          len({p[1] for p in _B}) >= len({p[1] for p in _A}))
+    check("post uses grid B, so drift pairs with pre_check like for like",
+          "post: VALIDATION_CHECK_GRID" in _js3)
+
+    check("the two pre-checks run as ONE user action",
+          "run('pre_fit'" in _js3 and "run('pre_check'" in _js3
+          and _js3.index("run('pre_fit'") < _js3.index("run('pre_check'"))
+    check("the validate button disables itself (a repeatable button "
+          "gets pressed until the number looks good)",
+          "this.validateBtn.disabled = true" in _js3)
+
+    check("ONLY the fit phase fits the correction",
+          'record["phase"] in ("pre_fit", "pre")' in _app3
+          and '_auto_fit_correction' in _app3)
+    check("a repeat attempt does NOT refit",
+          'record["attempt"] == 1' in _app3)
+    check("each validation records its role and grid",
+          'record["role"]' in _app3 and 'record["grid"]' in _app3
+          and 'record["canonical_accuracy"]' in _app3)
+    check("repeat attempts are counted and logged as a deviation",
+          'record["attempt"] = len(prior) + 1' in _app3
+          and "PROTOCOL:" in _app3)
+
+    check("verify_metrics treats pre_check as the canonical corrected "
+          "accuracy",
+          'v.get("phase") == "pre_check"' in _vm
+          and "canonical corrected accuracy" in _vm)
+    check("a legacy repeat at the FIT grid is graded DEGENERATE, not "
+          "reported as corrected accuracy",
+          "IN-SAMPLE, not a" in _vm)
+    check("drift is differenced on ONE basis",
+          'pre[-1].get("mean_err_deg_raw")' in _vm
+          and 'post[-1].get("mean_err_deg_raw")' in _vm)
+    check("a mixed-basis drift is graded DEGENERATE, not PRESENT",
+          "MIXED correction, not comparable" in _vm)
+
+    # The arithmetic, on the 2026-08-10 session's actual numbers.
+    check("the old drift computation mixed bases",
+          abs((2.13 - 4.52) - (-2.39)) < 0.01, "-2.39 = corrected − raw")
+    check("the corrected computation matches the review page",
+          abs((5.04 - 4.53) - 0.51) < 0.01, "+0.51 = raw − raw")
+
+    # ── The distance, and RQ3, must reach the session record ────────
+    # Both failed the same way: the value existed, and the thing that
+    # reads it looked somewhere else.
+    check("the manifest carries a distance from the MANDATORY validation, "
+          "not only the optional guide",
+          '"distance": _session_distance(state)' in _app3
+          and "def _session_distance" in _app3)
+    check("pre_check is preferred as the distance source",
+          '("pre_check", "pre_fit", "pre", "post")' in _app3)
+    check("an unmeasured distance says what it contaminates",
+          "every \n                      \"degree figure in this session divides by" in _app3
+          or "degree figure in this session divides by" in _app3)
+    check("verify_metrics reads the manifest distance block",
+          'manifest.get("distance")' in _vm
+          and 'head_position", "est_distance_cm"' in _vm)
+
+    check("the LLM result is written into the manifest, not only the log "
+          "directory",
+          "def _persist_llm_result" in _app3
+          and 'manifest.setdefault("llm", {})[stimulus] = block' in _app3)
+    check("correspondence is scored at write time, not left to a command "
+          "someone must remember",
+          "claim_check.check_all(" in _app3)
+    check("a failure to score never loses generated feedback",
+          "Correspondence scoring failed" in _app3)
+    check("verify_metrics grades claims with no bbox as DEGENERATE",
+          "nothing to check against the gaze" in _vm)
+    check("a correspondence rate over too few units is DEGENERATE, not a "
+          "result",
+          "too few to report as a" in _vm)
+    check("a missing rubric is named as the reason the evaluative half "
+          "of RQ3 has no data",
+          "NO RUBRIC was supplied" in _vm and "kappa" in _vm)
+
+    import verify_metrics as _vmod
+    importlib.reload(_vmod)
+    _base = {"validations": [], "data_quality": {}, "events": {}}
+
+    def _rq3(llm):
+        m = dict(_base)
+        m["llm"] = llm
+        r = _vmod.Result()
+        _vmod.check_session(m, r)
+        return {n.split(" [")[0]: (s, v)
+                for rq, n, s, v, _ in r.rows if rq == "RQ3"}
+
+    _mk = lambda n, **kw: {"_t.mp4": dict(
+        {"llm_model_id": "m", "structured": [
+            {"bbox": [0, 0, .2, .2], "criteria_met": None} for _ in range(20)]},
+        **kw)}
+    _none = _rq3({})
+    _few = _rq3(_mk(20, correspondence={"correspondence_pct": 50.0,
+                                        "n_testable": 4}))
+    _good = _rq3(_mk(20, rubric="r",
+                     correspondence={"correspondence_pct": 68.0,
+                                     "n_testable": 25}))
+    check("a session with no feedback run reports all three RQ3 fields "
+          "missing",
+          all(_none[k][0] == _vmod.MISSING for k in
+              ("llm_model_id", "llm_claims_structured",
+               "claim_metric_correspondence")))
+    check("4 testable claims is DEGENERATE, not a 50 % result",
+          _few["claim_metric_correspondence"][0] == _vmod.DEGENERATE)
+    check("25 testable claims with a rubric is PRESENT",
+          _good["claim_metric_correspondence"][0] == _vmod.PRESENT,
+          _good["claim_metric_correspondence"][1])
+
+    # ══════════════════════════════════════════════════════════════
+    #  Region vocabulary + calibration diagnosis
+    # ══════════════════════════════════════════════════════════════
+    print("\n[18] Region vocabulary and calibration diagnosis")
+    _reg = importlib.import_module("regions")
+    importlib.reload(_reg)
+
+    # The grid is DERIVED from accuracy, not chosen. min cell >= 2x
+    # accuracy is the same rule metrics_spec states for AOIs.
+    for _deg, _want in ((1.5, (3, 3)), (2.13, (3, 3)), (3.0, (3, 2))):
+        _g = _reg.admissible_grid(_deg * 58.2, 1680, 945)
+        check("%.2f deg admits a %dx%d grid" % (_deg, _want[0], _want[1]),
+              _g["admissible"] and (_g["cols"], _g["rows"]) == _want,
+              "%s, cells %s" % (
+                  "%dx%d" % (_g["cols"], _g["rows"]) if _g["admissible"]
+                  else "none", _g.get("cell_px")))
+    _bad = _reg.admissible_grid(5.0 * 58.2, 1680, 945)
+    check("an accuracy too poor for ANY grid is refused, not rounded down",
+          _bad["admissible"] is False and not _bad["regions"])
+    check("every admitted cell really is >= 2 x accuracy",
+          all(min(_reg.admissible_grid(d * 58.2, 1680, 945)["cell_px"])
+              >= 2 * d * 58.2
+              for d in (1.5, 2.13, 3.0)))
+    _g3 = _reg.admissible_grid(2.13 * 58.2, 1680, 945)
+    check("region rects tile the frame exactly once",
+          abs(sum(r["bbox"][2] * r["bbox"][3] for r in _g3["regions"]) - 1.0)
+          < 0.01)
+    check("region names are spatial words, not coordinates",
+          "upper-left" in {r["name"] for r in _g3["regions"]})
+    check("the prompt vocabulary lists every region",
+          all(r["name"] in _reg.vocabulary_text(_g3)
+              for r in _g3["regions"]))
+
+    # The grid derivation stays in regions.py — it is the argument for
+    # what the method can resolve, and the validity document cites it —
+    # but the PROMPT no longer imposes a vocabulary. Object-level claims
+    # graded by distance replaced it (section [19]).
+    check("the region grid is still derivable for the resolution "
+          "argument",
+          "def admissible_grid" in read("regions.py"))
+    check("a region claim is scored against the KNOWN rect, not the "
+          "model's box",
+          'claim.get("region") and grid' in _cc)
+    check("a region outside the vocabulary is rejected, not guessed at",
+          "named a region outside the vocabulary" in _cc)
+
+    # calibration_diagnosis: does it tell the four causes apart?
+    _cd = importlib.import_module("calibration_diagnosis")
+    importlib.reload(_cd)
+    _G = [(230, 130), (1690, 130), (960, 335), (288, 540),
+          (1632, 540), (960, 745), (960, 950)]
+
+    def _tg(gx, gy, ox=0, oy=0, noise=None):
+        out = []
+        for i, (tx, ty) in enumerate(_G):
+            mx = 960 + (tx - 960) * gx + ox
+            my = 540 + (ty - 540) * gy + oy
+            if noise:
+                mx += noise[i % len(noise)]
+                my -= noise[i % len(noise)]
+            out.append({"tx": tx, "ty": ty, "mx": mx, "my": my})
+        return out
+
+    def _diag(tg):
+        return _cd.analyse({"validations": [
+            {"phase": "pre_fit", "targets": tg,
+             "mean_err_px": 0, "mean_err_deg": 0}]})
+
+    _comp = _diag(_tg(0.78, 0.73))
+    _off = _diag(_tg(1.0, 1.0, ox=60, oy=90))
+    _noise = _diag(_tg(1.0, 1.0, noise=[70, -65, 55, -80, 60, -70, 75]))
+    check("a compressed range is named RANGE COMPRESSION",
+          _comp["y"]["verdict"] == "RANGE COMPRESSION",
+          "slope %.2f -> gain %.2f" % (_comp["y"]["slope"],
+                                       _comp["y"]["implied_gain"]))
+    check("...and the implied gain matches the session's own (1.365)",
+          abs(_comp["y"]["implied_gain"] - 1.37) < 0.02)
+    check("a constant miss is named UNIFORM OFFSET, not a gain problem",
+          _off["y"]["verdict"] == "UNIFORM OFFSET")
+    check("position-independent error is named UNSTRUCTURED",
+          _noise["y"]["verdict"] == "UNSTRUCTURED")
+    check("it diagnoses the UNCORRECTED check, not the corrected one",
+          '"pre_fit", "pre"' in read("calibration_diagnosis.py"))
+    check("a range problem is sent upstream to the calibration grid",
+          "Extend the CALIBRATION grid" in read("calibration_diagnosis.py"))
+
+    # ══════════════════════════════════════════════════════════════
+    #  Graded scoring, the inverse check, and human coding
+    # ══════════════════════════════════════════════════════════════
+    print("\n[19] Graded claims, inverse check, human coding")
+
+    # The region vocabulary is gone from the prompt again.
+    check("the prompt no longer imposes a region vocabulary",
+          "SPATIAL VOCABULARY" not in _app3
+          and "one of the region names above" not in _app3)
+
+    # GRADED, not binary. Refusing every claim about an object smaller
+    # than the error threw away 77 % of a session, and treated "18 px
+    # from a hand" the same as "across the room".
+    check("claims are graded by DISTANCE, not refused for being small",
+          "CONSISTENT" in _cc and "distance_px" in _cc)
+    check("the tolerance is applied ONCE (containment is unpadded)",
+          "counts the same allowance twice" in _cc
+          and "bx <= s[1] <= bx + bw" in _cc)
+    check("both a strict and a lenient correspondence rate are reported",
+          "correspondence_lenient_pct" in _cc)
+    check("UNTESTABLE now means only 'no samples here'",
+          "no valid gaze samples in this time window" in _cc)
+
+    _hz2 = 31.2
+    _sm = [(i / _hz2, 0.50, 0.60, True) for i in range(int(30 * _hz2))]
+
+    def _v(bbox):
+        return _ccmod.check_claim(
+            {"t_start": 5, "t_end": 5, "attended": "x", "bbox": bbox},
+            _sm, 2.13, 58.2, 1680, 945)
+
+    check("gaze on the object is SUPPORTED",
+          _v([0.45, 0.55, 0.10, 0.10])["verdict"] == "SUPPORTED")
+    check("a near miss inside the error is CONSISTENT, not discarded",
+          _v([0.42, 0.55, 0.05, 0.10])["verdict"] == "CONSISTENT",
+          "%s px away" % _v([0.42, 0.55, 0.05, 0.10])["distance_px"])
+    check("a miss beyond the error is CONTRADICTED",
+          _v([0.05, 0.05, 0.10, 0.10])["verdict"] == "CONTRADICTED",
+          "%s px away" % _v([0.05, 0.05, 0.10, 0.10])["distance_px"])
+    check("a small object no longer blocks a verdict",
+          _v([0.44, 0.52, 0.06, 0.06])["verdict"] != "UNTESTABLE")
+
+    # INVERSE CHECK: locate first, on clean frames, then assign gaze.
+    _ic = importlib.import_module("inverse_check")
+    importlib.reload(_ic)
+    check("the locate prompt never mentions gaze or eye tracking",
+          not any(w in _ic.LOCATE_PROMPT.lower()
+                  for w in ("gaze", "eye track", "fixation", "participant "
+                            "looked")))
+    check("it asks for people separately and excludes background",
+          "every person separately" in _ic.LOCATE_PROMPT
+          and "walls, floors, ceilings" in _ic.LOCATE_PROMPT)
+
+    _objs = [{"label": "girl in red shirt", "bbox": [0.45, 0.40, 0.07, 0.16]},
+             {"label": "boy in blue hoodie", "bbox": [0.60, 0.40, 0.07, 0.16]},
+             {"label": "orange poster", "bbox": [0.40, 0.20, 0.05, 0.06]}]
+    _on = _ic.assign_fixation({"x": 0.48, "y": 0.45}, _objs, 124.0, 1680, 945)
+    _mid = _ic.assign_fixation({"x": 0.545, "y": 0.45}, _objs, 124.0, 1680, 945)
+    check("a fixation ON a person is assigned unambiguously",
+          _on["assigned"] == "girl in red shirt" and not _on["ambiguous"],
+          "separation %s px" % _on["separation_px"])
+    check("a fixation BETWEEN two people is flagged ambiguous, not guessed",
+          _mid["ambiguous"] is True,
+          "separation %s px at 124 px error" % _mid["separation_px"])
+    # The runner-up here is the POSTER, not the other student: at
+    # (0.48, 0.45) the poster is 187 px away and the boy 202 px. Worth
+    # keeping as a reminder that "the next nearest thing" is a
+    # geometric fact, not the semantically obvious neighbour — which is
+    # exactly why the tool reports it instead of assuming.
+    check("the runner-up is reported so ambiguity is auditable",
+          _on.get("runner_up") and _on.get("runner_up_distance_px"),
+          "%s at %s px" % (_on.get("runner_up"),
+                           _on.get("runner_up_distance_px")))
+    check("agreement matching is lexical and stated, not model-judged",
+          "LEXICAL and loose" in read("inverse_check.py"))
+
+    _cmp = _ic.compare(
+        [{"t": 1.0, "assigned": "girl in red shirt", "ambiguous": False},
+         {"t": 3.0, "assigned": "orange poster", "ambiguous": False}],
+        [{"t_start": 1.0, "attended": "the girl in the red shirt"},
+         {"t_start": 3.0, "attended": "a ceiling light"}])
+    check("compare() scores agreement between gaze-derived and claimed",
+          _cmp["n_compared"] == 2 and _cmp["agreement_pct"] == 50.0,
+          "%s %% of %d" % (_cmp["agreement_pct"], _cmp["n_compared"]))
+    check("ambiguous assignments are excluded from the agreement rate",
+          _ic.compare([{"t": 1.0, "assigned": "x", "ambiguous": True}],
+                      [{"t_start": 1.0, "attended": "x"}])["n_compared"] == 0)
+
+    # HUMAN CODING — the only anchor that is not a model.
+    _coder = read("templates/coder.html")
+    check("a coding route and page exist",
+          '@app.route("/coder")' in _app3 and "def coder(" in _app3)
+    check("units carry the model's claim for the same moment",
+          '"model_claim"' in _app3)
+    check("verdicts are stored PER CODER, never merged",
+          "never merged" in _app3
+          and '"%s__%s__%s.json"' in _app3)
+    check("the rubric the coder worked to is stored with the verdicts",
+          '"instructions": payload.get("instructions")' in _app3)
+    check("blind mode hides the claim until the coder has decided",
+          "blindMode" in _coder and "stops coding and starts agreeing"
+          in _coder)
+    check("'unclear' is a first-class verdict, not a skip",
+          "unclear" in _coder and "first-class verdict" in _coder)
+    check("unclear units are excluded from the rate, not counted wrong",
+          "excluded from that" in _coder)
+    check("the marker shows the measured error as a RING, not a point",
+          "gazeRing" in _coder and "accuracy_deg" in _coder)
+    check("the coder is pointed at a second rater for kappa",
+          "second coder" in _coder and "agreement_kit" in _coder)
+    check("running with no arguments says how to score a real session",
+          "showing the DEMO on synthetic data" in _cc)
     check("duty prefers total callback cost over model cost",
           'or (live_cb or {}).get("callback_ms_median")' in _tsvc3)
     check("a duty figure computed from models alone is marked as such",
