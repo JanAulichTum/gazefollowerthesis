@@ -1266,6 +1266,56 @@ class Service:
                    models,
                    ("; %s ms is everything else in the callback"
                     % result["overhead_ms_median"]) if cb else ""))
+            # ── BOTTLENECK ATTRIBUTION ───────────────────────────────
+            # A low rate has two families of cause that need OPPOSITE
+            # fixes, and on a real webcam ``capture`` is None, so the
+            # served-vs-sustained comparison above is unavailable. The
+            # stage timers are available, and they settle it:
+            #
+            #   the models fill the frame interval  -> the CPU is the
+            #       limit (EcoQoS demotion, thermal, contention). Fix
+            #       the machine.
+            #   the models finish in a fraction of the frame interval
+            #       -> the pipeline spends most of each interval IDLE,
+            #       waiting for a frame that has not arrived. The
+            #       camera is delivering slowly for its own reasons.
+            #       Fix the CAMERA (lighting / exposure), not the CPU.
+            #
+            # The classic camera cause is auto-exposure: a UVC webcam
+            # cannot integrate for longer than one frame period, so in
+            # dim light it HALVES the frame rate to buy exposure time
+            # (30 -> 15 -> 10). Detection stays high because the image
+            # is still perfectly usable — there is simply less of it.
+            # That signature (an exact halving at high detection, with
+            # cheap model stages) is the one this flag catches.
+            if models and sustained > 0:
+                interval_ms = 1000.0 / sustained
+                result["frame_interval_ms"] = round(interval_ms, 1)
+                result["pipeline_duty_pct"] = round(
+                    100.0 * models / interval_ms, 1)
+                result["camera_throttled"] = bool(
+                    models < 0.60 * interval_ms
+                    and sustained < 0.85 * NOMINAL_CAMERA_FPS)
+                result["cpu_throttled"] = bool(
+                    models >= 0.60 * interval_ms
+                    and sustained < 0.85 * NOMINAL_CAMERA_FPS)
+                if result["camera_throttled"]:
+                    log("Bottleneck: THE CAMERA. Models take %.1f ms of a "
+                        "%.1f ms frame interval (%.0f %% duty) — the "
+                        "pipeline is idle %.1f ms per frame waiting for a "
+                        "frame that has not arrived. The CPU is not the "
+                        "limit. Most likely auto-exposure lengthening in "
+                        "dim light; run camera_light_test.py."
+                        % (models, interval_ms,
+                           result["pipeline_duty_pct"],
+                           interval_ms - models))
+                elif result["cpu_throttled"]:
+                    log("Bottleneck: PER-FRAME WORK. Models take %.1f ms of "
+                        "a %.1f ms frame interval (%.0f %% duty) — the CPU "
+                        "is the limit. Check perf mode, thermals and other "
+                        "running processes."
+                        % (models, interval_ms,
+                           result["pipeline_duty_pct"]))
         if capture:
             served = capture.get("served_hz_this_window")
             cb_med = capture.get("callback_ms_median")
@@ -1283,8 +1333,18 @@ class Service:
                 "callback median %s ms / p90 %s ms (budget %s ms) -> %s"
                 % (served, capture.get("late_this_window"), cb_med,
                    capture.get("callback_ms_p90"), budget,
-                   "the capture loop IS the limit — per-frame work is too "
-                   "expensive" if result.get("capture_limited")
+                   # NOTE: capture_limited means only that nothing is
+                   # lost BETWEEN capture and the sample stream. It does
+                   # NOT by itself prove the per-frame work is expensive
+                   # — a camera delivering 15 fps because of exposure
+                   # also produces served == sustained. over_frame_budget
+                   # is the flag that separates those two.
+                   ("no downstream loss; per-frame work is OVER budget, "
+                    "so the capture loop is the limit"
+                    if result.get("over_frame_budget") else
+                    "no downstream loss, and per-frame work is UNDER "
+                    "budget — so the camera itself is delivering slowly")
+                   if result.get("capture_limited")
                    else "capture is FASTER than the sample stream — frames "
                         "are being dropped downstream"))
         log("Rate check: sustained %.1f Hz (initial %.1f, peak %.1f) over "

@@ -54,7 +54,42 @@ Enable with ``GF_CAMERA_FIX=1``; tune with ``GF_CAM_WIDTH`` /
 from __future__ import annotations
 
 import os
+import statistics
 import sys
+import time
+
+# ── Exposure ──────────────────────────────────────────────────────────
+# A UVC webcam cannot integrate light for longer than one frame period.
+# When auto-exposure decides the scene is dim it lengthens the exposure,
+# and once the required exposure exceeds the frame period the driver
+# HALVES the delivered frame rate to make room: 30 -> 15 -> 10 fps. This
+# is invisible in every software metric except the rate itself, because
+# detection stays high — the image is still perfectly usable, there is
+# simply less of it. It also drifts DURING a session, since the screen
+# is the main light on the participant's face and a dark video is a dark
+# lamp.
+#
+# Capping the exposure time at one frame period removes the mechanism.
+# The cost is a darker image, which the camera's gain partly recovers at
+# the price of noise. Whether that trade is acceptable is an empirical
+# question about detection rate, so the cap is OPT-IN and self-reverting:
+# if the resulting frame is too dark to be useful, auto-exposure is
+# restored and the reason logged, because a bright 15 Hz recording is
+# better than a black 30 Hz one.
+#
+# CAP_PROP_EXPOSURE is in log2 seconds on the DirectShow/V4L2 backends:
+# -5 -> 2^-5 s = 31.25 ms, which fits inside a 33.3 ms frame.
+EXPOSURE_LOG2_FOR_30FPS = -5
+MIN_USABLE_BRIGHTNESS = 35.0    # mean of 0-255; below this, revert
+MAX_USABLE_BRIGHTNESS = 235.0   # blown out; below this, revert
+
+
+def exposure_mode() -> str:
+    """``auto`` (default) or ``capped``."""
+    raw = os.environ.get("GF_CAM_EXPOSURE", "").strip().lower()
+    if raw in ("capped", "cap", "fixed", "manual", "1", "true", "yes"):
+        return "capped"
+    return "auto"
 
 # ── Windows console encoding ──────────────────────────────────────────
 try:
@@ -95,6 +130,82 @@ def make_camera(log=None):
 
     cfg = desired_camera()
 
+    def _mean_brightness(cap, n: int = 5) -> "float | None":
+        vals = []
+        for _ in range(n):
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                vals.append(float(frame[::8, ::8].mean()))
+        return statistics.median(vals) if vals else None
+
+    def _measure_fps(cap, seconds: float = 1.5) -> "float | None":
+        """Frames the camera ACTUALLY delivers.
+
+        CAP_PROP_FPS reports what was requested, not what arrives — a
+        camera throttled by auto-exposure still claims 30. Only timing
+        real reads tells the truth, so the self-check and the manifest
+        use this rather than the property.
+        """
+        stamps = []
+        t_end = time.perf_counter() + seconds
+        while time.perf_counter() < t_end:
+            ok, _ = cap.read()
+            if not ok:
+                break
+            stamps.append(time.perf_counter())
+        if len(stamps) < 5:
+            return None
+        gaps = [b - a for a, b in zip(stamps[:-1], stamps[1:]) if b > a]
+        return 1.0 / statistics.median(gaps) if gaps else None
+
+    def _cap_exposure(cap) -> str:
+        """Stop auto-exposure from halving the frame rate. Self-reverting."""
+        before = _mean_brightness(cap)
+        # AUTO_EXPOSURE semantics differ by backend and even by build:
+        # DirectShow commonly uses 0/1, V4L2 uses 1 (manual) / 3 (auto),
+        # and some OpenCV builds use 0.25/0.75. Try them in order and
+        # keep whichever actually changes the delivered exposure.
+        applied = False
+        for manual_value in (0.25, 0, 1):
+            try:
+                if not cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, manual_value):
+                    continue
+                if cap.set(cv2.CAP_PROP_EXPOSURE, EXPOSURE_LOG2_FOR_30FPS):
+                    applied = True
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+        if not applied:
+            return "auto (camera refused manual exposure)"
+        # Give gain a chance to recover the light we just took away.
+        for prop in ("CAP_PROP_GAIN", "CAP_PROP_BRIGHTNESS"):
+            try:
+                cap.set(getattr(cv2, prop), cap.get(getattr(cv2, prop)))
+            except Exception:  # noqa: BLE001
+                pass
+        time.sleep(0.5)
+        after = _mean_brightness(cap)
+        if after is None:
+            return "auto (could not verify brightness)"
+        if after < MIN_USABLE_BRIGHTNESS or after > MAX_USABLE_BRIGHTNESS:
+            # A frame the model cannot use is worse than a slow one.
+            for auto_value in (0.75, 3, 1):
+                try:
+                    if cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, auto_value):
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+            return ("auto (REVERTED: capping exposure left the image at "
+                    "%.0f/255, outside the usable %.0f-%.0f band%s — add "
+                    "light to the participant's face instead)"
+                    % (after, MIN_USABLE_BRIGHTNESS, MAX_USABLE_BRIGHTNESS,
+                       "" if before is None else
+                       ", was %.0f on auto" % before))
+        return ("capped at 2^%d s = %.1f ms (brightness %.0f/255%s)"
+                % (EXPOSURE_LOG2_FOR_30FPS,
+                   1000.0 * 2 ** EXPOSURE_LOG2_FOR_30FPS, after,
+                   "" if before is None else ", was %.0f on auto" % before))
+
     class FixedWebCamCamera(WebCamCamera):  # type: ignore[misc, valid-type]
         """WebCamCamera that actually applies its capture properties."""
 
@@ -118,15 +229,39 @@ def make_camera(log=None):
             except Exception:  # noqa: BLE001 — not all backends support it
                 pass
 
+            exposure = "auto (webcam decides; may halve the frame rate "
+            exposure += "in dim light)"
+            if exposure_mode() == "capped":
+                exposure = _cap_exposure(self._cap)
+
+            # The DELIVERED rate, measured. Doing this here — before a
+            # participant is calibrated — is what turns "the session was
+            # 15 Hz" into "the camera was 15 Hz from the moment it
+            # opened", which is a different and much shorter search.
+            delivered = _measure_fps(self._cap)
+            self.measured_fps = delivered
+            self.exposure_mode_desc = exposure
+
             if log:
                 log("Camera fix active: requested %dx%d @%d fps -> got "
-                    "%.0fx%.0f @%.0f fps (native capture; GazeFollower's "
-                    "own settings are applied before open() and silently "
-                    "do nothing)"
+                    "%.0fx%.0f, camera CLAIMS %.0f fps, actually DELIVERS "
+                    "%s fps | exposure: %s"
                     % (self.img_width, self.img_height, self.cam_fps,
                        self._cap.get(cv2.CAP_PROP_FRAME_WIDTH),
                        self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT),
-                       self._cap.get(cv2.CAP_PROP_FPS)))
+                       self._cap.get(cv2.CAP_PROP_FPS),
+                       "%.1f" % delivered if delivered else "?",
+                       exposure))
+                if delivered and delivered < 0.85 * self.cam_fps:
+                    log("*** THE CAMERA IS THE BOTTLENECK: it delivers "
+                        "%.1f fps with no tracking running at all, against "
+                        "a requested %d. Nothing downstream can be faster "
+                        "than this. The usual cause is auto-exposure "
+                        "lengthening in dim light — put a lamp on the "
+                        "participant's face, raise the screen brightness, "
+                        "or set GF_CAM_EXPOSURE=capped. Confirm with "
+                        "camera_light_test.py. ***"
+                        % (delivered, self.cam_fps))
             self._create_capture_thread()
 
     try:
@@ -148,8 +283,14 @@ def describe() -> str:
                 "in software every frame). Set GF_CAMERA_FIX=1 to capture "
                 "natively at 640x480 and A/B it with tracker_fps_test.py")
     cfg = desired_camera()
-    return "patched: native capture at %dx%d @%d fps, buffer size 1" % (
-        cfg["width"], cfg["height"], cfg["fps"])
+    return ("patched: native capture at %dx%d @%d fps, buffer size 1, "
+            "exposure %s" % (cfg["width"], cfg["height"], cfg["fps"],
+                             "CAPPED at one frame period (auto-exposure "
+                             "cannot halve the frame rate)"
+                             if exposure_mode() == "capped"
+                             else "AUTO (the webcam may halve the frame "
+                                  "rate in dim light — set "
+                                  "GF_CAM_EXPOSURE=capped to prevent it)"))
 
 
 if __name__ == "__main__":

@@ -1887,6 +1887,62 @@ except Exception as exc:  # noqa: BLE001
     _blocked = environment_block(exc)
     check("metrics specification", False, _blocked or repr(exc))
 
+
+# ══════════════════════════════════════════════════════════════════════
+#  Bottleneck attribution: is a low rate the CPU or the CAMERA?
+# ══════════════════════════════════════════════════════════════════════
+# These two causes need opposite fixes, and for most of this project the
+# rate gate assumed the CPU: it told the researcher to change the power
+# plan even when the models were finishing in a third of the frame
+# interval, which is the signature of a camera throttling itself with
+# auto-exposure. Wrong advice at the rate gate costs a participant slot,
+# so the discriminator is tested rather than trusted.
+print("\n[16] Bottleneck attribution (CPU vs camera)")
+try:
+    _tsvc3 = read("tracker_service.py")
+    _js3 = read("static/js/experiment.js")
+    _camp = read("camera_patch.py")
+
+    check("the rate check attributes a low rate to the camera or the CPU",
+          "camera_throttled" in _tsvc3 and "cpu_throttled" in _tsvc3)
+    check("attribution uses model cost vs the frame interval, not the "
+          "rate alone",
+          "pipeline_duty_pct" in _tsvc3 and "frame_interval_ms" in _tsvc3)
+    check("the two verdicts are mutually exclusive",
+          "models < 0.60 * interval_ms" in _tsvc3
+          and "models >= 0.60 * interval_ms" in _tsvc3)
+    check("neither verdict fires while the rate is acceptable",
+          _tsvc3.count("sustained < 0.85 * NOMINAL_CAMERA_FPS") == 2)
+    check("capture_limited no longer claims per-frame work is expensive "
+          "without checking the budget",
+          "over_frame_budget" in _tsvc3
+          and "the camera itself is delivering slowly" in _tsvc3)
+
+    check("the browser blames the camera, not AC power, when duty is low",
+          "g.camera_throttled" in _js3
+          and "CAMERA problem, not a" in _js3)
+    check("the camera branch is tested BEFORE the machine branch",
+          _js3.index("g.camera_throttled") < _js3.index("g.cpu_throttled"))
+    check("the camera advice names lighting rather than the power plan",
+          "lamp on your FACE" in _js3
+          and "power plan will not help" in _js3)
+
+    check("the camera measures its DELIVERED fps, not the property it "
+          "reports",
+          "_measure_fps" in _camp and "actually DELIVERS" in _camp)
+    check("a camera slower than requested is called out at open time",
+          "THE CAMERA IS THE BOTTLENECK" in _camp)
+    check("exposure capping exists and is opt-in",
+          "GF_CAM_EXPOSURE" in _camp and 'return "auto"' in _camp)
+    check("a capped exposure that darkens the image reverts itself",
+          "REVERTED" in _camp
+          and "MIN_USABLE_BRIGHTNESS" in _camp)
+    check("the exposure cap fits inside one frame period",
+          (1000.0 * 2 ** -5) < 33.4)
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("bottleneck attribution", False, _blocked or repr(exc))
+
 # ── Summary ────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)
 if FAILURES:
