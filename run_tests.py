@@ -2127,6 +2127,55 @@ try:
           "Refusing." in _cc)
     check("an over-threshold tolerance is called an upper bound",
           "UPPER bound" in _cc)
+
+    # ── The window bug that made RQ3 unmeasurable ────────────────────
+    # In "fixations" detail mode the model answers with a single instant
+    # (t_start == t_end). Widening that by 1 ms gave a window narrower
+    # than the 32 ms sampling interval, so 59 of 60 claims scored
+    # UNTESTABLE "no valid gaze samples" and correspondence was computed
+    # from ONE claim. A metric derived from a single unit is not a
+    # metric.
+    check("a zero-length claim is widened to a fixation, not a "
+          "millisecond",
+          "MIN_CLAIM_WINDOW_S" in _cc and "t1 - t0 < MIN_CLAIM_WINDOW_S"
+          in _cc)
+    check("the widening is recorded on the claim, not silent",
+          "window_widened_to_s" in _cc)
+    sys.path.insert(0, BASE)
+    _ccmod = importlib.import_module("claim_check")
+    importlib.reload(_ccmod)
+    check("the claim window matches this pipeline's median fixation",
+          0.15 <= _ccmod.MIN_CLAIM_WINDOW_S <= 0.35,
+          "%.3f s" % _ccmod.MIN_CLAIM_WINDOW_S)
+
+    # Behavioural, on the exact geometry of the 2026-08-10 session:
+    # 31.2 Hz, 2.13 deg accuracy, claims at single instants.
+    _hz = 31.2
+    _samp = [(i / _hz, 0.50, 0.60, True) for i in range(int(30 * _hz))]
+
+    def _score(bbox):
+        return _ccmod.check_claim(
+            {"t_start": 0.3, "t_end": 0.3, "attended": "x", "bbox": bbox},
+            _samp, 2.13, 58.2, 1920, 1080)
+
+    _on = _score([0.40, 0.50, 0.20, 0.20])
+    _off = _score([0.05, 0.05, 0.20, 0.20])
+    check("a single-instant claim now collects samples at 31 Hz",
+          _on.get("n_samples", 0) >= 5, "%d samples" % _on.get("n_samples", 0))
+    check("gaze inside the claimed box scores SUPPORTED",
+          _on["verdict"] == _ccmod.SUPPORTED, _on["verdict"])
+    check("gaze outside it scores CONTRADICTED, not UNTESTABLE",
+          _off["verdict"] == _ccmod.CONTRADICTED, _off["verdict"])
+    check("an object smaller than the tolerance is still UNTESTABLE",
+          _score([0.49, 0.59, 0.02, 0.02])["verdict"] == _ccmod.UNTESTABLE)
+
+    # ── RQ2 metrics exist; the verifier was looking in the wrong place ─
+    _vm = read("verify_metrics.py")
+    check("verify_metrics reads manifest['events'], where app.py writes "
+          "them",
+          'manifest.get("events")' in _vm)
+    check("the saccade block is unwrapped, not reported missing",
+          'stim_block.get("saccades")' in _vm)
     check("running with no arguments says how to score a real session",
           "showing the DEMO on synthetic data" in _cc)
     check("duty prefers total callback cost over model cost",

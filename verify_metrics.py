@@ -206,13 +206,34 @@ def check_session(manifest: dict, res: Result) -> None:
             "assumed 60 cm used if missing" if s == MISSING else "")
 
     # ── RQ2: events ───────────────────────────────────────────────
-    fixes = manifest.get("fixations") or {}
-    if not fixes:
-        for n, _l, _u, status, _w in SPEC.RQ2_EVENTS:
-            if status == "collected":
-                res.add("RQ2", n, MISSING, "",
-                        "fixations are computed by quality_report.py but "
-                        "not stored in the manifest — see recommendation")
+    # app.py writes these per stimulus under manifest["events"] (from
+    # counts["__events__"]). This block looked for manifest["fixations"],
+    # which nothing ever writes — so every RQ2 metric reported MISSING
+    # on sessions that had computed all of them and printed them to the
+    # log at finalisation. A verifier that cannot find data it already
+    # has is worse than none: it sends you to re-collect.
+    events = manifest.get("events") or manifest.get("fixations") or {}
+    # Saccade figures are nested one level deeper.
+    def _event(stim_block: dict, name: str):
+        if name in stim_block:
+            return stim_block[name]
+        sacc = stim_block.get("saccades") or {}
+        if name == "saccade_amplitude_median_deg":
+            return sacc.get("amplitude_median_deg")
+        return sacc.get(name)
+
+    for n, _l, _u, status, _w in SPEC.RQ2_EVENTS:
+        if status != "collected":
+            continue
+        found = [(stim, _event(blk, n)) for stim, blk in events.items()
+                 if isinstance(blk, dict) and _event(blk, n) is not None]
+        if not found:
+            res.add("RQ2", n, MISSING, "",
+                    "not in manifest['events'] — was the session "
+                    "finalised? (events are written at finalisation)")
+            continue
+        for stim, val in found:
+            res.add("RQ2", "%s [%s]" % (n, stim), PRESENT, val, "")
     # AOI + saccades are computed by aoi_metrics.py; they are only in the
     # manifest if the analysis step has been run and written back.
     for name in ("saccade_count", "saccade_amplitude_median_deg"):

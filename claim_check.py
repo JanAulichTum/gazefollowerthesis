@@ -78,6 +78,13 @@ SUPPORTED, CONTRADICTED, UNTESTABLE, NO_BOX = (
 # single frame.
 SUPPORT_THRESHOLD = 0.5
 
+#: Minimum span to collect gaze over for a claim, in seconds.
+#: A claim naming a single instant is naming a FIXATION, and fixations
+#: in this pipeline have a median duration of ~220 ms. Scored at the
+#: instant alone, a claim is testable only if a sample happens to fall
+#: on that exact millisecond.
+MIN_CLAIM_WINDOW_S = 0.22
+
 
 def _expand(bbox, pad_x: float, pad_y: float):
     x, y, w, h = bbox
@@ -107,9 +114,25 @@ def check_claim(claim: dict, samples: list, accuracy_deg: float,
     t1 = float(claim.get("t_end") or t0)
     if t1 < t0:
         t0, t1 = t1, t0
-    # A zero-length window (one fixation) still needs a span to collect.
-    if t1 == t0:
-        t1 = t0 + 0.001
+    # ZERO-LENGTH CLAIMS.
+    # In "fixations" detail mode the model is given one keyframe per
+    # fixation and answers with a single instant: t_start == t_end. A
+    # 1 ms window around that instant contains a sample only by luck —
+    # at 31 Hz the samples are 32 ms apart — so 59 of 60 claims came
+    # back "no valid gaze samples in this time window" and the
+    # correspondence figure was computed from a single claim.
+    #
+    # The instant NAMES a fixation, and a fixation has duration. Widen
+    # to the fixation the claim is about: MIN_CLAIM_WINDOW_S is the
+    # median fixation duration this pipeline produces (~220 ms), so the
+    # window covers the fixation without bleeding into its neighbours.
+    # Widening further would start to include the saccade and the next
+    # fixation, which would make a wrong claim look supported.
+    if t1 - t0 < MIN_CLAIM_WINDOW_S:
+        mid = 0.5 * (t0 + t1)
+        t0 = max(0.0, mid - MIN_CLAIM_WINDOW_S / 2)
+        t1 = mid + MIN_CLAIM_WINDOW_S / 2
+        out["window_widened_to_s"] = round(MIN_CLAIM_WINDOW_S, 3)
 
     window = [s for s in samples
               if t0 <= s[0] <= t1 and (len(s) < 4 or s[3])
