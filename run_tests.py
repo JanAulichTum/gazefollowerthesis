@@ -370,9 +370,16 @@ try:
         check("grid spans 5 vertical elevations (quadratic y fit needs >=3)",
               len(_ys) >= 5, "got %d" % len(_ys))
     _pos = re.search(r"const VALIDATION_POSITIONS = \{(.*?)\};", _js, re.S)
-    check("pre and post reference the same grid",
-          bool(_pos) and "pre: VALIDATION_GRID" in _pos.group(1)
-          and "post: VALIDATION_GRID" in _pos.group(1))
+    # SUPERSEDED by the two-grid protocol (section [17]). Drift still
+    # needs a like-for-like pair, but that pair is now pre_check/post on
+    # grid B — not pre/post on grid A. The fit set is deliberately a
+    # DIFFERENT grid, because measuring the correction where it was
+    # fitted is not a generalisation estimate.
+    check("drift's pair (pre_check, post) share one grid",
+          bool(_pos) and "pre_check: VALIDATION_CHECK_GRID" in _pos.group(1)
+          and "post: VALIDATION_CHECK_GRID" in _pos.group(1))
+    check("the fit set uses the OTHER grid",
+          bool(_pos) and "pre_fit: VALIDATION_GRID" in _pos.group(1))
     check("config records equal pre/post target counts",
           "VALIDATION_TARGETS_PRE = 7" in _cfg
           and "VALIDATION_TARGETS_POST = 7" in _cfg)
@@ -1570,7 +1577,7 @@ try:
     check("verifier flags a missing post-validation as blocking",
           "NO POST-STIMULUS VALIDATION" in _vm)
     check("verifier warns that in-sample accuracy is not accuracy",
-          "IN-SAMPLE, do not report as " in _vm)
+          "IN-SAMPLE, not a" in _vm)
     check("verifier can restrict to today / a cutoff date",
           "--today" in _vm and "_session_date" in _vm)
 
