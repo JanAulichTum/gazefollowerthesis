@@ -91,6 +91,19 @@ def exposure_mode() -> str:
         return "capped"
     return "auto"
 
+
+def fourcc() -> "str | None":
+    """Pixel format to request, e.g. ``MJPG``.
+
+    Some webcams advertise 30 fps only in MJPG and silently fall back to
+    a slower uncompressed mode when none is requested. The JPEG decode
+    costs a fraction of a millisecond at 640x480, so where it helps it
+    is close to free — but it is not universally better, hence opt-in.
+    Let camera_remedy.py decide.
+    """
+    raw = os.environ.get("GF_CAM_FOURCC", "").strip().upper()
+    return raw if len(raw) == 4 else None
+
 # ── Windows console encoding ──────────────────────────────────────────
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -221,6 +234,15 @@ def make_camera(log=None):
                 raise Exception("Failed to open webcam camera")
 
             # NOW the properties stick — the capture device exists.
+            # FOURCC first: changing the pixel format renegotiates the
+            # stream, which resets resolution and frame rate.
+            want_fourcc = fourcc()
+            if want_fourcc:
+                try:
+                    self._cap.set(cv2.CAP_PROP_FOURCC,
+                                  cv2.VideoWriter_fourcc(*want_fourcc))
+                except Exception:  # noqa: BLE001
+                    want_fourcc = None
             self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.img_width)
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.img_height)
             self._cap.set(cv2.CAP_PROP_FPS, self.cam_fps)
@@ -243,10 +265,11 @@ def make_camera(log=None):
             self.exposure_mode_desc = exposure
 
             if log:
-                log("Camera fix active: requested %dx%d @%d fps -> got "
+                log("Camera fix active: requested %dx%d @%d fps%s -> got "
                     "%.0fx%.0f, camera CLAIMS %.0f fps, actually DELIVERS "
                     "%s fps | exposure: %s"
                     % (self.img_width, self.img_height, self.cam_fps,
+                       (" in %s" % want_fourcc) if want_fourcc else "",
                        self._cap.get(cv2.CAP_PROP_FRAME_WIDTH),
                        self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT),
                        self._cap.get(cv2.CAP_PROP_FPS),
@@ -283,8 +306,9 @@ def describe() -> str:
                 "in software every frame). Set GF_CAMERA_FIX=1 to capture "
                 "natively at 640x480 and A/B it with tracker_fps_test.py")
     cfg = desired_camera()
-    return ("patched: native capture at %dx%d @%d fps, buffer size 1, "
+    return ("patched: native capture at %dx%d @%d fps%s, buffer size 1, "
             "exposure %s" % (cfg["width"], cfg["height"], cfg["fps"],
+                             (" in %s" % fourcc()) if fourcc() else "",
                              "CAPPED at one frame period (auto-exposure "
                              "cannot halve the frame rate)"
                              if exposure_mode() == "capped"

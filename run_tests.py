@@ -1939,6 +1939,34 @@ try:
           and "MIN_USABLE_BRIGHTNESS" in _camp)
     check("the exposure cap fits inside one frame period",
           (1000.0 * 2 ** -5) < 33.4)
+
+    # ── camera_remedy: it must not "fix" the rate by ruining the frame ──
+    _rem = read("camera_remedy.py")
+    check("the remedy sweep measures brightness alongside fps",
+          "MIN_BRIGHTNESS" in _rem and "MAX_BRIGHTNESS" in _rem)
+    check("a fast but unusable frame cannot win",
+          "def usable(r)" in _rem
+          and "MIN_BRIGHTNESS <= b <= MAX_BRIGHTNESS" in _rem)
+    check("the least invasive workable condition wins, not the fastest",
+          "next((r for r in results if r.get(\"ok\") and usable(r))" in _rem)
+    check("baseline is measured first so a gain can be attributed",
+          _rem.index('"baseline 640x480') < _rem.index('"640x480 MJPG'))
+    check("resolution change is ranked last (it changes model input)",
+          _rem.rindex("320x240") > _rem.index('"640x480 MJPG'))
+    check("each condition reopens the camera (settings are sticky)",
+          "cap = _open(cv2, index)" in _rem
+          and "finally:\n        cap.release()" in _rem)
+    check("auto-exposure is given time to settle before measuring",
+          "t_warm" in _rem)
+    check("no workable condition points at lighting, not more settings",
+          "NO SETTING REACHED" in _rem and "lamp on the participant" in _rem)
+    check("FOURCC is wired into the real camera, not only the sweep",
+          "GF_CAM_FOURCC" in _camp and "CAP_PROP_FOURCC" in _camp)
+    check("FOURCC is applied BEFORE resolution (it renegotiates the "
+          "stream)",
+          _camp.index("CAP_PROP_FOURCC")
+          < _camp.index("self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, "
+                        "self.img_width)"))
 except Exception as exc:  # noqa: BLE001
     _blocked = environment_block(exc)
     check("bottleneck attribution", False, _blocked or repr(exc))
