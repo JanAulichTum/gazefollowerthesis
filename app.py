@@ -1727,6 +1727,25 @@ def api_llm_feedback():
                 "structured": _extract_structured(text),
             })
         first = runs[0]
+        # RQ3's primary outcome belongs in the session record, not in a
+        # log directory. Until now the feedback was returned to the
+        # browser and written to data/llm_logs/, so llm_model_id,
+        # llm_claims_structured and claim_metric_correspondence all
+        # reported MISSING — the operationalisation of RQ3 existed but
+        # left no trace in the data a reader would be given.
+        _persist_llm_result(session, stimulus, {
+            "llm_model_id": GEMINI_MODEL,
+            "detail": detail,
+            "rubric": rubric or None,
+            "n_runs": n_runs,
+            "keyframe_method": frames[0]["method"] if frames else None,
+            "frames_used": len(frames),
+            "chained": bool(scene_description),
+            "measured_error_px": error_px,
+            "structured": first["structured"],
+            "consistency": _consistency(runs) if n_runs > 1 else None,
+            "requested_at_utc": datetime.now(timezone.utc).isoformat(),
+        })
         return {
             "feedback": first["feedback"],
             "structured": first["structured"],
@@ -2000,11 +2019,25 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
         # Post-hoc gain correction applied to the corrected_* columns
         # and the video-normalized coordinates (raw columns untouched)
         "gain_correction": _correction_payload(state.get("correction")),
-        # Head-position snapshot from the pre-calibration guide: the
-        # MEASURED viewing distance (from inter-ocular pixels) replaces
-        # the assumed constant where available — so the deg-of-visual-
-        # angle conversion rests on data, not a guess.
+        # Head-position snapshot from the pre-calibration guide. OPTIONAL
+        # — the guide is a convenience for seating the participant, and
+        # in most sessions nobody opens it, so this is usually null.
         "head_position": state.get("position_snapshot"),
+        # ── THE VIEWING DISTANCE, from the MANDATORY validation ───────
+        # Every degree figure in this study divides by this number, so it
+        # cannot depend on whether someone happened to open an optional
+        # guide. It is measured during the accuracy check, which always
+        # runs, at the moment the participant is sitting exactly as they
+        # will for the stimuli.
+        #
+        # It was already being measured there and written into the
+        # validation record — and then nothing read it. verify_metrics
+        # looked in head_position.distance_cm: a block only the optional
+        # guide fills, under a key ("distance_cm") that even the guide
+        # does not use (it writes "est_distance_cm"). Two mismatches in
+        # series, so head_distance_cm reported MISSING on every session
+        # ever recorded while the correct value sat in the manifest.
+        "distance": _session_distance(state),
         # Pre-session rate gate: the sustained sampling rate measured
         # BEFORE calibration, and whether the researcher overrode a
         # failing verdict. Lets analysis separate "we knew this session
@@ -3051,6 +3084,106 @@ def handle_start_position_check(_payload=None):
         state["position_active"] = False
 
     socketio.start_background_task(_loop)
+
+
+def _persist_llm_result(session: str, stimulus: str, block: dict) -> None:
+    """Write the LLM result AND its correspondence score into the manifest.
+
+    Scoring happens here, at write time, rather than being left to a
+    separate command someone has to remember. RQ3's headline number is
+    "of the claims that could be checked, what share does the recorded
+    gaze support" — computing it automatically means a session either
+    has that number or visibly does not.
+
+    Never raises: feedback that was generated must not be lost because
+    the scoring step failed.
+    """
+    if not session:
+        return
+    path = os.path.join(GAZEFOLLOWER_CSV_DIR, "%s_manifest.json" % session)
+    if not os.path.isfile(path):
+        logger.warning("No manifest at %s — LLM result not persisted", path)
+        return
+    try:
+        with open(path, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+
+        try:
+            import claim_check
+
+            claims = block.get("structured") or []
+            samples, err = claim_check.load_gaze(manifest, path, stimulus)
+            acc, acc_src = claim_check._accuracy_deg(manifest)
+            if claims and not err and acc:
+                scr = manifest.get("screen") or {}
+                dist = ((manifest.get("distance") or {}).get("cm")
+                        or VIEWING_DISTANCE_CM)
+                ppd = claim_check._px_per_degree(
+                    int(scr.get("width_px") or 1920),
+                    int(scr.get("height_px") or 1080),
+                    float(scr.get("diag_inches") or 15.6), float(dist))
+                rect = next(s["video_rect"] for s in manifest["stimuli"]
+                            if s.get("stimulus") == stimulus)
+                scored = claim_check.check_all(
+                    claims, samples, acc, ppd,
+                    int(rect.get("w") or 1920), int(rect.get("h") or 1080))
+                scored["accuracy_source"] = acc_src
+                block["correspondence"] = scored
+            else:
+                block["correspondence"] = {
+                    "error": err or ("no claims" if not claims
+                                     else "no validation accuracy")}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Correspondence scoring failed")
+            block["correspondence"] = {"error": str(exc)[:200]}
+
+        manifest.setdefault("llm", {})[stimulus] = block
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=2)
+        corr = (block.get("correspondence") or {}).get("correspondence_pct")
+        logger.info("LLM result persisted to the manifest – %s / %s | "
+                    "correspondence %s %%", session, stimulus, corr)
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not persist the LLM result")
+
+
+def _session_distance(state: dict) -> dict:
+    """The viewing distance in force for this session, and its provenance.
+
+    Preference order, and the reason for it:
+
+      pre_check   measured at the accuracy check whose error is the
+                  canonical accuracy — same moment, same posture, so the
+                  distance and the degrees it converts belong together.
+      pre_fit     the earlier check, if pre_check has no usable reading.
+      post        after the stimuli; still measured, still better than
+                  an assumption.
+      guide       the optional position guide, if someone opened it.
+      assumed     nothing measured. Say so loudly: this is the state
+                  every session was silently in.
+    """
+    vals = state.get("validations") or []
+    order = ("pre_check", "pre_fit", "pre", "post")
+    for phase in order:
+        for v in vals:
+            if v.get("phase") != phase:
+                continue
+            d = v.get("distance") or {}
+            if d.get("cm"):
+                out = dict(d)
+                out["measured"] = True
+                out["from_phase"] = phase
+                return out
+    snap = state.get("position_snapshot") or {}
+    if snap.get("est_distance_cm"):
+        return {"cm": snap["est_distance_cm"], "measured": True,
+                "source": "position guide (inter-ocular)",
+                "from_phase": "guide"}
+    return {"measured": False, "cm": None,
+            "assumed_cm": VIEWING_DISTANCE_CM,
+            "reason": "no usable distance at any validation; every "
+                      "degree figure in this session divides by the "
+                      "assumed %.0f cm" % VIEWING_DISTANCE_CM}
 
 
 @socketio.on("stop_position_check")

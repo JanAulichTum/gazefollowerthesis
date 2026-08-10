@@ -2346,6 +2346,73 @@ try:
           abs((2.13 - 4.52) - (-2.39)) < 0.01, "-2.39 = corrected − raw")
     check("the corrected computation matches the review page",
           abs((5.04 - 4.53) - 0.51) < 0.01, "+0.51 = raw − raw")
+
+    # ── The distance, and RQ3, must reach the session record ────────
+    # Both failed the same way: the value existed, and the thing that
+    # reads it looked somewhere else.
+    check("the manifest carries a distance from the MANDATORY validation, "
+          "not only the optional guide",
+          '"distance": _session_distance(state)' in _app3
+          and "def _session_distance" in _app3)
+    check("pre_check is preferred as the distance source",
+          '("pre_check", "pre_fit", "pre", "post")' in _app3)
+    check("an unmeasured distance says what it contaminates",
+          "every \n                      \"degree figure in this session divides by" in _app3
+          or "degree figure in this session divides by" in _app3)
+    check("verify_metrics reads the manifest distance block",
+          'manifest.get("distance")' in _vm
+          and 'head_position", "est_distance_cm"' in _vm)
+
+    check("the LLM result is written into the manifest, not only the log "
+          "directory",
+          "def _persist_llm_result" in _app3
+          and 'manifest.setdefault("llm", {})[stimulus] = block' in _app3)
+    check("correspondence is scored at write time, not left to a command "
+          "someone must remember",
+          "claim_check.check_all(" in _app3)
+    check("a failure to score never loses generated feedback",
+          "Correspondence scoring failed" in _app3)
+    check("verify_metrics grades claims with no bbox as DEGENERATE",
+          "nothing to check against the gaze" in _vm)
+    check("a correspondence rate over too few units is DEGENERATE, not a "
+          "result",
+          "too few to report as a" in _vm)
+    check("a missing rubric is named as the reason the evaluative half "
+          "of RQ3 has no data",
+          "NO RUBRIC was supplied" in _vm and "kappa" in _vm)
+
+    import verify_metrics as _vmod
+    importlib.reload(_vmod)
+    _base = {"validations": [], "data_quality": {}, "events": {}}
+
+    def _rq3(llm):
+        m = dict(_base)
+        m["llm"] = llm
+        r = _vmod.Result()
+        _vmod.check_session(m, r)
+        return {n.split(" [")[0]: (s, v)
+                for rq, n, s, v, _ in r.rows if rq == "RQ3"}
+
+    _mk = lambda n, **kw: {"_t.mp4": dict(
+        {"llm_model_id": "m", "structured": [
+            {"bbox": [0, 0, .2, .2], "criteria_met": None} for _ in range(20)]},
+        **kw)}
+    _none = _rq3({})
+    _few = _rq3(_mk(20, correspondence={"correspondence_pct": 50.0,
+                                        "n_testable": 4}))
+    _good = _rq3(_mk(20, rubric="r",
+                     correspondence={"correspondence_pct": 68.0,
+                                     "n_testable": 25}))
+    check("a session with no feedback run reports all three RQ3 fields "
+          "missing",
+          all(_none[k][0] == _vmod.MISSING for k in
+              ("llm_model_id", "llm_claims_structured",
+               "claim_metric_correspondence")))
+    check("4 testable claims is DEGENERATE, not a 50 % result",
+          _few["claim_metric_correspondence"][0] == _vmod.DEGENERATE)
+    check("25 testable claims with a rubric is PRESENT",
+          _good["claim_metric_correspondence"][0] == _vmod.PRESENT,
+          _good["claim_metric_correspondence"][1])
     check("running with no arguments says how to score a real session",
           "showing the DEMO on synthetic data" in _cc)
     check("duty prefers total callback cost over model cost",

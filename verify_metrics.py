@@ -257,10 +257,27 @@ def check_session(manifest: dict, res: Result) -> None:
     fs = _get(gate, "stages", "frame_size")
     res.add("RQ1", "frame_size", PRESENT if fs else MISSING, fs or "",
             "" if not fs or fs == "640x480" else "larger than 640x480")
-    hd = _get(manifest, "head_position", "distance_cm")
+    # The MANDATORY validation measures this; the optional position
+    # guide is only a fallback. Reading head_position.distance_cm meant
+    # reading a block only the guide fills, under a key the guide does
+    # not even write ("est_distance_cm") — so this reported MISSING on
+    # every session while the correct value sat in the manifest.
+    dist = manifest.get("distance") or {}
+    hd = (dist.get("cm")
+          or _get(manifest, "head_position", "est_distance_cm")
+          or _get(manifest, "head_position", "distance_cm"))
     s, v = _grade(hd, lo=25, hi=120)
-    res.add("RQ1", "head_distance_cm", s, v,
-            "assumed 60 cm used if missing" if s == MISSING else "")
+    note = ""
+    if s == MISSING:
+        note = ("NOT MEASURED — every degree in this session divides by "
+                "the assumed %s cm" % (dist.get("assumed_cm") or 60))
+    else:
+        note = "measured at the %s check via %s" % (
+            dist.get("from_phase") or "?", dist.get("source") or "?")
+        if dist.get("estimates_agree") is False:
+            s = DEGENERATE
+            note += " — iris and pupil estimates DISAGREE"
+    res.add("RQ1", "head_distance_cm", s, v, note)
 
     # ── RQ2: events ───────────────────────────────────────────────
     # app.py writes these per stimulus under manifest["events"] (from
@@ -325,13 +342,67 @@ def check_session(manifest: dict, res: Result) -> None:
             "stored normalised (screen-dependent); record in degrees")
 
     # ── RQ3 ───────────────────────────────────────────────────────
+    # manifest["llm"] is keyed by stimulus: one feedback run per video.
     llm = manifest.get("llm") or {}
-    res.add("RQ3", "llm_model_id", PRESENT if llm.get("model") else MISSING,
-            llm.get("model", ""))
-    res.add("RQ3", "llm_claims_structured",
-            PRESENT if llm.get("feedback") else MISSING, "")
-    res.add("RQ3", "claim_metric_correspondence", MISSING, "",
-            "not implemented — this is the operationalisation of RQ3")
+    blocks = [(k, v) for k, v in llm.items() if isinstance(v, dict)]
+    if not blocks:
+        for n in ("llm_model_id", "llm_claims_structured",
+                  "claim_metric_correspondence"):
+            res.add("RQ3", n, MISSING, "",
+                    "no feedback run recorded for any stimulus — open the "
+                    "review tool and generate it")
+    for stim, blk in blocks:
+        tag = "[%s]" % str(stim)[:18]
+        res.add("RQ3", "llm_model_id %s" % tag,
+                PRESENT if blk.get("llm_model_id") else MISSING,
+                blk.get("llm_model_id", ""),
+                "pin this exact string in the methods section")
+
+        claims = blk.get("structured") or []
+        # Claims with no bbox cannot be scored, so a run that produced
+        # only unlocalised claims has not operationalised RQ3 even
+        # though it produced text.
+        boxed = [c for c in claims
+                 if isinstance(c, dict) and c.get("bbox")]
+        st = PRESENT if boxed else (DEGENERATE if claims else MISSING)
+        res.add("RQ3", "llm_claims_structured %s" % tag, st,
+                "%d claims, %d localised" % (len(claims), len(boxed)),
+                "" if boxed else
+                "claims carry no bbox — nothing to check against the gaze")
+
+        corr = blk.get("correspondence") or {}
+        pct = corr.get("correspondence_pct")
+        testable = corr.get("n_testable") or 0
+        if pct is None:
+            res.add("RQ3", "claim_metric_correspondence %s" % tag, MISSING,
+                    "", corr.get("error") or "not scored")
+        elif testable < 10:
+            # A proportion over a handful of units is not an estimate.
+            res.add("RQ3", "claim_metric_correspondence %s" % tag,
+                    DEGENERATE, "%.1f %%" % pct,
+                    "only %d testable claims — too few to report as a "
+                    "rate" % testable)
+        else:
+            res.add("RQ3", "claim_metric_correspondence %s" % tag, PRESENT,
+                    "%.1f %% of %d" % (pct, testable),
+                    "scored against the recorded gaze, tolerance from the "
+                    "%s" % (corr.get("accuracy_source") or "validation"))
+
+        # The evaluative half of RQ3. With no rubric the prompt tells
+        # the model to return criteria_met: null, so there is no
+        # judgment for a human coder to agree or disagree with and
+        # Cohen's kappa is undefined.
+        judged = [c for c in claims
+                  if isinstance(c, dict) and c.get("criteria_met") is not None]
+        if not blk.get("rubric"):
+            res.add("RQ3", "criteria_met %s" % tag, MISSING, "",
+                    "NO RUBRIC was supplied, so every criteria_met is null "
+                    "and the evaluative half of RQ3 has no data — kappa "
+                    "against human coders is undefined")
+        else:
+            res.add("RQ3", "criteria_met %s" % tag,
+                    PRESENT if judged else DEGENERATE,
+                    "%d/%d judged" % (len(judged), len(claims)))
 
 
 def report(path: str) -> int:
