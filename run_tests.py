@@ -2413,6 +2413,91 @@ try:
     check("25 testable claims with a rubric is PRESENT",
           _good["claim_metric_correspondence"][0] == _vmod.PRESENT,
           _good["claim_metric_correspondence"][1])
+
+    # ══════════════════════════════════════════════════════════════
+    #  Region vocabulary + calibration diagnosis
+    # ══════════════════════════════════════════════════════════════
+    print("\n[18] Region vocabulary and calibration diagnosis")
+    _reg = importlib.import_module("regions")
+    importlib.reload(_reg)
+
+    # The grid is DERIVED from accuracy, not chosen. min cell >= 2x
+    # accuracy is the same rule metrics_spec states for AOIs.
+    for _deg, _want in ((1.5, (3, 3)), (2.13, (3, 3)), (3.0, (3, 2))):
+        _g = _reg.admissible_grid(_deg * 58.2, 1680, 945)
+        check("%.2f deg admits a %dx%d grid" % (_deg, _want[0], _want[1]),
+              _g["admissible"] and (_g["cols"], _g["rows"]) == _want,
+              "%s, cells %s" % (
+                  "%dx%d" % (_g["cols"], _g["rows"]) if _g["admissible"]
+                  else "none", _g.get("cell_px")))
+    _bad = _reg.admissible_grid(5.0 * 58.2, 1680, 945)
+    check("an accuracy too poor for ANY grid is refused, not rounded down",
+          _bad["admissible"] is False and not _bad["regions"])
+    check("every admitted cell really is >= 2 x accuracy",
+          all(min(_reg.admissible_grid(d * 58.2, 1680, 945)["cell_px"])
+              >= 2 * d * 58.2
+              for d in (1.5, 2.13, 3.0)))
+    _g3 = _reg.admissible_grid(2.13 * 58.2, 1680, 945)
+    check("region rects tile the frame exactly once",
+          abs(sum(r["bbox"][2] * r["bbox"][3] for r in _g3["regions"]) - 1.0)
+          < 0.01)
+    check("region names are spatial words, not coordinates",
+          "upper-left" in {r["name"] for r in _g3["regions"]})
+    check("the prompt vocabulary lists every region",
+          all(r["name"] in _reg.vocabulary_text(_g3)
+              for r in _g3["regions"]))
+
+    check("the prompt asks for a region from the vocabulary",
+          "one of the region names above" in _app3
+          and "SPATIAL VOCABULARY" in _app3)
+    check("a session too inaccurate for a grid is told NOT to claim a "
+          "location",
+          "WITHOUT claiming a location" in _app3)
+    check("a region claim is scored against the KNOWN rect, not the "
+          "model's box",
+          'claim.get("region") and grid' in _cc)
+    check("a region outside the vocabulary is rejected, not guessed at",
+          "named a region outside the vocabulary" in _cc)
+
+    # calibration_diagnosis: does it tell the four causes apart?
+    _cd = importlib.import_module("calibration_diagnosis")
+    importlib.reload(_cd)
+    _G = [(230, 130), (1690, 130), (960, 335), (288, 540),
+          (1632, 540), (960, 745), (960, 950)]
+
+    def _tg(gx, gy, ox=0, oy=0, noise=None):
+        out = []
+        for i, (tx, ty) in enumerate(_G):
+            mx = 960 + (tx - 960) * gx + ox
+            my = 540 + (ty - 540) * gy + oy
+            if noise:
+                mx += noise[i % len(noise)]
+                my -= noise[i % len(noise)]
+            out.append({"tx": tx, "ty": ty, "mx": mx, "my": my})
+        return out
+
+    def _diag(tg):
+        return _cd.analyse({"validations": [
+            {"phase": "pre_fit", "targets": tg,
+             "mean_err_px": 0, "mean_err_deg": 0}]})
+
+    _comp = _diag(_tg(0.78, 0.73))
+    _off = _diag(_tg(1.0, 1.0, ox=60, oy=90))
+    _noise = _diag(_tg(1.0, 1.0, noise=[70, -65, 55, -80, 60, -70, 75]))
+    check("a compressed range is named RANGE COMPRESSION",
+          _comp["y"]["verdict"] == "RANGE COMPRESSION",
+          "slope %.2f -> gain %.2f" % (_comp["y"]["slope"],
+                                       _comp["y"]["implied_gain"]))
+    check("...and the implied gain matches the session's own (1.365)",
+          abs(_comp["y"]["implied_gain"] - 1.37) < 0.02)
+    check("a constant miss is named UNIFORM OFFSET, not a gain problem",
+          _off["y"]["verdict"] == "UNIFORM OFFSET")
+    check("position-independent error is named UNSTRUCTURED",
+          _noise["y"]["verdict"] == "UNSTRUCTURED")
+    check("it diagnoses the UNCORRECTED check, not the corrected one",
+          '"pre_fit", "pre"' in read("calibration_diagnosis.py"))
+    check("a range problem is sent upstream to the calibration grid",
+          "Extend the CALIBRATION grid" in read("calibration_diagnosis.py"))
     check("running with no arguments says how to score a real session",
           "showing the DEMO on synthetic data" in _cc)
     check("duty prefers total callback cost over model cost",

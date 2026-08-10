@@ -1560,6 +1560,44 @@ def api_llm_feedback():
         "descriptive feedback."
     )
 
+    # ── The spatial vocabulary this session's accuracy can adjudicate ──
+    # Asking for a free-form bbox makes the model do two jobs — identify
+    # what the marker is on, and state where that is — and the
+    # 2026-08-10 session showed both failing independently: 46 of 60
+    # claims named objects smaller than the measurement error, and the
+    # 14 that could be scored missed by 404 px in one direction, four
+    # times the tracker's own validated accuracy.
+    #
+    # A fixed vocabulary removes the second job. The regions' rectangles
+    # are known, so the model cannot misplace them, and every claim is
+    # scoreable by construction. The grid is not chosen for convenience:
+    # min cell >= 2 x accuracy is what makes a gaze point assignable at
+    # all, so a less accurate session gets a coarser grid and the thesis
+    # reports the granularity it actually earned.
+    import regions as _regions
+
+    _acc_px = error_px or 0
+    _grid = _regions.admissible_grid(_acc_px, 1920, 1080) if _acc_px else {}
+    region_text = ""
+    if _grid.get("admissible"):
+        region_text = (
+            "\n\nSPATIAL VOCABULARY. This recording's measured accuracy is "
+            "%.0f px, so a gaze point can only be placed reliably in "
+            "regions of at least %.0f px. Use EXACTLY these region names "
+            "and no others:\n%s\n"
+            "Name the region the participant's marker was in. Also name "
+            "the object or person you believe they were looking at, in "
+            "your own words — but the REGION is the checkable claim, so "
+            "choose it from the list above even when the object you name "
+            "is smaller than the region."
+            % (_acc_px, _grid["required_px"],
+               _regions.vocabulary_text(_grid)))
+    elif _acc_px:
+        region_text = (
+            "\n\nNOTE: this recording's accuracy (%.0f px) is too poor to "
+            "place gaze in any region reliably, so describe what was "
+            "attended WITHOUT claiming a location.\n" % _acc_px)
+
     if frames and detail == "windows":
         n_bins = max(1, int(round(duration / window_s)))
         task_text = (
@@ -1583,7 +1621,9 @@ def api_llm_feedback():
             "fenced code block starting with ```json — a JSON array of "
             "EXACTLY %d objects, one per window, in order: "
             "[{\"t_start\": <s>, \"t_end\": <s>, "
-            "\"attended\": \"<object/area>\", \"bbox\": [x, y, w, h], "
+            "\"attended\": \"<object/area>\", "
+            "\"region\": \"<one of the region names above>\", "
+            "\"bbox\": [x, y, w, h], "
             "\"criteria_met\": <true|false|null>, "
             "\"confidence\": \"<low|medium|high>\"}]. "
             "\"bbox\" is the region of the VIDEO FRAME occupied by the "
@@ -1646,7 +1686,9 @@ def api_llm_feedback():
             "3. AFTER the prose, output a machine-readable summary as a "
             "fenced code block starting with ```json — a JSON array of "
             "the SAME phases (max 8): [{\"t_start\": <s>, \"t_end\": <s>, "
-            "\"attended\": \"<object/area>\", \"bbox\": [x, y, w, h], "
+            "\"attended\": \"<object/area>\", "
+            "\"region\": \"<one of the region names above>\", "
+            "\"bbox\": [x, y, w, h], "
             "\"criteria_met\": <true|false|null>, "
             "\"confidence\": \"<low|medium|high>\"}]. "
             "\"bbox\" is the region of the VIDEO FRAME occupied by the "
@@ -1668,7 +1710,8 @@ def api_llm_feedback():
             "Format in simple Markdown; never use LaTeX or math notation."
         )
 
-    parts.append({"text": stats_text + "\n\n" + criteria_text + task_text})
+    parts.append({"text": stats_text + "\n\n" + criteria_text
+                  + region_text + task_text})
 
     # ── Save the EXACT payload for multi-model comparison ────────────
     # A fair comparison across models requires byte-identical input. The
@@ -3124,9 +3167,16 @@ def _persist_llm_result(session: str, stimulus: str, block: dict) -> None:
                     float(scr.get("diag_inches") or 15.6), float(dist))
                 rect = next(s["video_rect"] for s in manifest["stimuli"]
                             if s.get("stimulus") == stimulus)
+                import regions
+
+                vw = int(rect.get("w") or 1920)
+                vh = int(rect.get("h") or 1080)
+                grid = regions.admissible_grid(acc * ppd, vw, vh)
                 scored = claim_check.check_all(
-                    claims, samples, acc, ppd,
-                    int(rect.get("w") or 1920), int(rect.get("h") or 1080))
+                    claims, samples, acc, ppd, vw, vh, grid)
+                scored["grid"] = {k: grid.get(k) for k in
+                                  ("cols", "rows", "cell_px",
+                                   "required_px", "admissible", "rule")}
                 scored["accuracy_source"] = acc_src
                 block["correspondence"] = scored
             else:

@@ -93,7 +93,8 @@ def _expand(bbox, pad_x: float, pad_y: float):
 
 
 def check_claim(claim: dict, samples: list, accuracy_deg: float,
-                px_per_deg: float, video_w: int, video_h: int) -> dict:
+                px_per_deg: float, video_w: int, video_h: int,
+                grid: "dict | None" = None) -> dict:
     """Score one claim against the gaze samples in its time window.
 
     ``samples``: (t_seconds, nx, ny, valid) in normalised video coords.
@@ -104,7 +105,25 @@ def check_claim(claim: dict, samples: list, accuracy_deg: float,
         "attended": claim.get("attended"),
         "confidence": claim.get("confidence"),
     }
+    # A claim naming a REGION from the fixed vocabulary carries its own
+    # rectangle: the grid is known, so the model cannot misplace it and
+    # the claim is scoreable by construction. This is what removes the
+    # model's localisation error from the correspondence measure — the
+    # failure mode that made 46 of 60 claims unscoreable and sent the
+    # remaining misses 404 px in one direction.
     bbox = claim.get("bbox")
+    if claim.get("region") and grid:
+        import regions as _regions
+
+        reg = _regions.region_by_name(grid, claim["region"])
+        if reg:
+            bbox = reg["bbox"]
+            out["region"] = reg["name"]
+        else:
+            out["verdict"] = NO_BOX
+            out["note"] = ("named a region outside the vocabulary: %r"
+                           % claim["region"])
+            return out
     if not bbox or len(bbox) != 4 or any(b is None for b in bbox):
         out["verdict"] = NO_BOX
         out["note"] = "model did not localise this claim"
@@ -191,9 +210,10 @@ def check_claim(claim: dict, samples: list, accuracy_deg: float,
 
 
 def check_all(claims: list, samples: list, accuracy_deg: float,
-              px_per_deg: float, video_w: int, video_h: int) -> dict:
+              px_per_deg: float, video_w: int, video_h: int,
+              grid: "dict | None" = None) -> dict:
     results = [check_claim(c, samples, accuracy_deg, px_per_deg,
-                           video_w, video_h) for c in claims]
+                           video_w, video_h, grid) for c in claims]
     counts = {k: sum(1 for r in results if r["verdict"] == k)
               for k in (SUPPORTED, CONTRADICTED, UNTESTABLE, NO_BOX)}
     testable = counts[SUPPORTED] + counts[CONTRADICTED]
