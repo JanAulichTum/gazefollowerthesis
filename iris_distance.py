@@ -82,9 +82,25 @@ def _xy(landmark, img_w: float, img_h: float):
     wrong silently produces a plausible-but-wrong diameter, so treat
     values <= 1.5 as normalised and scale them.
     """
+    # NOT getattr(landmark, "x", landmark[0]): Python evaluates a default
+    # argument EAGERLY, so landmark[0] runs even when .x exists. A
+    # MediaPipe NormalizedLandmark is a protobuf message with .x/.y and
+    # NO __getitem__, so that expression raised TypeError on the default
+    # before getattr could return the attribute — and the caller then
+    # reported "iris landmarks unusable" for every frame of a perfectly
+    # good recording.
+    #
+    # The unit tests did not catch it because they pass tuples and numpy
+    # rows, which ARE indexable. Only the real camera path was affected,
+    # which is the worst possible split: green tests, silent failure in
+    # the field. Hence test_landmark_forms() below.
     try:
-        x = float(getattr(landmark, "x", landmark[0]))
-        y = float(getattr(landmark, "y", landmark[1]))
+        if hasattr(landmark, "x") and hasattr(landmark, "y"):
+            x = float(landmark.x)
+            y = float(landmark.y)
+        else:
+            x = float(landmark[0])
+            y = float(landmark[1])
     except Exception:  # noqa: BLE001
         return None
     if abs(x) <= 1.5 and abs(y) <= 1.5:      # normalised

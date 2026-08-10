@@ -2012,6 +2012,50 @@ try:
           "iris_spread_pct" in _cg and "that is head movement" in _cg)
     check("the instruction says lens-to-nose, not to the laptop edge",
           "front edge of the laptop" in _cg)
+    check("the calibration reads mean_px, the key iris_diameter_px "
+          "actually returns",
+          'iris.get("mean_px")' in _cg and 'iris.get("iris_px")' not in _cg)
+    check("a failed measurement reports WHY, not just 'no usable frames'",
+          "Your face WAS detected" in _cg and "def _note" in _cg)
+
+    # ── The landmark-form bug that green tests could not see ─────────
+    # _xy used getattr(landmark, "x", landmark[0]). Python evaluates a
+    # default argument EAGERLY, so landmark[0] ran even when .x existed.
+    # A MediaPipe NormalizedLandmark is a protobuf message with .x/.y and
+    # NO __getitem__, so every real camera frame raised TypeError on the
+    # default and reported "iris landmarks unusable" — while the suite
+    # stayed green, because it passes tuples and numpy rows, which ARE
+    # indexable. Test all three forms, not just the convenient ones.
+    import importlib
+
+    sys.path.insert(0, BASE)
+    _iris_mod = importlib.import_module("iris_distance")
+    importlib.reload(_iris_mod)
+
+    class _Proto:                 # attributes only, like MediaPipe
+        __slots__ = ("x", "y", "z")
+
+        def __init__(self, x, y):
+            self.x, self.y, self.z = x, y, 0.0
+
+    def _mesh(factory, w=640, h=480):
+        lm = [factory(0.5, 0.5) for _ in range(478)]
+        for i, (px, py) in {469: (306, 240), 471: (294, 240),
+                            474: (406, 240), 476: (394, 240)}.items():
+            lm[i] = factory(px / w, py / h)
+        return lm
+
+    for _label, _fac in (
+            ("MediaPipe-style landmark (attributes, NOT indexable)", _Proto),
+            ("plain tuple", lambda x, y: (x, y)),
+            ("numpy row", lambda x, y: __import__("numpy").array([x, y]))):
+        _r = _iris_mod.iris_diameter_px(_mesh(_fac), 640, 480)
+        check("iris diameter reads a %s" % _label,
+              _r.get("mean_px") == 12.0,
+              _r.get("error") or str(_r.get("mean_px")))
+
+    check("the eager-default trap is documented where it bit",
+          "evaluates a default" in read("iris_distance.py"))
     check("duty prefers total callback cost over model cost",
           'or (live_cb or {}).get("callback_ms_median")' in _tsvc3)
     check("a duty figure computed from models alone is marked as such",

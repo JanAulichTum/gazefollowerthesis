@@ -324,7 +324,22 @@ def measure_live(seconds: float = 6.0, camera: int = 0,
 
     iris_vals: list = []
     iod_vals: list = []
+    asym_vals: list = []
     frames = 0
+    faces = 0
+    # WHY THESE ARE COLLECTED RATHER THAN SWALLOWED
+    # The first version of this function wrapped the iris read in a bare
+    # `except: pass` AND asked for the wrong dictionary key, so it
+    # reported "0 usable frames out of 177" on a run where the face was
+    # detected in every single frame. The failure and "your face wasn't
+    # visible" were indistinguishable, and the advice was wrong. A
+    # measurement tool that cannot say WHY it measured nothing is worse
+    # than no tool.
+    reasons: dict = {}
+
+    def _note(msg: str) -> None:
+        reasons[msg] = reasons.get(msg, 0) + 1
+
     t_end = time.perf_counter() + seconds
     try:
         while time.perf_counter() < t_end:
@@ -335,22 +350,41 @@ def measure_live(seconds: float = 6.0, camera: int = 0,
             h, w = frame.shape[:2]
             res = mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             if not res.multi_face_landmarks:
+                _note("no face detected in the frame")
                 continue
+            faces += 1
             lm = res.multi_face_landmarks[0].landmark
             try:
                 iris = iris_distance.iris_diameter_px(lm, w, h)
-                if iris.get("iris_px"):
-                    iris_vals.append(float(iris["iris_px"]))
-            except Exception:  # noqa: BLE001
-                pass
+                # NOTE the key: iris_diameter_px returns mean_px (the
+                # average of left_px and right_px), not iris_px.
+                if iris.get("error"):
+                    _note(str(iris["error"]))
+                elif iris.get("mean_px"):
+                    iris_vals.append(float(iris["mean_px"]))
+                    if iris.get("asymmetry_pct") is not None:
+                        asym_vals.append(float(iris["asymmetry_pct"]))
+                else:
+                    _note("iris_diameter_px returned no mean_px: %s"
+                          % sorted(iris.keys()))
+            except Exception as exc:  # noqa: BLE001
+                _note("iris read raised %s: %s"
+                      % (type(exc).__name__, str(exc)[:80]))
+            if frames == 1 and not iris_vals:
+                # Fail on the FIRST frame rather than after the full
+                # window. Six seconds of sitting still is cheap; six
+                # seconds of sitting still to be told nothing was
+                # measured is not.
+                print("  (first frame produced no iris reading — "
+                      "continuing, but expect this to fail)")
             # Outer eye corners: the same pair GazeFollower's geometry
             # uses, so the focal length stays consistent with the runtime.
             try:
                 lx, ly = lm[33].x * w, lm[33].y * h
                 rx, ry = lm[263].x * w, lm[263].y * h
                 iod_vals.append(float(np.hypot(rx - lx, ry - ly)))
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                _note("IOD read raised %s" % type(exc).__name__)
     finally:
         cap.release()
         try:
@@ -359,8 +393,18 @@ def measure_live(seconds: float = 6.0, camera: int = 0,
             pass
 
     if len(iris_vals) < 10:
-        print("Only %d usable frames out of %d — was your face visible, lit, "
-              "and facing the camera?" % (len(iris_vals), frames))
+        print("Only %d usable iris reads from %d frames (%d of which had a "
+              "detected face)." % (len(iris_vals), frames, faces))
+        if faces >= 10:
+            # The distinction that matters: the camera and the face
+            # detector were fine, so telling the user to fix their
+            # lighting would send them to fix nothing.
+            print("Your face WAS detected — this is not a lighting or "
+                  "seating problem. The iris measurement itself failed:")
+        for msg, n in sorted(reasons.items(), key=lambda kv: -kv[1])[:4]:
+            print("   %5d x  %s" % (n, msg))
+        if not reasons:
+            print("   (no reason recorded — the loop never ran)")
         return None
 
     def _spread(vals) -> float:
@@ -373,6 +417,12 @@ def measure_live(seconds: float = 6.0, camera: int = 0,
         "iod_px": statistics.median(iod_vals) if iod_vals else None,
         "iod_spread_pct": _spread(iod_vals) if iod_vals else None,
         "n_frames": len(iris_vals),
+        # Left and right irises are the same physical size, so a
+        # persistent difference means one eye's landmarks are wrong
+        # (head yaw, a glasses rim, hair). Averaging them then quietly
+        # biases the focal length.
+        "iris_asymmetry_pct": (round(statistics.median(asym_vals), 1)
+                               if asym_vals else None),
     }
 
 
