@@ -211,12 +211,13 @@ def check_all(claims: list, samples: list, accuracy_deg: float,
         "accuracy_deg_used": accuracy_deg,
         "support_threshold": SUPPORT_THRESHOLD,
         "offset_analysis": offset_analysis(results, px_per_deg,
-                                           video_w, video_h),
+                                           video_w, video_h, accuracy_deg),
     }
 
 
 def offset_analysis(results: list, px_per_deg: float,
-                    video_w: int, video_h: int) -> "dict | None":
+                    video_w: int, video_h: int,
+                    accuracy_deg: "float | None" = None) -> "dict | None":
     """Is the gaze systematically displaced from the claimed regions?
 
     A low correspondence score has two very different causes:
@@ -271,6 +272,49 @@ def offset_analysis(results: list, px_per_deg: float,
     # 0.5, and 0.6 is reachable by accident on a dozen claims.
     systematic = bool(max(consistency_x, consistency_y) >= 0.8
                       and mag_deg and mag_deg > 1.0)
+
+    # ── THE TRACKER'S ALIBI ──────────────────────────────────────────
+    # A consistent direction is NOT enough to convict the tracker, and
+    # saying so was a real error: on the 2026-08-10 session this
+    # reported a systematic +160, +404 px (7.46 deg) and concluded
+    # "suspect the tracker" — for a session whose out-of-sample
+    # validation measured 2.13 deg against KNOWN targets, minutes
+    # earlier, on the same gaze stream.
+    #
+    # Those two cannot both be true. The validation is an independent
+    # measurement of exactly this quantity, so it bounds how wrong the
+    # gaze can be. An apparent displacement several times larger than
+    # the measured accuracy has to come from somewhere else — and a
+    # model that places its boxes from a prior about how classrooms
+    # look, rather than from where the marker is, produces the same
+    # consistent-direction signature.
+    #
+    # So the accuracy is not decoration here; it is the alibi.
+    exonerated = bool(accuracy_deg and mag_deg
+                      and mag_deg > 2.0 * accuracy_deg)
+    if exonerated:
+        reading = (
+            "NOT THE TRACKER. The misses share a direction (%+d, %+d px, "
+            "%.2f deg), but the session's own out-of-sample validation "
+            "measured the gaze at %.2f deg against known targets — the "
+            "tracker cannot be %.1fx more wrong than it was just "
+            "measured to be. A displacement this large with that "
+            "validation means the BOXES are systematically placed, not "
+            "the gaze: the model is naming plausible scene content and "
+            "localising it from a prior rather than from the marker. "
+            "That is an RQ3 result about localisation, not a "
+            "calibration fault to chase."
+            % (dx, dy, mag_deg, accuracy_deg, mag_deg / accuracy_deg))
+    elif systematic:
+        reading = ("SYSTEMATIC — the misses share a direction (%+d, %+d "
+                   "px, %.2f deg) and that is within what the tracker's "
+                   "own error could produce. Suspect the tracker: "
+                   "re-check the calibration and the gain fit."
+                   % (dx, dy, mag_deg))
+    else:
+        reading = ("SCATTERED — the misses have no shared direction, so "
+                   "this is not a displacement. The claims are landing "
+                   "in the wrong places individually.")
     return {
         "n": len(offs),
         "median_offset_px": [dx, dy],
@@ -279,14 +323,11 @@ def offset_analysis(results: list, px_per_deg: float,
         "direction_consistency": [round(consistency_x, 2),
                                   round(consistency_y, 2)],
         "systematic": systematic,
-        "reading": (
-            "SYSTEMATIC — the gaze misses the claimed regions in a "
-            "consistent direction (%+d, %+d px). Suspect the tracker, "
-            "not the model." % (dx, dy)
-            if systematic else
-            "SCATTERED — the misses have no shared direction, so this "
-            "is not a calibration offset. The claims are landing in the "
-            "wrong places."),
+        "tracker_exonerated": exonerated,
+        "validation_accuracy_deg": accuracy_deg,
+        "offset_vs_accuracy": (round(mag_deg / accuracy_deg, 1)
+                               if accuracy_deg and mag_deg else None),
+        "reading": reading,
     }
 
 

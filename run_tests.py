@@ -2220,6 +2220,49 @@ try:
           "failure",
           "resolution limit, not a failure" in _cc
           and "not individual people" in _cc)
+
+    # ── The tracker's alibi ──────────────────────────────────────────
+    # A consistent direction alone convicted the tracker, and on the
+    # 2026-08-10 session that produced "+160, +404 px (7.46 deg),
+    # suspect the tracker" — for a session whose out-of-sample
+    # validation had measured 2.13 deg against KNOWN targets minutes
+    # earlier on the same gaze stream. Both cannot be true. The
+    # validation bounds how wrong the gaze can be, so it is the alibi.
+    check("the validation accuracy is used to exonerate the tracker",
+          "tracker_exonerated" in _cc and "THE TRACKER'S ALIBI" in _cc)
+
+    _big = _synth_offset = None
+
+    def _offset_case(shift, acc):
+        _s, _c = [], []
+        _bx = [[0.05 + 0.3 * (i % 3), 0.05 + 0.22 * (i // 3), 0.25, 0.25]
+               for i in range(12)]
+        for i, b in enumerate(_bx):
+            t = 1.0 + i * 2.0
+            cx, cy = b[0] + b[2] / 2, b[1] + b[3] / 2
+            dx, dy = shift(i)
+            for k in range(10):
+                _s.append((t - 0.1 + k * 0.02, cx + dx, cy + dy, True))
+            _c.append({"t_start": t, "t_end": t, "attended": "o%d" % i,
+                       "bbox": b})
+        return _ccmod.check_all(_c, _s, acc, 58.2, 1680,
+                                945)["offset_analysis"]
+
+    _huge = _offset_case(lambda i: (0.095, 0.43), 2.13)
+    _small = _offset_case(lambda i: (0.0, 0.04), 2.13)
+    check("a displacement far larger than the measured accuracy does "
+          "NOT blame the tracker",
+          _huge["tracker_exonerated"] is True
+          and "NOT THE TRACKER" in _huge["reading"],
+          "%.2f deg vs %.2f measured" % (_huge["median_offset_deg"], 2.13))
+    check("...and it is named as an RQ3 localisation result instead",
+          "localising it from a prior" in _huge["reading"])
+    check("a displacement WITHIN the tracker's measured error still "
+          "points at the tracker",
+          _small["tracker_exonerated"] is False)
+    check("the offset-to-accuracy ratio is reported, not just a verdict",
+          _huge.get("offset_vs_accuracy") is not None,
+          "%sx" % _huge.get("offset_vs_accuracy"))
     check("running with no arguments says how to score a real session",
           "showing the DEMO on synthetic data" in _cc)
     check("duty prefers total callback cost over model cost",
