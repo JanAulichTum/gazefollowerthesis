@@ -701,6 +701,150 @@ def review():
     return render_template("review.html")
 
 
+@app.route("/coder")
+def coder():
+    """Human coding of individual fixations — the study's only human anchor.
+
+    Everything else in RQ3 is one model's output checked against another
+    measurement. That establishes correspondence, not correctness: a
+    model and a tracker can agree and both be describing the wrong
+    thing. Only a person looking at the frame can say whether "the
+    participant looked at the girl in the red shirt" is true.
+
+    It is also the only route to a reliability coefficient. Cohen's
+    kappa needs two raters assigning the same labels to the same units;
+    with no human ratings at all there is nothing to correlate, and
+    "the model agreed with itself across runs" is consistency, not
+    validity.
+    """
+    return render_template("coder.html")
+
+
+@app.route("/api/coding_units")
+def api_coding_units():
+    """The fixations to code, each with the model's claim about it."""
+    participant = request.args.get("participant", "")
+    stimulus = request.args.get("stimulus", "")
+    session = request.args.get("session", "")
+
+    df = _load_gaze_table()
+    if df is None or df.empty:
+        return {"units": [], "error": "no data file yet"}
+    sel = df[(df["participant_id"] == participant)
+             & (df["stimulus_name"] == stimulus)]
+    if session and "session_id" in sel.columns:
+        sel = sel[sel["session_id"].fillna("legacy") == session]
+    if sel.empty:
+        return {"units": [], "error": "no samples for that recording"}
+
+    try:
+        from fixations import detect_fixations_df
+
+        fixations = detect_fixations_df(sel)
+    except Exception as exc:  # noqa: BLE001
+        return {"units": [], "error": "fixation detection failed: %s" % exc}
+
+    # The model's claims, if a feedback run has been stored.
+    claims = []
+    mpath = os.path.join(GAZEFOLLOWER_CSV_DIR, session + "_manifest.json")
+    accuracy_deg = None
+    if os.path.isfile(mpath):
+        try:
+            with open(mpath, encoding="utf-8") as fh:
+                man = json.load(fh)
+            claims = ((man.get("llm") or {}).get(stimulus) or {}).get(
+                "structured") or []
+            import claim_check
+
+            accuracy_deg = claim_check._accuracy_deg(man)[0]
+        except Exception:  # noqa: BLE001
+            pass
+
+    units = []
+    for i, f in enumerate(fixations):
+        mid = f.t_start + (f.duration / 2.0)
+        near = [c for c in claims
+                if isinstance(c, dict)
+                and abs(float(c.get("t_start") or 0) - mid) <= 0.6]
+        units.append({
+            "index": i,
+            "t_start": round(f.t_start, 3),
+            "t_end": round(f.t_start + f.duration, 3),
+            "t_mid": round(mid, 3),
+            "duration_ms": int(1000 * f.duration),
+            "x": round(f.nx, 4),
+            "y": round(f.ny, 4),
+            "model_claim": (near[0].get("attended") if near else None),
+            "model_bbox": (near[0].get("bbox") if near else None),
+            "model_confidence": (near[0].get("confidence") if near else None),
+        })
+    return {"units": units, "stimulus": stimulus,
+            "participant": participant, "session": session,
+            "accuracy_deg": accuracy_deg,
+            "n_claims": len(claims)}
+
+
+@app.route("/api/coding_save", methods=["POST"])
+def api_coding_save():
+    """Persist one coder's verdicts.
+
+    Written per CODER, never merged. Two coders' judgments must stay
+    separable or there is no kappa to compute — and a merged file
+    silently becomes one rater with no way back.
+    """
+    payload = request.get_json(silent=True) or {}
+    coder = _safe_filename(str(payload.get("coder") or "").strip())
+    session = _safe_filename(str(payload.get("session") or "").strip())
+    stimulus = _safe_filename(
+        os.path.splitext(str(payload.get("stimulus") or ""))[0])
+    if not (coder and session and stimulus):
+        return {"ok": False, "error": "coder, session and stimulus required"}, 400
+
+    out_dir = os.path.join(DATA_DIR, "coding")
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "%s__%s__%s.json" % (session, stimulus, coder))
+    record = {
+        "coder": payload.get("coder"),
+        "session": payload.get("session"),
+        "stimulus": payload.get("stimulus"),
+        "saved_utc": datetime.now(timezone.utc).isoformat(),
+        "codes": payload.get("codes") or {},
+        # The rubric the coder was working to. Judgments made under
+        # different instructions are not the same variable, so a file
+        # without this cannot safely be pooled with another.
+        "instructions": payload.get("instructions"),
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(record, fh, indent=2)
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}, 500
+    logger.info("Coding saved: %s (%d units)", os.path.basename(path),
+                len(record["codes"]))
+    return {"ok": True, "path": os.path.basename(path),
+            "n_coded": len(record["codes"])}
+
+
+@app.route("/api/coding_load")
+def api_coding_load():
+    """Any verdicts this coder already recorded for this recording."""
+    coder = _safe_filename(request.args.get("coder", ""))
+    session = _safe_filename(request.args.get("session", ""))
+    stimulus = _safe_filename(
+        os.path.splitext(request.args.get("stimulus", ""))[0])
+    path = os.path.join(DATA_DIR, "coding",
+                        "%s__%s__%s.json" % (session, stimulus, coder))
+    if not os.path.isfile(path):
+        return {"codes": {}, "found": False}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rec = json.load(fh)
+        return {"codes": rec.get("codes") or {}, "found": True,
+                "saved_utc": rec.get("saved_utc")}
+    except (OSError, ValueError) as exc:
+        return {"codes": {}, "found": False, "error": str(exc)}
+
+
 @app.route("/api/review_index")
 def api_review_index():
     """Distinct (participant, stimulus) recordings available for replay."""
@@ -1560,44 +1704,6 @@ def api_llm_feedback():
         "descriptive feedback."
     )
 
-    # ── The spatial vocabulary this session's accuracy can adjudicate ──
-    # Asking for a free-form bbox makes the model do two jobs — identify
-    # what the marker is on, and state where that is — and the
-    # 2026-08-10 session showed both failing independently: 46 of 60
-    # claims named objects smaller than the measurement error, and the
-    # 14 that could be scored missed by 404 px in one direction, four
-    # times the tracker's own validated accuracy.
-    #
-    # A fixed vocabulary removes the second job. The regions' rectangles
-    # are known, so the model cannot misplace them, and every claim is
-    # scoreable by construction. The grid is not chosen for convenience:
-    # min cell >= 2 x accuracy is what makes a gaze point assignable at
-    # all, so a less accurate session gets a coarser grid and the thesis
-    # reports the granularity it actually earned.
-    import regions as _regions
-
-    _acc_px = error_px or 0
-    _grid = _regions.admissible_grid(_acc_px, 1920, 1080) if _acc_px else {}
-    region_text = ""
-    if _grid.get("admissible"):
-        region_text = (
-            "\n\nSPATIAL VOCABULARY. This recording's measured accuracy is "
-            "%.0f px, so a gaze point can only be placed reliably in "
-            "regions of at least %.0f px. Use EXACTLY these region names "
-            "and no others:\n%s\n"
-            "Name the region the participant's marker was in. Also name "
-            "the object or person you believe they were looking at, in "
-            "your own words — but the REGION is the checkable claim, so "
-            "choose it from the list above even when the object you name "
-            "is smaller than the region."
-            % (_acc_px, _grid["required_px"],
-               _regions.vocabulary_text(_grid)))
-    elif _acc_px:
-        region_text = (
-            "\n\nNOTE: this recording's accuracy (%.0f px) is too poor to "
-            "place gaze in any region reliably, so describe what was "
-            "attended WITHOUT claiming a location.\n" % _acc_px)
-
     if frames and detail == "windows":
         n_bins = max(1, int(round(duration / window_s)))
         task_text = (
@@ -1622,7 +1728,6 @@ def api_llm_feedback():
             "EXACTLY %d objects, one per window, in order: "
             "[{\"t_start\": <s>, \"t_end\": <s>, "
             "\"attended\": \"<object/area>\", "
-            "\"region\": \"<one of the region names above>\", "
             "\"bbox\": [x, y, w, h], "
             "\"criteria_met\": <true|false|null>, "
             "\"confidence\": \"<low|medium|high>\"}]. "
@@ -1687,7 +1792,6 @@ def api_llm_feedback():
             "fenced code block starting with ```json — a JSON array of "
             "the SAME phases (max 8): [{\"t_start\": <s>, \"t_end\": <s>, "
             "\"attended\": \"<object/area>\", "
-            "\"region\": \"<one of the region names above>\", "
             "\"bbox\": [x, y, w, h], "
             "\"criteria_met\": <true|false|null>, "
             "\"confidence\": \"<low|medium|high>\"}]. "
@@ -1710,8 +1814,7 @@ def api_llm_feedback():
             "Format in simple Markdown; never use LaTeX or math notation."
         )
 
-    parts.append({"text": stats_text + "\n\n" + criteria_text
-                  + region_text + task_text})
+    parts.append({"text": stats_text + "\n\n" + criteria_text + task_text})
 
     # ── Save the EXACT payload for multi-model comparison ────────────
     # A fair comparison across models requires byte-identical input. The

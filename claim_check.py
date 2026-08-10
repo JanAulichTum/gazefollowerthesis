@@ -68,8 +68,8 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-SUPPORTED, CONTRADICTED, UNTESTABLE, NO_BOX = (
-    "SUPPORTED", "CONTRADICTED", "UNTESTABLE", "NO_BBOX")
+SUPPORTED, CONSISTENT, CONTRADICTED, UNTESTABLE, NO_BOX = (
+    "SUPPORTED", "CONSISTENT", "CONTRADICTED", "UNTESTABLE", "NO_BBOX")
 
 # A claim counts as supported when at least this share of the gaze
 # samples in its time window fall inside the (tolerance-expanded) box.
@@ -162,18 +162,32 @@ def check_claim(claim: dict, samples: list, accuracy_deg: float,
         out["note"] = "no valid gaze samples in this time window"
         return out
 
-    # Expand the box by the measured tracker accuracy, so the model is
-    # not blamed for the tracker's error.
     err_px = accuracy_deg * px_per_deg
-    pad_x = err_px / video_w if video_w else 0.0
-    pad_y = err_px / video_h if video_h else 0.0
-    ex, ey, ew, eh = _expand([float(b) for b in bbox], pad_x, pad_y)
+    out["tolerance_px"] = round(err_px)
 
+    # STRICT containment: the UNPADDED object.
+    # Padding the box by the tracker's error and ALSO grading distance
+    # against that error counts the same allowance twice. With a 124 px
+    # tolerance a 84 px object becomes 332 px wide, so anything in the
+    # neighbourhood lands "inside" and SUPPORTED stops meaning the gaze
+    # was on the thing. The tolerance now enters in exactly one place —
+    # the CONSISTENT band below — and containment means containment.
+    bx, by, bw, bh = (float(b) for b in bbox)
     inside = sum(1 for s in window
-                 if ex <= s[1] <= ex + ew and ey <= s[2] <= ey + eh)
+                 if bx <= s[1] <= bx + bw and by <= s[2] <= by + bh)
     frac = inside / len(window)
     out["fraction_inside"] = round(frac, 3)
-    out["tolerance_px"] = round(err_px)
+
+    # Kept for continuity with earlier runs, and because the gap between
+    # the two is itself informative: a claim that is 0 % strict and
+    # 100 % padded is one the instrument cannot adjudicate.
+    pad_x = err_px / video_w if video_w else 0.0
+    pad_y = err_px / video_h if video_h else 0.0
+    ex, ey, ew, eh = _expand([bx, by, bw, bh], pad_x, pad_y)
+    out["fraction_inside_padded"] = round(
+        sum(1 for s in window
+            if ex <= s[1] <= ex + ew and ey <= s[2] <= ey + eh)
+        / len(window), 3)
 
     # WHERE the gaze actually was, and how far that is from the middle
     # of the claimed box. "0 % inside" is a verdict, not a diagnosis:
@@ -192,20 +206,62 @@ def check_claim(claim: dict, samples: list, accuracy_deg: float,
     out["box_centre"] = [round(bx, 3), round(by, 3)]
     out["offset_px"] = [round((gx - bx) * video_w), round((gy - by) * video_h)]
 
-    # An object smaller than the tolerance cannot be distinguished from
-    # its neighbours; scoring it either way would be false precision.
+    # ── HOW FAR OFF, not just in or out ──────────────────────────────
+    # Refusing every claim about an object smaller than the measurement
+    # error threw away 77 % of a session. It was the honest binary, but
+    # binary was the wrong shape: "the gaze was 18 px from a 96 px hand"
+    # and "the gaze was 600 px away, across the room" are both "outside
+    # the box", and they are not remotely the same claim.
+    #
+    # So report the DISTANCE from the gaze to the claimed object, and
+    # grade against the session's own error:
+    #
+    #   SUPPORTED    most of the gaze fell inside the padded box
+    #   CONSISTENT   it did not, but the gaze sat within one measurement
+    #                error of the object — the instrument cannot tell
+    #                this claim from a correct one, which is a real
+    #                statement about the claim AND about the instrument
+    #   CONTRADICTED the gaze was further away than the error can
+    #                explain. This one is the model's to answer for.
+    #
+    # UNTESTABLE now means only "no gaze samples here", which is the one
+    # case where nothing whatever can be said.
     obj_px = min(float(bbox[2]) * video_w, float(bbox[3]) * video_h)
-    if obj_px < err_px:
-        out["verdict"] = UNTESTABLE
-        out["note"] = ("claimed object is %.0f px, smaller than the %.0f px "
-                       "measurement error — not distinguishable"
-                       % (obj_px, err_px))
-        return out
+    out["object_px"] = round(obj_px)
+    out["resolvable"] = bool(obj_px >= 2 * err_px)
 
-    out["verdict"] = SUPPORTED if frac >= SUPPORT_THRESHOLD else CONTRADICTED
-    if out["verdict"] == CONTRADICTED:
-        out["note"] = ("only %.0f %% of gaze fell inside the claimed region"
-                       % (100 * frac))
+    bx0, by0 = float(bbox[0]), float(bbox[1])
+    bx1, by1 = bx0 + float(bbox[2]), by0 + float(bbox[3])
+
+    def _dist_px(s) -> float:
+        dx = max(bx0 - s[1], 0.0, s[1] - bx1) * video_w
+        dy = max(by0 - s[2], 0.0, s[2] - by1) * video_h
+        return (dx * dx + dy * dy) ** 0.5
+
+    dists = sorted(_dist_px(s) for s in window)
+    med_dist = dists[len(dists) // 2]
+    out["distance_px"] = round(med_dist)
+    out["distance_deg"] = round(med_dist / px_per_deg, 2) if px_per_deg else None
+
+    if frac >= SUPPORT_THRESHOLD:
+        out["verdict"] = SUPPORTED
+    elif med_dist <= err_px:
+        out["verdict"] = CONSISTENT
+        out["note"] = ("gaze sat %.0f px from the claimed object, within "
+                       "the %.0f px measurement error — consistent with "
+                       "the claim, but not distinguishable from a near "
+                       "miss%s" % (med_dist, err_px,
+                                   "" if out["resolvable"] else
+                                   "; the object is %.0f px, below the "
+                                   "%.0f px this session can resolve"
+                                   % (obj_px, 2 * err_px)))
+    else:
+        out["verdict"] = CONTRADICTED
+        out["note"] = ("gaze sat %.0f px (%.1f deg) from the claimed "
+                       "object — %.1fx the measurement error, so this "
+                       "is not explained by tracking uncertainty"
+                       % (med_dist, med_dist / px_per_deg if px_per_deg
+                          else 0, med_dist / err_px if err_px else 0))
     return out
 
 
@@ -215,8 +271,10 @@ def check_all(claims: list, samples: list, accuracy_deg: float,
     results = [check_claim(c, samples, accuracy_deg, px_per_deg,
                            video_w, video_h, grid) for c in claims]
     counts = {k: sum(1 for r in results if r["verdict"] == k)
-              for k in (SUPPORTED, CONTRADICTED, UNTESTABLE, NO_BOX)}
-    testable = counts[SUPPORTED] + counts[CONTRADICTED]
+              for k in (SUPPORTED, CONSISTENT, CONTRADICTED, UNTESTABLE,
+                        NO_BOX)}
+    testable = (counts[SUPPORTED] + counts[CONSISTENT]
+                + counts[CONTRADICTED])
     return {
         "claims": results,
         "counts": counts,
@@ -224,7 +282,15 @@ def check_all(claims: list, samples: list, accuracy_deg: float,
         "n_testable": testable,
         # THE RQ3 HEADLINE NUMBER: of the claims that could be checked,
         # what share the gaze data supports.
+        # STRICT: the gaze was actually on the claimed object.
         "correspondence_pct": round(100.0 * counts[SUPPORTED] / testable, 1)
+        if testable else None,
+        # LENIENT: on it, or near enough that the tracker cannot say
+        # otherwise. Report BOTH — the gap between them is exactly the
+        # share of claims the instrument is too coarse to adjudicate,
+        # which is a property of the method worth quantifying.
+        "correspondence_lenient_pct": round(
+            100.0 * (counts[SUPPORTED] + counts[CONSISTENT]) / testable, 1)
         if testable else None,
         "testable_pct": round(100.0 * testable / len(results), 1)
         if results else None,

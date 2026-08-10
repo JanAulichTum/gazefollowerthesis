@@ -1,0 +1,276 @@
+{% extends "base.html" %}
+
+{% block title %}Fixation Coding — Researcher{% endblock %}
+{% block page_id %}coder{% endblock %}
+
+{% block content %}
+<!--
+  HUMAN CODING OF INDIVIDUAL FIXATIONS.
+
+  Every other check in this study compares one model's output against
+  another measurement. That establishes CORRESPONDENCE, not correctness:
+  a model and a tracker can agree and both be describing the wrong
+  thing. Only a person looking at the frame can say whether the claim is
+  true — and only human ratings give a reliability coefficient, because
+  kappa needs two raters on the same units.
+
+  Design decisions that matter for validity, not for looks:
+
+  * The verdict buttons are shown BEFORE the model's claim is revealed
+    where possible, and the claim can be hidden entirely. Seeing a
+    plausible answer first is the classic way a coder stops coding and
+    starts agreeing.
+  * "Unclear" is a first-class verdict, not a skip. At 2 deg accuracy a
+    genuine fraction of fixations sit between two objects, and forcing a
+    binary there manufactures agreement that is not real.
+  * The coder's name is stored per file. Two coders are never merged —
+    merged files silently become one rater with no way back.
+-->
+<div class="page-container">
+  <div class="card">
+    <h1 class="study-header__title">Fixation coding</h1>
+    <p class="study-info__text">
+      For each fixation: does the model's claim describe what the
+      participant was actually looking at? Judge the FRAME, not the
+      sentence.
+    </p>
+
+    <div class="form-group">
+      <label class="form-label" for="coderName">Your coder ID</label>
+      <input class="form-input" id="coderName" placeholder="e.g. JA, coder2"
+             autocomplete="off">
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="recSelect">Recording</label>
+      <select class="form-input" id="recSelect"></select>
+    </div>
+
+    <div class="form-group">
+      <label class="consent-label" style="display:block">
+        <input type="checkbox" id="blindMode" checked>
+        <span class="consent-text">
+          <strong>Blind mode</strong> — hide the model's claim until
+          after I have decided what the fixation is on. Strongly
+          recommended: seeing a plausible answer first is how a coder
+          stops coding and starts agreeing.
+        </span>
+      </label>
+    </div>
+
+    <button class="btn-primary" id="startBtn">Load fixations</button>
+    <p class="form-error" id="coderError" role="alert" hidden></p>
+  </div>
+
+  <div class="card" id="codingCard" hidden>
+    <p id="progressLine" style="font-weight:600"></p>
+
+    <div style="position:relative; display:inline-block; max-width:100%">
+      <video id="frameVideo" style="max-width:100%; display:block"
+             muted playsinline preload="auto"></video>
+      <!-- The marker radius is the session's MEASURED accuracy, so the
+           coder sees the uncertainty rather than a false point. -->
+      <div id="gazeRing" style="position:absolute; border:3px solid #ff3b30;
+           border-radius:50%; pointer-events:none; display:none"></div>
+      <div id="gazeDotC" style="position:absolute; width:8px; height:8px;
+           background:#ff3b30; border-radius:50%; pointer-events:none;
+           display:none"></div>
+    </div>
+
+    <p id="fixMeta" style="color:#595959; font-size:0.9em"></p>
+
+    <div id="claimBox" style="margin:12px 0; padding:12px;
+         background:#F7F9FC; border-left:4px solid #1F4E79">
+      <span id="claimHidden"><em>Claim hidden — decide first, then
+        press <kbd>R</kbd> to reveal.</em></span>
+      <span id="claimText" hidden></span>
+    </div>
+
+    <p style="margin-bottom:6px"><strong>Is the claim correct?</strong></p>
+    <button class="btn-primary" data-code="correct">Correct (1)</button>
+    <button class="btn-primary" data-code="wrong">Wrong (2)</button>
+    <button class="btn-primary" data-code="unclear">Unclear (3)</button>
+    <button class="btn-link" id="backBtn">← Back (B)</button>
+
+    <p style="margin-top:14px; color:#595959; font-size:0.9em">
+      Keys: 1 correct · 2 wrong · 3 unclear · B back · R reveal claim.
+      Saved automatically after every verdict.
+    </p>
+    <p id="saveState" style="font-size:0.9em"></p>
+  </div>
+
+  <div class="card" id="summaryCard" hidden>
+    <h2>Summary</h2>
+    <div id="summaryBody"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  let units = [], idx = 0, meta = {}, codes = {}, revealed = false;
+
+  function showError(m) {
+    const e = $('coderError'); e.textContent = m; e.hidden = false;
+  }
+
+  fetch('/api/review_index').then(r => r.json()).then(d => {
+    const sel = $('recSelect');
+    (d.recordings || []).forEach(rec => {
+      const o = document.createElement('option');
+      o.value = JSON.stringify(rec);
+      o.textContent = rec.participant_id + ' · ' + rec.stimulus_name
+        + ' · ' + (rec.session_id || 'legacy');
+      sel.appendChild(o);
+    });
+    if (!(d.recordings || []).length) showError('No recordings found yet.');
+  });
+
+  $('startBtn').addEventListener('click', async () => {
+    $('coderError').hidden = true;
+    const coder = $('coderName').value.trim();
+    if (!coder) { showError('Enter a coder ID first — verdicts are '
+      + 'stored per coder so two coders can be compared.'); return; }
+    const rec = JSON.parse($('recSelect').value || '{}');
+    if (!rec.participant_id) { showError('Choose a recording.'); return; }
+
+    const q = new URLSearchParams({
+      participant: rec.participant_id, stimulus: rec.stimulus_name,
+      session: rec.session_id || '' });
+    const d = await (await fetch('/api/coding_units?' + q)).json();
+    if (d.error || !(d.units || []).length) {
+      showError(d.error || 'No fixations found in that recording.'); return;
+    }
+    units = d.units;
+    meta = { coder: coder, participant: rec.participant_id,
+             stimulus: rec.stimulus_name, session: rec.session_id || '',
+             accuracy_deg: d.accuracy_deg, n_claims: d.n_claims };
+
+    const prev = await (await fetch('/api/coding_load?' + new URLSearchParams({
+      coder: coder, session: meta.session, stimulus: meta.stimulus }))).json();
+    codes = prev.codes || {};
+
+    $('frameVideo').src = '/stimulus/' + encodeURIComponent(meta.stimulus);
+    $('codingCard').hidden = false;
+    idx = units.findIndex(u => codes[u.index] === undefined);
+    if (idx < 0) idx = 0;
+    render();
+  });
+
+  function render() {
+    if (idx >= units.length) { finish(); return; }
+    const u = units[idx];
+    revealed = !$('blindMode').checked;
+
+    const done = Object.keys(codes).length;
+    $('progressLine').textContent =
+      'Fixation ' + (idx + 1) + ' of ' + units.length
+      + '  ·  ' + done + ' coded'
+      + (codes[u.index] ? '  ·  previously: ' + codes[u.index] : '');
+
+    const v = $('frameVideo');
+    v.currentTime = u.t_mid;
+    v.onseeked = placeMarker;
+    placeMarker();
+
+    $('fixMeta').textContent =
+      't = ' + u.t_mid.toFixed(2) + ' s · duration ' + u.duration_ms
+      + ' ms · position (' + u.x.toFixed(2) + ', ' + u.y.toFixed(2) + ')';
+
+    const claim = u.model_claim
+      ? ('The model says: "' + u.model_claim + '"'
+         + (u.model_confidence ? ' (confidence: ' + u.model_confidence + ')' : ''))
+      : 'No model claim covers this fixation.';
+    $('claimText').textContent = claim;
+    $('claimText').hidden = !revealed;
+    $('claimHidden').hidden = revealed;
+  }
+
+  function placeMarker() {
+    const v = $('frameVideo'), u = units[idx];
+    if (!v.clientWidth) return;
+    const x = u.x * v.clientWidth, y = u.y * v.clientHeight;
+    $('gazeDotC').style.display = 'block';
+    $('gazeDotC').style.left = (x - 4) + 'px';
+    $('gazeDotC').style.top = (y - 4) + 'px';
+    // Radius = the session's measured accuracy, in on-screen pixels.
+    // A bare dot would tell the coder the gaze is known to the pixel,
+    // which it is not, and would make near misses look like hits.
+    if (meta.accuracy_deg) {
+      const r = (meta.accuracy_deg * 58.2) * (v.clientWidth / 1680);
+      $('gazeRing').style.display = 'block';
+      $('gazeRing').style.width = (2 * r) + 'px';
+      $('gazeRing').style.height = (2 * r) + 'px';
+      $('gazeRing').style.left = (x - r) + 'px';
+      $('gazeRing').style.top = (y - r) + 'px';
+    }
+  }
+
+  async function code(verdict) {
+    if (idx >= units.length) return;
+    codes[units[idx].index] = verdict;
+    idx += 1;
+    render();
+    await save();
+  }
+
+  async function save() {
+    $('saveState').textContent = 'saving…';
+    const r = await (await fetch('/api/coding_save', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        coder: meta.coder, session: meta.session, stimulus: meta.stimulus,
+        codes: codes,
+        instructions: 'Does the model\'s claim describe what the '
+          + 'participant was looking at in this frame? correct / wrong / '
+          + 'unclear. Blind mode: '
+          + ($('blindMode').checked ? 'on' : 'off') })
+    })).json();
+    $('saveState').textContent = r.ok
+      ? ('saved — ' + r.n_coded + ' verdicts in ' + r.path)
+      : ('SAVE FAILED: ' + (r.error || '?'));
+  }
+
+  function finish() {
+    const vals = Object.values(codes);
+    const n = (v) => vals.filter(x => x === v).length;
+    const scored = n('correct') + n('wrong');
+    $('codingCard').hidden = true;
+    $('summaryCard').hidden = false;
+    $('summaryBody').innerHTML =
+      '<p><strong>' + vals.length + '</strong> fixations coded.</p>'
+      + '<p>Correct ' + n('correct') + ' · Wrong ' + n('wrong')
+      + ' · Unclear ' + n('unclear') + '</p>'
+      + (scored
+          ? '<p>Accuracy on the units you could judge: <strong>'
+            + (100 * n('correct') / scored).toFixed(1) + ' %</strong> of '
+            + scored + '.</p>'
+          : '')
+      + '<p style="color:#595959">Unclear verdicts are excluded from that '
+      + 'rate rather than counted as wrong — they are cases the '
+      + 'instrument cannot resolve, not model errors. Report the unclear '
+      + 'share alongside the rate.</p>'
+      + '<p style="color:#595959">For a reliability coefficient, have a '
+      + 'second coder repeat this on the same recording with a different '
+      + 'coder ID, then run <code>python agreement_kit.py</code>.</p>';
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if ($('codingCard').hidden) return;
+    if (e.key === '1') code('correct');
+    else if (e.key === '2') code('wrong');
+    else if (e.key === '3') code('unclear');
+    else if (e.key.toLowerCase() === 'b') { idx = Math.max(0, idx - 1); render(); }
+    else if (e.key.toLowerCase() === 'r') {
+      revealed = true; $('claimText').hidden = false; $('claimHidden').hidden = true;
+    }
+  });
+
+  document.querySelectorAll('[data-code]').forEach(b =>
+    b.addEventListener('click', () => code(b.dataset.code)));
+  $('backBtn').addEventListener('click', () => {
+    idx = Math.max(0, idx - 1); render();
+  });
+})();
+</script>
+{% endblock %}

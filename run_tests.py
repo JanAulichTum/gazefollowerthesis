@@ -1530,8 +1530,14 @@ try:
     _tiny = _CC.check_claim(
         {"t_start": 8, "t_end": 16, "attended": "a pen",
          "bbox": [0.49, 0.59, 0.02, 0.02]}, _samples, 2.2, _ppd, 1920, 1080)
-    check("an object smaller than the error is UNTESTABLE, not a pass",
-          _tiny["verdict"] == _CC.UNTESTABLE, str(_tiny["verdict"]))
+    # SUPERSEDED (section [19]). A tiny object the gaze is sitting on is
+    # now SUPPORTED with resolvable=False, rather than refused: the
+    # claim may well be right, and the caveat belongs on the claim, not
+    # in place of it.
+    check("a tiny object is scored, and marked unresolvable",
+          _tiny["verdict"] != _CC.UNTESTABLE
+          and _tiny["resolvable"] is False,
+          "%s, resolvable=%s" % (_tiny["verdict"], _tiny["resolvable"]))
     _nob = _CC.check_claim(
         {"t_start": 0, "t_end": 4, "attended": "the room", "bbox": None},
         _samples, 2.2, _ppd, 1920, 1080)
@@ -2173,8 +2179,12 @@ try:
           _on["verdict"] == _ccmod.SUPPORTED, _on["verdict"])
     check("gaze outside it scores CONTRADICTED, not UNTESTABLE",
           _off["verdict"] == _ccmod.CONTRADICTED, _off["verdict"])
-    check("an object smaller than the tolerance is still UNTESTABLE",
-          _score([0.49, 0.59, 0.02, 0.02])["verdict"] == _ccmod.UNTESTABLE)
+    # SUPERSEDED (section [19]): refusing every small object discarded
+    # 77 % of a session and equated "18 px from a hand" with "across the
+    # room". Small objects are now graded by distance and flagged
+    # unresolvable, not refused.
+    check("a small object is graded, and flagged as unresolvable",
+          _score([0.49, 0.59, 0.02, 0.02])["resolvable"] is False)
 
     # ── RQ2 metrics exist; the verifier was looking in the wrong place ─
     _vm = read("verify_metrics.py")
@@ -2447,12 +2457,13 @@ try:
           all(r["name"] in _reg.vocabulary_text(_g3)
               for r in _g3["regions"]))
 
-    check("the prompt asks for a region from the vocabulary",
-          "one of the region names above" in _app3
-          and "SPATIAL VOCABULARY" in _app3)
-    check("a session too inaccurate for a grid is told NOT to claim a "
-          "location",
-          "WITHOUT claiming a location" in _app3)
+    # The grid derivation stays in regions.py — it is the argument for
+    # what the method can resolve, and the validity document cites it —
+    # but the PROMPT no longer imposes a vocabulary. Object-level claims
+    # graded by distance replaced it (section [19]).
+    check("the region grid is still derivable for the resolution "
+          "argument",
+          "def admissible_grid" in read("regions.py"))
     check("a region claim is scored against the KNOWN rect, not the "
           "model's box",
           'claim.get("region") and grid' in _cc)
@@ -2498,6 +2509,117 @@ try:
           '"pre_fit", "pre"' in read("calibration_diagnosis.py"))
     check("a range problem is sent upstream to the calibration grid",
           "Extend the CALIBRATION grid" in read("calibration_diagnosis.py"))
+
+    # ══════════════════════════════════════════════════════════════
+    #  Graded scoring, the inverse check, and human coding
+    # ══════════════════════════════════════════════════════════════
+    print("\n[19] Graded claims, inverse check, human coding")
+
+    # The region vocabulary is gone from the prompt again.
+    check("the prompt no longer imposes a region vocabulary",
+          "SPATIAL VOCABULARY" not in _app3
+          and "one of the region names above" not in _app3)
+
+    # GRADED, not binary. Refusing every claim about an object smaller
+    # than the error threw away 77 % of a session, and treated "18 px
+    # from a hand" the same as "across the room".
+    check("claims are graded by DISTANCE, not refused for being small",
+          "CONSISTENT" in _cc and "distance_px" in _cc)
+    check("the tolerance is applied ONCE (containment is unpadded)",
+          "counts the same allowance twice" in _cc
+          and "bx <= s[1] <= bx + bw" in _cc)
+    check("both a strict and a lenient correspondence rate are reported",
+          "correspondence_lenient_pct" in _cc)
+    check("UNTESTABLE now means only 'no samples here'",
+          "no valid gaze samples in this time window" in _cc)
+
+    _hz2 = 31.2
+    _sm = [(i / _hz2, 0.50, 0.60, True) for i in range(int(30 * _hz2))]
+
+    def _v(bbox):
+        return _ccmod.check_claim(
+            {"t_start": 5, "t_end": 5, "attended": "x", "bbox": bbox},
+            _sm, 2.13, 58.2, 1680, 945)
+
+    check("gaze on the object is SUPPORTED",
+          _v([0.45, 0.55, 0.10, 0.10])["verdict"] == "SUPPORTED")
+    check("a near miss inside the error is CONSISTENT, not discarded",
+          _v([0.42, 0.55, 0.05, 0.10])["verdict"] == "CONSISTENT",
+          "%s px away" % _v([0.42, 0.55, 0.05, 0.10])["distance_px"])
+    check("a miss beyond the error is CONTRADICTED",
+          _v([0.05, 0.05, 0.10, 0.10])["verdict"] == "CONTRADICTED",
+          "%s px away" % _v([0.05, 0.05, 0.10, 0.10])["distance_px"])
+    check("a small object no longer blocks a verdict",
+          _v([0.44, 0.52, 0.06, 0.06])["verdict"] != "UNTESTABLE")
+
+    # INVERSE CHECK: locate first, on clean frames, then assign gaze.
+    _ic = importlib.import_module("inverse_check")
+    importlib.reload(_ic)
+    check("the locate prompt never mentions gaze or eye tracking",
+          not any(w in _ic.LOCATE_PROMPT.lower()
+                  for w in ("gaze", "eye track", "fixation", "participant "
+                            "looked")))
+    check("it asks for people separately and excludes background",
+          "every person separately" in _ic.LOCATE_PROMPT
+          and "walls, floors, ceilings" in _ic.LOCATE_PROMPT)
+
+    _objs = [{"label": "girl in red shirt", "bbox": [0.45, 0.40, 0.07, 0.16]},
+             {"label": "boy in blue hoodie", "bbox": [0.60, 0.40, 0.07, 0.16]},
+             {"label": "orange poster", "bbox": [0.40, 0.20, 0.05, 0.06]}]
+    _on = _ic.assign_fixation({"x": 0.48, "y": 0.45}, _objs, 124.0, 1680, 945)
+    _mid = _ic.assign_fixation({"x": 0.545, "y": 0.45}, _objs, 124.0, 1680, 945)
+    check("a fixation ON a person is assigned unambiguously",
+          _on["assigned"] == "girl in red shirt" and not _on["ambiguous"],
+          "separation %s px" % _on["separation_px"])
+    check("a fixation BETWEEN two people is flagged ambiguous, not guessed",
+          _mid["ambiguous"] is True,
+          "separation %s px at 124 px error" % _mid["separation_px"])
+    # The runner-up here is the POSTER, not the other student: at
+    # (0.48, 0.45) the poster is 187 px away and the boy 202 px. Worth
+    # keeping as a reminder that "the next nearest thing" is a
+    # geometric fact, not the semantically obvious neighbour — which is
+    # exactly why the tool reports it instead of assuming.
+    check("the runner-up is reported so ambiguity is auditable",
+          _on.get("runner_up") and _on.get("runner_up_distance_px"),
+          "%s at %s px" % (_on.get("runner_up"),
+                           _on.get("runner_up_distance_px")))
+    check("agreement matching is lexical and stated, not model-judged",
+          "LEXICAL and loose" in read("inverse_check.py"))
+
+    _cmp = _ic.compare(
+        [{"t": 1.0, "assigned": "girl in red shirt", "ambiguous": False},
+         {"t": 3.0, "assigned": "orange poster", "ambiguous": False}],
+        [{"t_start": 1.0, "attended": "the girl in the red shirt"},
+         {"t_start": 3.0, "attended": "a ceiling light"}])
+    check("compare() scores agreement between gaze-derived and claimed",
+          _cmp["n_compared"] == 2 and _cmp["agreement_pct"] == 50.0,
+          "%s %% of %d" % (_cmp["agreement_pct"], _cmp["n_compared"]))
+    check("ambiguous assignments are excluded from the agreement rate",
+          _ic.compare([{"t": 1.0, "assigned": "x", "ambiguous": True}],
+                      [{"t_start": 1.0, "attended": "x"}])["n_compared"] == 0)
+
+    # HUMAN CODING — the only anchor that is not a model.
+    _coder = read("templates/coder.html")
+    check("a coding route and page exist",
+          '@app.route("/coder")' in _app3 and "def coder(" in _app3)
+    check("units carry the model's claim for the same moment",
+          '"model_claim"' in _app3)
+    check("verdicts are stored PER CODER, never merged",
+          "never merged" in _app3
+          and '"%s__%s__%s.json"' in _app3)
+    check("the rubric the coder worked to is stored with the verdicts",
+          '"instructions": payload.get("instructions")' in _app3)
+    check("blind mode hides the claim until the coder has decided",
+          "blindMode" in _coder and "stops coding and starts agreeing"
+          in _coder)
+    check("'unclear' is a first-class verdict, not a skip",
+          "unclear" in _coder and "first-class verdict" in _coder)
+    check("unclear units are excluded from the rate, not counted wrong",
+          "excluded from that" in _coder)
+    check("the marker shows the measured error as a RING, not a point",
+          "gazeRing" in _coder and "accuracy_deg" in _coder)
+    check("the coder is pointed at a second rater for kappa",
+          "second coder" in _coder and "agreement_kit" in _coder)
     check("running with no arguments says how to score a real session",
           "showing the DEMO on synthetic data" in _cc)
     check("duty prefers total callback cost over model cost",
