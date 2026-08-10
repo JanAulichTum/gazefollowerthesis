@@ -363,16 +363,33 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("manifest", nargs="?")
     ap.add_argument("--demo", action="store_true")
+    ap.add_argument("--latest", action="store_true",
+                    help="score the most recent session (no path needed)")
     ap.add_argument("--stimulus", help="which stimulus (default: the first)")
     ap.add_argument("--llm", help="a specific data/llm_logs/*.json response")
     ap.add_argument("--json", action="store_true", help="machine-readable")
     args = ap.parse_args()
+
+    # Session folders are named from the participant ID and a timestamp,
+    # so the path is long, easy to mistype, and different on every run.
+    # Nobody should have to read it off a log line to check their own
+    # most recent session.
+    if args.latest and not args.manifest:
+        found = sorted(glob.glob(os.path.join(
+            DATA_DIR, "gazefollower_raw", "*_manifest.json")),
+            key=os.path.getmtime)
+        if not found:
+            print("No session manifests in data/gazefollower_raw/.")
+            return 1
+        args.manifest = found[-1]
+        print("Latest session: %s" % os.path.basename(args.manifest))
+        print()
+
     if args.demo or not args.manifest:
         if not args.demo:
             print("No manifest given — showing the DEMO on synthetic data.")
-            print("To score a real session:")
-            print("    python claim_check.py "
-                  "data\\gazefollower_raw\\<session>_manifest.json")
+            print("To score your most recent real session:")
+            print("    python claim_check.py --latest")
             print()
         return _demo()
 
