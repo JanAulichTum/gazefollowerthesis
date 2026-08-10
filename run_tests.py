@@ -1052,6 +1052,29 @@ try:
           _P.p_core_threads("13th Gen Intel(R) Core(TM) i9-13900H", 20) == 12)
     check("an unrecognised CPU returns None rather than guessing",
           _P.p_core_threads("AMD Ryzen 9 7940HS", 16) is None)
+
+    # ── The frozen collection configuration ──
+    _run = read("windows/run_session.bat")
+    check("the session launcher freezes perf mode ON",
+          "set GF_PERF_MODE=1" in _run)
+    check("the session launcher freezes the camera fix ON",
+          "set GF_CAMERA_FIX=1" in _run)
+    check("the launcher CLEARS the fake-camera switches",
+          "set GF_FAKE_CAMERA=\n" in _run.replace("\r", "")
+          and "set GF_FAKE_CALIBRATION=\n" in _run.replace("\r", ""))
+    check("the launcher explains WHY each setting is frozen",
+          "29.4 Hz -> 12.1 Hz" in _run and "21.4 Hz -> 32.0 Hz" in _run)
+    check("core pinning is present but commented out by default",
+          "REM set GF_PERF_PIN_CORES=12" in _run)
+    check("the launcher states the rate to expect",
+          "under 25 Hz" in _run)
+    _pre = read("windows/check_before_participant.bat")
+    check("pre-flight runs the test suite and stops on failure",
+          "run_tests.py" in _pre and "exit /b 1" in _pre)
+    check("pre-flight verifies performance mode",
+          "perf_mode.py --verify" in _pre)
+    check("pre-flight checks the previous sessions' metrics",
+          "verify_metrics.py --today" in _pre)
     check("perf_mode is a no-op on platforms with no such mechanism",
           "no known background-demotion mechanism" in _pm)
     # Every function that calls into ctypes must swallow its own errors:
