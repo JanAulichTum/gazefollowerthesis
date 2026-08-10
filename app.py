@@ -2446,6 +2446,74 @@ def handle_validation_result(payload: dict):
     # factor, so calibration stays self-consistent and only the
     # browser-side check exposes it.
     record["screen_space"] = _screen_space_check(payload.get("screen") or {})
+
+    # ── AUTHORITATIVE degrees, recomputed server-side ────────────────
+    # The browser converts px to degrees using window.measuredDistanceCm,
+    # which is only set if the OPTIONAL position guide ran and produced a
+    # plausible value. In every session recorded so far it did not, so
+    # every reported degree silently used the hardcoded 60 cm — visible
+    # in the manifests as "viewing_distance_measured": false.
+    #
+    # The validation itself is mandatory and the tracker is sampling
+    # during it, so the distance is measured HERE, at the moment of
+    # measurement, and the degrees are recomputed from it. The browser's
+    # value is kept for comparison rather than overwritten: if the two
+    # differ, that difference is exactly the error the assumption caused.
+    try:
+        pos = gaze_service.position_info() or {}
+        dist = pos.get("est_distance_cm")
+        scr = payload.get("screen") or {}
+        if dist and 25 < float(dist) < 120 and record.get("mean_err_px"):
+            import camera_geometry
+
+            geom = {"w_px": int(scr.get("width_px") or 1920),
+                    "h_px": int(scr.get("height_px") or 1080),
+                    "diag_in": float(scr.get("diag_inches") or 15.6)}
+            rel_sd = float(pos.get("distance_rel_sd_pct") or 0) / 100.0
+            for field in ("mean_err", "mean_precision"):
+                px = record.get(field + "_px")
+                if px is None:
+                    continue
+                conv = camera_geometry.degrees_with_uncertainty(
+                    float(px), float(dist), float(dist) * rel_sd, **geom)
+                record[field + "_deg_measured"] = conv.get("deg")
+                if conv.get("deg_lo") is not None:
+                    record[field + "_deg_lo"] = conv["deg_lo"]
+                    record[field + "_deg_hi"] = conv["deg_hi"]
+            record["distance"] = {
+                "cm": dist,
+                "source": pos.get("distance_source"),
+                "rel_sd_pct": pos.get("distance_rel_sd_pct"),
+                "iris_cm": pos.get("distance_cm_iris"),
+                "iod_cm": pos.get("distance_cm_iod"),
+                "estimates_agree": pos.get("distance_estimates_agree"),
+                "warning": pos.get("distance_warning"),
+                "focal_measured": pos.get("focal_measured"),
+                "measured": True,
+            }
+            browser_deg = record.get("mean_err_deg")
+            if browser_deg and record.get("mean_err_deg_measured"):
+                shift = 100 * (record["mean_err_deg_measured"]
+                               / browser_deg - 1)
+                record["distance"]["browser_assumption_error_pct"] = round(
+                    shift, 1)
+                if abs(shift) > 10:
+                    logger.warning(
+                        "Validation degrees shift %.0f %% once the MEASURED "
+                        "distance (%.1f cm, via %s) replaces the browser's "
+                        "assumption: %.2f -> %.2f deg",
+                        shift, dist, pos.get("distance_source"),
+                        browser_deg, record["mean_err_deg_measured"])
+            if pos.get("distance_warning"):
+                logger.warning("DISTANCE: %s", pos["distance_warning"])
+        else:
+            record["distance"] = {"measured": False,
+                                  "reason": "no usable distance from the "
+                                            "tracker at validation time",
+                                  "assumed_cm": (scr or {}).get(
+                                      "viewing_distance_cm")}
+    except Exception:  # noqa: BLE001 — never lose a validation over this
+        logger.exception("Could not recompute validation degrees")
     state.setdefault("validations", []).append(record)
     # A completed pre-validation is the data source for the automatic
     # gain fit (see _auto_fit_correction).

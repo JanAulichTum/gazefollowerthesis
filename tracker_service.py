@@ -42,6 +42,13 @@ import collections
 import ctypes
 import glob
 import json
+# NOTE: module-level, deliberately. _focal_px() is a @staticmethod that
+# uses math on its fallback path, and several methods previously relied
+# on a LOCAL `import math` inside _metrics_from_face_info. That local
+# import does not cover the static method, so the uncalibrated path
+# raised NameError — silently, because the position guide swallows
+# exceptions, which is why est_distance_cm never reached the manifest.
+import math
 import os
 import platform
 import statistics
@@ -1547,6 +1554,55 @@ class Service:
             m["openness_ratio"] = round(
                 max(float(op_l), float(op_r)) / min(float(op_l), float(op_r)),
                 2)
+
+        # ── Iris-based distance + cross-check ────────────────────────
+        # The IOD is a poor ruler (6.3 cm, SD 0.4 = +-6.3 % biological
+        # spread, and it FORESHORTENS with head yaw). The iris is 11.7 mm
+        # SD 0.5 (+-4.3 %) and is a physiological constant that does not
+        # foreshorten. MediaPipe's refined mesh already computes the iris
+        # landmarks every frame, so this costs nothing.
+        #
+        # Both estimates share the same focal length, so agreement does
+        # not prove the distance is right — but DISAGREEMENT proves a
+        # measurement is broken, which is the check that did not exist.
+        try:
+            import iris_distance
+
+            lm = self._attr(fi, ("landmarks", "face_landmarks",
+                                 "landmark", "points", "mesh"))
+            focal_px, _meas = self._focal_px(w)
+            iris = iris_distance.estimate(
+                lm, m.get("inter_ocular_px") or 0.0, focal_px, w, h)
+            if iris and not iris.get("error"):
+                chk = iris.get("check") or {}
+                if chk.get("distance_cm"):
+                    m["distance_cm_iris"] = (iris.get("from_iris")
+                                             or {}).get("distance_cm")
+                    m["distance_cm_iod"] = (iris.get("from_iod")
+                                            or {}).get("distance_cm")
+                    m["distance_agreement_pct"] = chk.get("difference_pct")
+                    m["distance_estimates_agree"] = chk.get("agree")
+                    # ALWAYS prefer the iris when it is available. It is
+                    # the better ruler (4.3 % vs 6.3 % biological spread)
+                    # AND it is yaw-invariant, whereas the IOD
+                    # foreshortens as cos(yaw): at 35 deg the IOD claims
+                    # 73 cm for a head actually at 60.
+                    #
+                    # Disagreement is therefore a WARNING, not a reason
+                    # to fall back to the worse estimate — falling back
+                    # would substitute the number most likely to be wrong
+                    # precisely when something is known to be wrong.
+                    if m["distance_cm_iris"]:
+                        m["est_distance_cm"] = m["distance_cm_iris"]
+                        m["distance_source"] = "iris"
+                        m["distance_rel_sd_pct"] = 4.3 if _meas else 10.9
+                    if not chk.get("agree") and chk.get("warning"):
+                        m["distance_warning"] = chk["warning"]
+                        m["distance_disagreement"] = True
+                if chk.get("iris_asymmetry_warning"):
+                    m["iris_asymmetry_warning"] = chk["iris_asymmetry_warning"]
+        except Exception:  # noqa: BLE001 — never block the position guide
+            pass
         return m
 
     def _guidance_from_metrics(self, m: dict) -> dict:

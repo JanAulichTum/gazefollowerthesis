@@ -1754,6 +1754,85 @@ try:
           '"focal_measured"' in _tsvc2)
     check("a broken calibration file cannot block the position guide",
           "never block the guide" in _tsvc2)
+
+    # ── Iris ruler + the two-ruler cross-check ──
+    import iris_distance as _IR
+
+    def _mesh(iris_px, yaw=0.0, right_scale=1.0, w=640, h=480):
+        import math as _m
+        lm = [(0.5, 0.5)] * 478
+        f = _m.cos(_m.radians(yaw))
+        lcx = 320 - 58.2 / 2
+        rcx = lcx + 58.2 * f
+        for c, (a, b), sc in ((lcx, (469, 471), 1.0),
+                              (rcx, (474, 476), right_scale)):
+            lm[a] = ((c + iris_px * sc / 2) / w, 240 / h)
+            lm[b] = ((c - iris_px * sc / 2) / w, 240 / h)
+        return lm
+
+    check("iris diameter is the physiological constant 11.7 mm +- 0.5",
+          _IR.IRIS_DIAMETER_MM == 11.7 and _IR.IRIS_DIAMETER_SD_MM == 0.5)
+    check("the iris is a tighter ruler than the inter-ocular distance",
+          (_IR.IRIS_DIAMETER_SD_MM / _IR.IRIS_DIAMETER_MM) < (0.4 / 6.3))
+    _d = _IR.iris_diameter_px(_mesh(12.0), 640, 480)
+    check("iris diameter is recovered from the refined mesh",
+          abs(_d["mean_px"] - 12.0) < 0.05, "%.2f px" % _d["mean_px"])
+    check("HORIZONTAL diameter is used (eyelids clip the vertical)",
+          "Horizontal, not vertical" in read("iris_distance.py"))
+    check("a coarse 468-point mesh is refused, not silently misread",
+          "refined" in _IR.iris_diameter_px([(0, 0)] * 468, 640, 480)["error"])
+
+    _F = 320 / math.tan(math.radians(30))          # assumed-FOV focal
+    _true = 60.0
+    _iod_px, _iris_px = 6.3 * _F / _true, 1.17 * _F / _true
+    check("iris distance recovers the true distance",
+          abs(_IR.distance_from_iris(_iris_px, _F)["distance_cm"] - 60.0) < 0.6,
+          "%.1f cm" % _IR.distance_from_iris(_iris_px, _F)["distance_cm"])
+
+    # THE POINT: the IOD foreshortens with yaw, the iris does not.
+    for _yaw, _agree in ((0, True), (20, True), (35, False), (50, False)):
+        _e = _IR.estimate(_mesh(_iris_px, _yaw),
+                          _iod_px * math.cos(math.radians(_yaw)), _F)
+        _c = _e["check"]
+        check("at %d deg yaw the iris still reads ~60 cm" % _yaw,
+              abs(_c["iris_cm"] - 60.0) < 1.0, "%.1f cm" % _c["iris_cm"])
+        check("at %d deg yaw the two rulers %s"
+              % (_yaw, "agree" if _agree else "DISAGREE"),
+              _c["agree"] is _agree,
+              "iod says %.1f cm, diff %.1f %%"
+              % (_c["iod_cm"], _c["difference_pct"]))
+    check("disagreement carries an explanation naming head yaw",
+          "yaw" in _IR.estimate(_mesh(_iris_px, 50),
+                                _iod_px * 0.64, _F)["check"]["warning"])
+    check("a lopsided iris fit is flagged separately",
+          "asymmetry" in str(_IR.estimate(_mesh(_iris_px, 0, right_scale=1.6),
+                                          _iod_px, _F)["check"]))
+    check("one estimate alone is reported, not silently averaged",
+          _IR.cross_check(60.0, None)["distance_cm"] == 60.0
+          and _IR.cross_check(60.0, None)["ok"] is False)
+
+    # The tracker must PREFER the iris, and must NOT fall back to the
+    # worse ruler when they disagree — that would substitute the number
+    # most likely to be wrong exactly when something is known to be wrong.
+    check("the tracker prefers the iris estimate",
+          'm["distance_source"] = "iris"' in _tsvc2)
+    check("disagreement is a WARNING, not a fallback to the IOD",
+          "not a reason" in _tsvc2 and "distance_disagreement" in _tsvc2)
+    check("math is imported at MODULE level (the static method needs it)",
+          "\nimport math\n" in _tsvc2
+          and "_focal_px() is a @staticmethod" in _tsvc2)
+
+    # ── Degrees recomputed server-side from the MEASURED distance ──
+    check("validation degrees are recomputed from a measured distance",
+          "mean_err_deg_measured" in _app2)
+    check("the browser value is kept for comparison, not overwritten",
+          "browser_assumption_error_pct" in _app2)
+    check("a large shift from the assumption is logged",
+          "once the MEASURED" in _app2)
+    check("an unmeasurable distance is recorded as such",
+          '"measured": False' in _app2)
+    check("the distance block records which ruler was used",
+          '"iris_cm": pos.get("distance_cm_iris")' in _app2)
 except Exception as exc:  # noqa: BLE001
     _blocked = environment_block(exc)
     check("metrics specification", False, _blocked or repr(exc))
