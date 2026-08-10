@@ -1075,6 +1075,27 @@ try:
           "perf_mode.py --verify" in _pre)
     check("pre-flight checks the previous sessions' metrics",
           "verify_metrics.py --today" in _pre)
+
+    # ── Recording conditions (RQ1: "varying recording conditions") ──
+    _idx = read("templates/index.html")
+    for _f in ("room", "lighting", "glasses", "condition_notes"):
+        check("the login form captures '%s'" % _f,
+              'name="%s"' % _f in _idx)
+    check("lighting uses a FIXED vocabulary, not free text",
+          '<select class="form-input" id="lighting"' in _idx
+          and "backlit" in _idx)
+    check("eyewear is captured (it degrades the iris estimate ~4.3->4.8 %)",
+          'id="glasses"' in _idx)
+    check("conditions are read from the login form",
+          'request.form.get("room"' in _app2)
+    check("conditions reach the socket state, not just the cookie",
+          'state["conditions"] = session["conditions"]' in _app2)
+    check("conditions reach the manifest",
+          '"conditions": state.get("conditions")' in _app2)
+    check("incomplete conditions are warned about at login",
+          "cannot be recovered later" in _app2)
+    check("the reason conditions must be captured live is documented",
+          "reconstructed afterwards from the gaze data" in _app2)
     check("perf_mode is a no-op on platforms with no such mechanism",
           "no known background-demotion mechanism" in _pm)
     # Every function that calls into ctypes must swallow its own errors:

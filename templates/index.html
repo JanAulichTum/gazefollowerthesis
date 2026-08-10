@@ -67,6 +67,56 @@
                        placeholder="Optional — used to convert tracking accuracy to degrees">
             </div>
 
+            <!-- Recording conditions. RQ1 asks about VARYING recording
+                 conditions; these are the only record of them and cannot
+                 be reconstructed after the session. Fixed vocabularies,
+                 not free text, so 10 sessions can be tabulated. -->
+            <div class="form-group">
+                <label class="form-label" for="room">Room</label>
+                <input class="form-input" type="text" id="room" name="room"
+                       list="room-options" maxlength="40"
+                       placeholder="e.g. office-A, seminar-room, home-desk">
+                <datalist id="room-options">
+                    <option value="office-A"></option>
+                    <option value="office-B"></option>
+                    <option value="seminar-room"></option>
+                    <option value="home-desk"></option>
+                    <option value="lab"></option>
+                </datalist>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="lighting">Lighting</label>
+                <select class="form-input" id="lighting" name="lighting">
+                    <option value="">— select —</option>
+                    <option value="daylight-bright">Daylight, bright</option>
+                    <option value="daylight-overcast">Daylight, overcast</option>
+                    <option value="artificial-only">Artificial only</option>
+                    <option value="mixed">Mixed daylight + artificial</option>
+                    <option value="dim">Dim</option>
+                    <option value="backlit">Window behind participant (backlit)</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="glasses">Eyewear</label>
+                <select class="form-input" id="glasses" name="glasses">
+                    <option value="">— select —</option>
+                    <option value="none">None</option>
+                    <option value="glasses">Glasses</option>
+                    <option value="contacts">Contact lenses</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="condition_notes">
+                    Anything unusual? (optional)
+                </label>
+                <input class="form-input" type="text" id="condition_notes"
+                       name="condition_notes" maxlength="300"
+                       placeholder="e.g. participant adjusted chair mid-session">
+            </div>
+
             <div class="consent-group">
                 <label class="consent-label">
                     <input type="checkbox" id="consent" name="consent" required>

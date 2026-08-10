@@ -515,6 +515,32 @@ def login():
     session["screen_diag_inches"] = screen_diag or DEFAULT_SCREEN_DIAG_INCHES
     session["screen_diag_assumed"] = screen_diag is None
 
+    # --- Recording conditions (RQ1: "varying recording conditions") ---------
+    # Collection happens in DIFFERENT ROOMS with different light. That
+    # variation is the independent variable RQ1 asks about, but it is
+    # only analysable if it is recorded AT THE TIME. It cannot be
+    # reconstructed afterwards from the gaze data, and "I think that one
+    # was the bright room" is not a covariate.
+    #
+    # Free text is deliberately avoided for the categorical fields: a
+    # fixed vocabulary can be tabulated across 10 sessions, "quite
+    # bright I guess" cannot.
+    conditions = {
+        "room": (request.form.get("room", "").strip() or None),
+        "lighting": (request.form.get("lighting", "").strip() or None),
+        "glasses": (request.form.get("glasses", "").strip() or None),
+        "time_of_day": datetime.now().strftime("%H:%M"),
+        "notes": (request.form.get("condition_notes", "").strip() or None)[:300]
+        if request.form.get("condition_notes", "").strip() else None,
+    }
+    session["conditions"] = conditions
+    if not conditions["room"] or not conditions["lighting"]:
+        logger.warning(
+            "Recording conditions incomplete (room=%s, lighting=%s). RQ1 asks "
+            "about VARYING recording conditions; unrecorded conditions cannot "
+            "be analysed and cannot be recovered later.",
+            conditions["room"], conditions["lighting"])
+
     # --- Existing participant -----------------------------------------------
     existing = get_participant(participant_id)
 
@@ -1871,6 +1897,11 @@ def handle_connect():
     pid = session.get("participant_id")
     if pid:
         state["participant_id"] = pid
+    # Recording conditions live in the Flask session (set at login) but
+    # the manifest is built from the socket state, so they have to be
+    # carried across or they silently never reach the record.
+    if session.get("conditions"):
+        state["conditions"] = session["conditions"]
     logger.info("SocketIO connected: sid=%s, participant=%s", sid, pid)
     _start_telemetry(sid, pid)
 
@@ -1961,6 +1992,9 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
         # sampling rate. Previously computed only in quality_report.py and
         # never persisted.
         "events": counts.get("__events__"),
+        # Recording conditions, captured at login. RQ1 asks about
+        # varying recording conditions; this is the only record of them.
+        "conditions": state.get("conditions"),
         "rate_gate": state.get("rate_gate"),
         # Condensed background telemetry (full series in data/telemetry/).
         # Keeps the manifest readable while making the headline context —
