@@ -2102,6 +2102,33 @@ try:
           "q.distance_measured ? 'pass' : 'fail'" in _rev)
     check("a disagreement between the two rulers is surfaced here too",
           "estimates_agree === false" in _rev)
+
+    # ── claim_check on a REAL session, not just the demo ─────────────
+    # The manifest path used to print "wire in the gaze CSV" and exit,
+    # so `python claim_check.py` silently fell through to --demo and
+    # looked like it had run. RQ3's only automatic validity measure was
+    # a stub.
+    _cc = read("claim_check.py")
+    check("claim_check scores a real manifest, not only the demo",
+          "def load_gaze" in _cc and "def load_claims" in _cc
+          and "Wire in the gaze CSV" not in _cc)
+    check("screen pixels are mapped into VIDEO coordinates via video_rect",
+          "video_rect" in _cc and "(sx - rx) / rw" in _cc)
+    check("the session's gain correction is applied before scoring",
+          "gain correction applied" in _cc and "(sx - cx) * gx" in _cc)
+    check("invalid samples are marked, not scored as 'outside the box'",
+          'row.get("status"' in _cc)
+    check("only samples inside the stimulus window are used",
+          "if ts < t0 or ts > t1" in _cc)
+    check("tolerance uses the OUT-OF-SAMPLE post validation",
+          'v.get("phase") == "post"' in _cc
+          and "IN-SAMPLE — optimistic" in _cc)
+    check("a session with no validation is refused, not scored as perfect",
+          "Refusing." in _cc)
+    check("an over-threshold tolerance is called an upper bound",
+          "UPPER bound" in _cc)
+    check("running with no arguments says how to score a real session",
+          "showing the DEMO on synthetic data" in _cc)
     check("duty prefers total callback cost over model cost",
           'or (live_cb or {}).get("callback_ms_median")' in _tsvc3)
     check("a duty figure computed from models alone is marked as such",

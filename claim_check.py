@@ -55,7 +55,10 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import csv
+import glob
 import json
+import math
 import os
 import sys
 
@@ -205,24 +208,261 @@ def _demo() -> int:
     return 0
 
 
+BASE = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE, "data")
+
+
+def extract_structured(text: str) -> list:
+    """The ```json …``` block the feedback prompt requires."""
+    import re
+
+    if not text:
+        return []
+    m = re.search(r"```json\s*(.+?)```", text, re.S)
+    if not m:
+        m = re.search(r"(\[\s*\{.+?\}\s*\])", text, re.S)
+    if not m:
+        return []
+    try:
+        parsed = json.loads(m.group(1).strip())
+    except ValueError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def load_claims(session: str, llm_file: "str | None" = None) -> "tuple":
+    """Newest evaluation run for *session* from data/llm_logs/.
+
+    The feedback response is returned to the browser and logged, but not
+    written into the session manifest — so the log directory is the only
+    persistent record of what the model actually claimed.
+    """
+    if llm_file:
+        with open(llm_file, encoding="utf-8") as fh:
+            d = json.load(fh)
+        return extract_structured(d.get("response_text") or ""), llm_file
+
+    best = None
+    for path in glob.glob(os.path.join(DATA_DIR, "llm_logs",
+                                       "*evaluation_run_*.json")):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                d = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        ctx = d.get("context") or {}
+        if session and ctx.get("session") != session:
+            continue
+        if best is None or path > best[0]:
+            best = (path, d)
+    if not best:
+        return [], None
+    return extract_structured(best[1].get("response_text") or ""), best[0]
+
+
+def load_gaze(manifest: dict, manifest_path: str, stimulus: str) -> "tuple":
+    """Gaze in NORMALISED VIDEO coordinates for one stimulus.
+
+    Three conversions have to happen, and skipping any of them silently
+    scores the model against the wrong thing:
+
+    1. The CSV holds SCREEN pixels. The model's bboxes are fractions of
+       the VIDEO. The manifest's per-stimulus ``video_rect`` is the
+       letterboxed rectangle the video occupied on screen, so it is the
+       only correct mapping between them.
+    2. The recorded columns are UNCORRECTED, but the marker the model
+       saw was drawn with the session's gain correction applied. Scoring
+       raw gaze against claims made about corrected gaze would measure
+       the correction, not the model.
+    3. Only samples inside the stimulus's own time window count, and
+       only ones with status set — an invalid sample sitting at (0,0)
+       would otherwise register as "outside every box".
+    """
+    csv_name = manifest.get("session_csv")
+    csv_path = os.path.join(os.path.dirname(manifest_path), csv_name) \
+        if csv_name else manifest_path.replace("_manifest.json", ".csv")
+    if not os.path.isfile(csv_path):
+        return [], "no gaze CSV at %s" % csv_path
+
+    entry = next((s for s in manifest.get("stimuli", [])
+                  if s.get("stimulus") == stimulus), None)
+    if not entry:
+        return [], "stimulus %r not in the manifest" % stimulus
+    rect = entry.get("video_rect") or {}
+    rx, ry = float(rect.get("x", 0)), float(rect.get("y", 0))
+    rw, rh = float(rect.get("w", 0)), float(rect.get("h", 0))
+    if rw <= 0 or rh <= 0:
+        return [], "stimulus has no usable video_rect"
+    t0 = entry.get("t_start_ns")
+    t1 = entry.get("t_end_ns")
+    if not t0 or not t1:
+        return [], "stimulus has no time window"
+
+    corr = manifest.get("gain_correction") or {}
+    gx = float(corr.get("gain_x") or 1.0)
+    gy = float(corr.get("gain_y") or 1.0)
+    ox = float(corr.get("offset_x") or 0.0)
+    oy = float(corr.get("offset_y") or 0.0)
+    cx = float(corr.get("centre_x") or corr.get("center_x") or 0.0)
+    cy = float(corr.get("centre_y") or corr.get("center_y") or 0.0)
+
+    samples: list = []
+    with open(csv_path, newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            try:
+                ts = int(row["timestamp"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if ts < t0 or ts > t1:
+                continue
+            valid = str(row.get("status", "1")).strip() not in ("0", "", "0.0")
+            try:
+                sx = float(row["filtered_gaze_position_x"])
+                sy = float(row["filtered_gaze_position_y"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            # Same affine the live preview applied, about the same centre.
+            sx = cx + (sx - cx) * gx + ox
+            sy = cy + (sy - cy) * gy + oy
+            samples.append(((ts - t0) / 1e9,
+                            (sx - rx) / rw, (sy - ry) / rh, valid))
+    if not samples:
+        return [], "no samples inside the stimulus window"
+    return samples, None
+
+
+def _px_per_degree(w_px: int, h_px: int, diag_in: float,
+                   distance_cm: float) -> float:
+    diag_cm = diag_in * 2.54
+    w_cm = diag_cm * math.cos(math.atan2(h_px, w_px))
+    return (w_px / w_cm) * distance_cm * math.tan(math.radians(1.0))
+
+
+def _accuracy_deg(manifest: dict) -> "tuple":
+    """The OUT-OF-SAMPLE accuracy, and where it came from.
+
+    The post-stimulus check scored with a correction fitted on the PRE
+    targets is the only unbiased estimate of the accuracy the stimulus
+    data was actually recorded at. Using the flattering in-sample pre
+    figure would shrink the tolerance box and manufacture contradictions.
+    """
+    vals = manifest.get("validations") or []
+    post = [v for v in vals if v.get("phase") == "post"]
+    for v in reversed(post):
+        deg = v.get("mean_err_deg_measured") or v.get("mean_err_deg")
+        if deg:
+            return float(deg), "post-stimulus (out-of-sample)"
+    for v in reversed(vals):
+        deg = v.get("mean_err_deg_measured") or v.get("mean_err_deg")
+        if deg:
+            return float(deg), "pre-stimulus (IN-SAMPLE — optimistic)"
+    return None, None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("manifest", nargs="?")
     ap.add_argument("--demo", action="store_true")
+    ap.add_argument("--stimulus", help="which stimulus (default: the first)")
+    ap.add_argument("--llm", help="a specific data/llm_logs/*.json response")
+    ap.add_argument("--json", action="store_true", help="machine-readable")
     args = ap.parse_args()
     if args.demo or not args.manifest:
+        if not args.demo:
+            print("No manifest given — showing the DEMO on synthetic data.")
+            print("To score a real session:")
+            print("    python claim_check.py "
+                  "data\\gazefollower_raw\\<session>_manifest.json")
+            print()
         return _demo()
 
     with open(args.manifest, encoding="utf-8") as fh:
         manifest = json.load(fh)
-    llm = manifest.get("llm") or {}
-    claims = llm.get("structured") or []
-    if not claims:
-        print("No structured LLM claims in this manifest. Run the feedback "
-              "step first; it must emit the JSON block with bbox fields.")
+
+    stimuli = [s.get("stimulus") for s in manifest.get("stimuli", [])
+               if s.get("stimulus")]
+    stimulus = args.stimulus or (stimuli[0] if stimuli else None)
+    if not stimulus:
+        print("This manifest lists no stimuli.")
         return 1
-    print("Loaded %d claims. Wire in the gaze CSV to score them "
-          "(see check_all())." % len(claims))
+
+    session = os.path.basename(args.manifest).replace("_manifest.json", "")
+    claims, src = load_claims(session, args.llm)
+    if not claims:
+        print("No structured LLM claims found for session %r." % session)
+        print("Run the feedback step in the review tool first — it must "
+              "emit the ```json block with bbox fields. Checked "
+              "data/llm_logs/*evaluation_run_*.json.")
+        return 1
+
+    samples, err = load_gaze(manifest, args.manifest, stimulus)
+    if err:
+        print("Could not load gaze: %s" % err)
+        return 1
+
+    acc, acc_src = _accuracy_deg(manifest)
+    if not acc:
+        print("This session has no validation accuracy, so there is no "
+              "tolerance to expand the boxes by — every claim would be "
+              "scored as if the tracker were perfect. Refusing.")
+        return 1
+
+    scr = manifest.get("screen") or {}
+    dist = ((manifest.get("distance") or {}).get("cm")
+            or (manifest.get("quality_thresholds") or {})
+            .get("assumed_viewing_distance_cm") or 60.0)
+    ppd = _px_per_degree(int(scr.get("width_px") or 1920),
+                         int(scr.get("height_px") or 1080),
+                         float(scr.get("diag_inches") or 15.6), float(dist))
+    rect = next(s for s in manifest["stimuli"]
+                if s.get("stimulus") == stimulus)["video_rect"]
+    res = check_all(claims, samples, acc, ppd,
+                    int(rect.get("w") or 1920), int(rect.get("h") or 1080))
+    res.update(session=session, stimulus=stimulus, llm_log=src,
+               accuracy_source=acc_src, n_gaze_samples=len(samples))
+
+    if args.json:
+        print(json.dumps(res, indent=2))
+        return 0
+
+    print("=" * 74)
+    print("  CLAIM CORRESPONDENCE — %s" % session)
+    print("=" * 74)
+    print("  stimulus   : %s" % stimulus)
+    print("  gaze       : %d samples (gain correction applied)"
+          % len(samples))
+    print("  tolerance  : %.2f deg = %.0f px, from the %s validation"
+          % (acc, acc * ppd, acc_src))
+    print("  claims from: %s" % os.path.basename(src or "?"))
+    # A tolerance this wide makes almost any claim near the gaze point
+    # "supported", so a high correspondence score would be measuring the
+    # padding rather than the model. Say so before the numbers, not after.
+    if acc > 3.0:
+        print()
+        print("  *** The tolerance is %.1f deg (%.0f px) because this "
+              "session's" % (acc, acc * ppd))
+        print("      accuracy failed the 3 deg criterion. Boxes padded that")
+        print("      far will accept almost anything near the gaze point, so")
+        print("      treat the correspondence figure below as an UPPER bound,")
+        print("      not a measurement. Score sessions that passed. ***")
+    print()
+    for r in res["claims"]:
+        print("  [%-12s] %5.1f-%5.1f s  %-30s %s"
+              % (r["verdict"], r.get("t_start") or 0, r.get("t_end") or 0,
+                 str(r.get("attended"))[:30],
+                 ("%3.0f%% inside" % (100 * r["fraction_inside"]))
+                 if "fraction_inside" in r else ""))
+        if r.get("note"):
+            print("                      %s" % r["note"])
+    print()
+    print("  correspondence: %s %% of %d testable claims (%s %% of %d "
+          "claims were testable)"
+          % (res["correspondence_pct"], res["n_testable"],
+             res["testable_pct"], res["n_claims"]))
+    print()
+    print("  A contradicted claim is not automatically a hallucination —")
+    print("  it can also be a localisation error, or gaze error near a")
+    print("  boundary. The boxes were already padded by %.0f px." % (acc * ppd))
     return 0
 
 
