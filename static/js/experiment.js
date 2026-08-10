@@ -207,39 +207,56 @@ class NativeCalibration {
                     + 'of the frame, and put light on your face rather '
                     + 'than behind you. Then measure again.';
             } else if (g.camera_throttled) {
-                // The models finish well inside the frame interval, so
-                // the pipeline sits IDLE most of every frame waiting for
-                // a frame that has not arrived. The CPU cannot be the
-                // limit, and telling the researcher to change the power
-                // plan would send them to fix the wrong machine. The
-                // usual cause is auto-exposure: a webcam cannot expose
-                // for longer than one frame period, so in dim light it
-                // halves the frame rate to buy exposure time.
-                why = 'Frames arrived at ' + g.initial_hz + ' Hz at first '
-                    + 'and settled to ' + g.sustained_hz + ' Hz with '
-                    + (det === null || det === undefined ? 'good' : det + ' %')
-                    + ' detection, while the tracking models needed only '
-                    + ((g.stages && g.stages.models_ms_median) || '?')
+                // The camera was MEASURED delivering slowly to the
+                // callback while the callback itself was cheap. Only
+                // this combination justifies naming the camera — an
+                // earlier version inferred it from cheap models alone
+                // and was wrong, because "cheap models" is not "cheap
+                // frame".
+                why = 'The camera delivered only ' + g.delivered_hz
+                    + ' Hz to the tracker, while the per-frame work took '
+                    + g.work_ms_median + ' ms of the '
+                    + g.frame_interval_ms + ' ms between frames ('
+                    + g.pipeline_duty_pct + ' % duty). This is a CAMERA '
+                    + 'problem, not a compute problem: in dim light a '
+                    + 'webcam lengthens its exposure, and because it '
+                    + 'cannot expose for longer than one frame it halves '
+                    + 'the frame rate instead (30 → 15). Put a lamp on '
+                    + 'your FACE (not behind you, not aimed at the '
+                    + 'screen), raise the screen brightness, and measure '
+                    + 'again. Changing the power plan will not help.';
+            } else if (g.frames_discarded) {
+                why = 'The camera delivered ' + g.delivered_hz + ' Hz and '
+                    + 'the per-frame work took only ' + g.work_ms_median
                     + ' ms of the ' + g.frame_interval_ms + ' ms between '
-                    + 'frames — ' + g.pipeline_duty_pct + ' % duty. '
-                    + 'The computer is idle most of every frame, waiting '
-                    + 'for the camera. This is a CAMERA problem, not a '
-                    + 'compute problem: in dim light a webcam lengthens '
-                    + 'its exposure, and because it cannot expose for '
-                    + 'longer than one frame it halves the frame rate '
-                    + 'instead (30 → 15). Put a lamp on your FACE (not '
-                    + 'behind you, not aimed at the screen), raise the '
-                    + 'screen brightness, and measure again. Changing the '
-                    + 'power plan will not help.';
+                    + 'frames, yet only ' + g.sustained_hz + ' Hz of gaze '
+                    + 'samples came out — so frames are arriving and being '
+                    + 'discarded. Neither the lighting nor the power plan '
+                    + 'will help. Restart the session; if it persists, run '
+                    + '"python diagnose_rate.py" and check the subscriber '
+                    + 'count in the log.';
             } else if (g.cpu_throttled || g.turbo_drop) {
                 why = 'Frames arrived at ' + g.initial_hz + ' Hz at first '
                     + 'and settled to ' + g.sustained_hz + ' Hz, with '
                     + (det === null || det === undefined ? 'good' : det + ' %')
-                    + ' detection, and the tracking models are filling '
-                    + 'the whole frame interval — so this is the machine '
-                    + 'slowing down. Check that the log says "perf_mode '
-                    + '… ACTIVE", close other apps, set the power plan to '
-                    + 'best performance, and measure again.';
+                    + ' detection, and the per-frame work ('
+                    + g.work_ms_median + ' ms) is filling the '
+                    + g.frame_interval_ms + ' ms frame interval — so the '
+                    + 'COMPUTER is the limit. Because that work happens '
+                    + 'inside the capture loop, going over the frame '
+                    + 'budget makes the rate halve rather than sag. Check '
+                    + 'the log says "perf_mode … ACTIVE", close other '
+                    + 'apps, set the power plan to best performance, and '
+                    + 'measure again.';
+            } else if (g.bottleneck_unclear) {
+                why = 'Frames settled to ' + g.sustained_hz + ' Hz, and '
+                    + 'the per-frame work (' + g.work_ms_median + ' ms of '
+                    + g.frame_interval_ms + ' ms) is NOT the limit — but '
+                    + 'the camera’s own delivery rate could not be '
+                    + 'measured, so the camera and downstream frame loss '
+                    + 'cannot be told apart yet. Stop the server and run '
+                    + '"python camera_remedy.py" to measure the camera '
+                    + 'directly.';
             } else {
                 why = 'Frames are arriving slowly (' + g.sustained_hz
                     + ' Hz) with '

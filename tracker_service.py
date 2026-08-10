@@ -1102,7 +1102,100 @@ class Service:
         ge.detect = timed_gaze
         self._stage_timers_installed = True
         log("Stage timers installed (FaceMesh / gaze CNN split).")
+        self._install_callback_timer(gf)
         return True
+
+    def _install_callback_timer(self, gf) -> bool:
+        """Time the WHOLE per-frame callback, not just the two models.
+
+        WHY THE MODEL SPLIT IS NOT ENOUGH
+        ---------------------------------
+        The stage timers cover ``face_alignment.detect`` and
+        ``gaze_estimator.detect``. They do NOT cover the rest of the
+        callback: GazeFollower's own filtering, its subscriber dispatch,
+        the CSV write and flush it performs per sample, and our
+        ``_on_sample``. On a real webcam ``capture`` is None, so
+        ``callback_ms_median`` was unavailable and the duty calculation
+        silently used the MODEL cost as if it were the whole cost.
+
+        That gap produced a wrong diagnosis on this project: 18 ms of
+        models inside a 66.7 ms frame interval reads as 27 % duty and
+        "the pipeline is idle waiting for the camera" — while the camera
+        was independently measured at 31 fps. Both facts are true, and
+        together they mean the missing time is in the untimed remainder
+        of the callback.
+
+        This matters because the callback runs SYNCHRONOUSLY inside the
+        capture loop. The loop cannot begin the next frame until the
+        callback returns, so the moment total callback work crosses the
+        frame period (33.3 ms at 30 fps) the loop misses every second
+        frame and the rate does not degrade gracefully — it HALVES.
+        30.2 -> 15.0 is that signature exactly, and no partial timing can
+        see it.
+
+        Also records frame ARRIVAL timestamps, which give the delivered
+        camera rate on a real webcam for the first time: if frames arrive
+        at 30 Hz but samples leave at 15 Hz, the loss is downstream of
+        capture, which is a different bug again.
+        """
+        if getattr(self, "_callback_timer_installed", False):
+            return True
+        cam = getattr(gf, "camera", None)
+        if cam is None:
+            return False
+        # The attribute holding the per-frame callback is not part of any
+        # public API and has been spelled several ways upstream. Find the
+        # first callable one rather than hard-coding a name that a
+        # version bump can silently invalidate.
+        attr = next((a for a in ("callback", "_callback",
+                                 "on_image_callback", "_on_image_callback",
+                                 "image_callback")
+                     if callable(getattr(cam, a, None))), None)
+        if attr is None:
+            log("Callback timer NOT installed: no callback attribute found "
+                "on %s — total per-frame cost will be unavailable and the "
+                "duty figure will understate the work."
+                % type(cam).__name__)
+            return False
+
+        orig = getattr(cam, attr)
+        self._callback_ms = collections.deque(maxlen=4000)
+        self._frame_arrivals = collections.deque(maxlen=4000)
+
+        def timed_callback(*a, **kw):
+            t0 = time.perf_counter()
+            self._frame_arrivals.append(t0)
+            try:
+                return orig(*a, **kw)
+            finally:
+                self._callback_ms.append(
+                    (time.perf_counter() - t0) * 1000.0)
+
+        setattr(cam, attr, timed_callback)
+        self._callback_timer_installed = True
+        log("Callback timer installed on %s.%s (total per-frame cost and "
+            "delivered camera rate)." % (type(cam).__name__, attr))
+        return True
+
+    def _callback_stats(self) -> "dict | None":
+        """Total per-frame callback cost and the delivered camera rate."""
+        cb = sorted(getattr(self, "_callback_ms", ()) or ())
+        arrivals = list(getattr(self, "_frame_arrivals", ()) or ())
+        if not cb:
+            return None
+        out = {
+            "callback_ms_median": round(statistics.median(cb), 1),
+            "callback_ms_p90": round(
+                cb[min(len(cb) - 1, int(0.90 * len(cb)))], 1),
+            "n_callbacks": len(cb),
+        }
+        if len(arrivals) >= 10:
+            gaps = sorted(b - a for a, b in zip(arrivals[:-1], arrivals[1:])
+                          if b > a)
+            if gaps:
+                out["delivered_hz"] = round(
+                    1.0 / statistics.median(gaps), 1)
+        return out
 
     def _stage_split(self) -> "dict | None":
         """Median + p90 cost of each model stage over the last window."""
@@ -1251,10 +1344,16 @@ class Service:
             # factor found on this project (2.2x on every stage).
             "perf_mode": self._describe_perf_mode(),
         }
+        # Total per-frame callback cost. Prefer the fake camera's own
+        # counter where it exists; otherwise the live wrapper, which is
+        # the only source on a real webcam.
+        live_cb = self._callback_stats()
+        result["callback"] = live_cb
         stages = result["stages"]
         if stages:
             models = stages.get("models_ms_median") or 0.0
-            cb = (capture or {}).get("callback_ms_median") or 0.0
+            cb = ((capture or {}).get("callback_ms_median")
+                  or (live_cb or {}).get("callback_ms_median") or 0.0)
             # Anything in the callback that is NOT the two models: the
             # writer, the filter, subscriber dispatch, lock waits.
             result["overhead_ms_median"] = round(max(0.0, cb - models), 1) \
@@ -1267,55 +1366,113 @@ class Service:
                    ("; %s ms is everything else in the callback"
                     % result["overhead_ms_median"]) if cb else ""))
             # ── BOTTLENECK ATTRIBUTION ───────────────────────────────
-            # A low rate has two families of cause that need OPPOSITE
-            # fixes, and on a real webcam ``capture`` is None, so the
-            # served-vs-sustained comparison above is unavailable. The
-            # stage timers are available, and they settle it:
+            # A low rate has three causes with three different fixes,
+            # and the rate alone cannot tell them apart:
             #
-            #   the models fill the frame interval  -> the CPU is the
-            #       limit (EcoQoS demotion, thermal, contention). Fix
-            #       the machine.
-            #   the models finish in a fraction of the frame interval
-            #       -> the pipeline spends most of each interval IDLE,
-            #       waiting for a frame that has not arrived. The
-            #       camera is delivering slowly for its own reasons.
-            #       Fix the CAMERA (lighting / exposure), not the CPU.
+            #   1 the per-frame WORK fills the frame interval
+            #       -> the machine is the limit (EcoQoS demotion,
+            #          thermal, contention). Fix the machine.
+            #   2 the work is cheap AND the camera is delivering slowly
+            #       -> the camera is the limit. The usual cause is
+            #          auto-exposure: a webcam cannot integrate for
+            #          longer than one frame period, so in dim light it
+            #          halves the rate to buy exposure time. Fix the
+            #          light.
+            #   3 the work is cheap AND the camera is delivering fast
+            #       -> frames are arriving and being THROWN AWAY
+            #          downstream. Neither the machine nor the light
+            #          will help.
             #
-            # The classic camera cause is auto-exposure: a UVC webcam
-            # cannot integrate for longer than one frame period, so in
-            # dim light it HALVES the frame rate to buy exposure time
-            # (30 -> 15 -> 10). Detection stays high because the image
-            # is still perfectly usable — there is simply less of it.
-            # That signature (an exact halving at high detection, with
-            # cheap model stages) is the one this flag catches.
-            if models and sustained > 0:
+            # The critical word is WORK, and getting it wrong is how
+            # this project produced a confidently wrong diagnosis: the
+            # duty figure used the two MODEL stages (18 ms) as if they
+            # were the whole callback, concluded the pipeline was idle
+            # 73 % of every frame, and blamed the camera — which was
+            # independently measured at 31 fps moments later. The
+            # untimed remainder of the callback (GazeFollower's filter,
+            # its subscriber dispatch, the per-sample CSV write and
+            # flush, our own handler) is now included, because that
+            # remainder is exactly where a synchronous capture loop
+            # loses its frames.
+            #
+            # And note WHY the failure is a clean halving rather than a
+            # gradual slide: the callback runs INSIDE the capture loop,
+            # so the loop cannot start frame N+1 until frame N returns.
+            # The moment total work crosses the frame period the loop
+            # misses every second frame. 30.2 -> 15.0 is that, not a
+            # camera.
+            work = cb or models
+            delivered = (live_cb or {}).get("delivered_hz")
+            if work and sustained > 0:
                 interval_ms = 1000.0 / sustained
                 result["frame_interval_ms"] = round(interval_ms, 1)
+                result["work_ms_median"] = round(work, 1)
+                result["work_is_models_only"] = not bool(cb)
                 result["pipeline_duty_pct"] = round(
-                    100.0 * models / interval_ms, 1)
+                    100.0 * work / interval_ms, 1)
+                low = sustained < 0.85 * NOMINAL_CAMERA_FPS
+                busy = work >= 0.60 * interval_ms
+                # The camera is only exonerated when it was MEASURED to
+                # be fast. Absent that measurement, "cheap work + low
+                # rate" is genuinely ambiguous and must say so rather
+                # than pick the flattering explanation.
+                cam_fast = bool(delivered
+                                and delivered >= 0.85 * NOMINAL_CAMERA_FPS)
+                cam_slow = bool(delivered
+                                and delivered < 0.85 * NOMINAL_CAMERA_FPS)
+                result["delivered_hz"] = delivered
+                result["cpu_throttled"] = bool(low and busy)
                 result["camera_throttled"] = bool(
-                    models < 0.60 * interval_ms
-                    and sustained < 0.85 * NOMINAL_CAMERA_FPS)
-                result["cpu_throttled"] = bool(
-                    models >= 0.60 * interval_ms
-                    and sustained < 0.85 * NOMINAL_CAMERA_FPS)
-                if result["camera_throttled"]:
-                    log("Bottleneck: THE CAMERA. Models take %.1f ms of a "
-                        "%.1f ms frame interval (%.0f %% duty) — the "
-                        "pipeline is idle %.1f ms per frame waiting for a "
-                        "frame that has not arrived. The CPU is not the "
-                        "limit. Most likely auto-exposure lengthening in "
-                        "dim light; run camera_light_test.py."
-                        % (models, interval_ms,
-                           result["pipeline_duty_pct"],
-                           interval_ms - models))
-                elif result["cpu_throttled"]:
-                    log("Bottleneck: PER-FRAME WORK. Models take %.1f ms of "
-                        "a %.1f ms frame interval (%.0f %% duty) — the CPU "
-                        "is the limit. Check perf mode, thermals and other "
-                        "running processes."
-                        % (models, interval_ms,
+                    low and not busy and cam_slow)
+                result["frames_discarded"] = bool(
+                    low and not busy and cam_fast)
+                result["bottleneck_unclear"] = bool(
+                    low and not busy and delivered is None)
+
+                if result["cpu_throttled"]:
+                    log("Bottleneck: PER-FRAME WORK. The callback takes "
+                        "%.1f ms of a %.1f ms frame interval (%.0f %% duty; "
+                        "%.1f ms of that is the two models, %.1f ms is "
+                        "everything else). Because the callback runs inside "
+                        "the capture loop, work above the frame period "
+                        "makes the loop skip alternate frames — which is "
+                        "why the rate halves instead of sagging. Check perf "
+                        "mode, the subscriber count (%s; 2 is correct, each "
+                        "extra one is another CSV write per frame), "
+                        "thermals and other running processes."
+                        % (work, interval_ms, result["pipeline_duty_pct"],
+                           models, result["overhead_ms_median"] or 0.0,
+                           result["subscribers"]))
+                elif result["camera_throttled"]:
+                    log("Bottleneck: THE CAMERA. It delivered only %.1f Hz "
+                        "to the callback, while the callback itself took "
+                        "%.1f ms of the %.1f ms interval (%.0f %% duty). "
+                        "Most likely auto-exposure lengthening in dim "
+                        "light; confirm with camera_remedy.py."
+                        % (delivered, work, interval_ms,
                            result["pipeline_duty_pct"]))
+                elif result["frames_discarded"]:
+                    log("Bottleneck: NEITHER the camera nor the CPU. The "
+                        "camera delivered %.1f Hz to the callback and the "
+                        "callback took only %.1f ms of the %.1f ms "
+                        "interval (%.0f %% duty), yet samples emerged at "
+                        "%.1f Hz — so roughly %.0f %% of frames produced "
+                        "no sample. The loss is between the callback and "
+                        "the sample stream: check detection failures "
+                        "(%s %% detected) and the subscriber count (%s)."
+                        % (delivered, work, interval_ms,
+                           result["pipeline_duty_pct"], sustained,
+                           100.0 * max(0.0, delivered - sustained) / delivered,
+                           result["detected_pct"], result["subscribers"]))
+                elif result["bottleneck_unclear"]:
+                    log("Bottleneck: UNRESOLVED. The callback takes only "
+                        "%.1f ms of a %.1f ms interval (%.0f %% duty), so "
+                        "per-frame work is not the limit — but the "
+                        "delivered camera rate was not measured, so the "
+                        "camera and downstream frame loss cannot be told "
+                        "apart. Run camera_remedy.py to measure the camera "
+                        "directly." % (work, interval_ms,
+                                       result["pipeline_duty_pct"]))
         if capture:
             served = capture.get("served_hz_this_window")
             cb_med = capture.get("callback_ms_median")

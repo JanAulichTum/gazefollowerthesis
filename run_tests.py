@@ -1903,29 +1903,85 @@ try:
     _js3 = read("static/js/experiment.js")
     _camp = read("camera_patch.py")
 
-    check("the rate check attributes a low rate to the camera or the CPU",
-          "camera_throttled" in _tsvc3 and "cpu_throttled" in _tsvc3)
-    check("attribution uses model cost vs the frame interval, not the "
+    check("the rate check attributes a low rate to the camera, the CPU, "
+          "or downstream loss",
+          "camera_throttled" in _tsvc3 and "cpu_throttled" in _tsvc3
+          and "frames_discarded" in _tsvc3)
+    check("attribution uses per-frame cost vs the frame interval, not the "
           "rate alone",
           "pipeline_duty_pct" in _tsvc3 and "frame_interval_ms" in _tsvc3)
-    check("the two verdicts are mutually exclusive",
-          "models < 0.60 * interval_ms" in _tsvc3
-          and "models >= 0.60 * interval_ms" in _tsvc3)
-    check("neither verdict fires while the rate is acceptable",
-          _tsvc3.count("sustained < 0.85 * NOMINAL_CAMERA_FPS") == 2)
+    check("no verdict fires while the rate is acceptable",
+          "low = sustained < 0.85 * NOMINAL_CAMERA_FPS" in _tsvc3)
+
+    # ── The regression that produced a confidently wrong diagnosis ──
+    # Duty was computed from the two MODEL stages as if they were the
+    # whole callback. 18 ms of models in a 66.7 ms interval read as
+    # "27 % duty, the pipeline is idle, blame the camera" — and the
+    # camera then measured 31.2 fps standalone. The remainder of the
+    # callback (filter, subscriber dispatch, CSV write+flush) is where
+    # the time actually goes, and it must be measured on a REAL webcam,
+    # not only under the fake camera.
+    check("the WHOLE callback is timed, not just the two model stages",
+          "_install_callback_timer" in _tsvc3
+          and "def _callback_stats" in _tsvc3)
+    check("callback timing is installed on the live camera object",
+          'getattr(gf, "camera", None)' in _tsvc3)
+    check("the callback attribute is discovered, not hard-coded",
+          '"on_image_callback"' in _tsvc3 and "next((a for a in" in _tsvc3)
+    check("duty prefers total callback cost over model cost",
+          'or (live_cb or {}).get("callback_ms_median")' in _tsvc3)
+    check("a duty figure computed from models alone is marked as such",
+          "work_is_models_only" in _tsvc3)
+    check("the camera is only blamed when it was MEASURED to be slow",
+          "cam_slow = bool(delivered" in _tsvc3
+          and "and cam_slow)" in _tsvc3)
+    check("an unmeasured camera yields UNRESOLVED, not a guess",
+          "bottleneck_unclear" in _tsvc3 and "UNRESOLVED" in _tsvc3)
+    check("the halving mechanism (synchronous callback) is named in the "
+          "CPU verdict",
+          "skip alternate frames" in _tsvc3)
+    check("the subscriber count is surfaced with the verdict",
+          "each\n                        \"extra one is another CSV write "
+          "per frame)" in _tsvc3 or "extra one is another CSV write" in _tsvc3)
     check("capture_limited no longer claims per-frame work is expensive "
           "without checking the budget",
           "over_frame_budget" in _tsvc3
           and "the camera itself is delivering slowly" in _tsvc3)
 
-    check("the browser blames the camera, not AC power, when duty is low",
+    # Assert on tokens that survive line re-wrapping. An earlier version
+    # of these checks matched phrases that happened to span a string
+    # concatenation and failed on a purely cosmetic edit, which trains
+    # you to ignore the suite.
+    check("the browser blames the camera, not AC power, when the camera "
+          "was measured slow",
           "g.camera_throttled" in _js3
-          and "CAMERA problem, not a" in _js3)
+          and "This is a CAMERA " in _js3
+          and "g.delivered_hz" in _js3)
     check("the camera branch is tested BEFORE the machine branch",
           _js3.index("g.camera_throttled") < _js3.index("g.cpu_throttled"))
     check("the camera advice names lighting rather than the power plan",
-          "lamp on your FACE" in _js3
+          "lamp on " in _js3 and "your FACE" in _js3
           and "power plan will not help" in _js3)
+    check("the browser has a branch for frames arriving and being "
+          "discarded",
+          "g.frames_discarded" in _js3
+          and "Neither the lighting nor the power plan" in _js3)
+    check("the browser admits when the bottleneck is unresolved",
+          "g.bottleneck_unclear" in _js3
+          and "cannot be told apart yet" in _js3)
+    check("the CPU branch quotes total work, not model cost",
+          "g.work_ms_median" in _js3)
+
+    # ── camera_remedy: exposure lives in the DEVICE, not the handle ──
+    # The first real run showed '320x240, auto exposure' at brightness
+    # 25/255 while the baseline read 141/255 — a manual exposure set two
+    # conditions earlier had survived cap.release(). Every condition
+    # after a manual one was contaminated, and the camera was left
+    # pinned dark for the next process.
+    check("each condition resets to auto exposure before measuring",
+          "_restore_auto_exposure(cap, cv2)" in read("camera_remedy.py"))
+    check("a manual-exposure condition restores auto on the way out",
+          read("camera_remedy.py").count("_restore_auto_exposure") >= 3)
 
     check("the camera measures its DELIVERED fps, not the property it "
           "reports",
@@ -1954,8 +2010,7 @@ try:
     check("resolution change is ranked last (it changes model input)",
           _rem.rindex("320x240") > _rem.index('"640x480 MJPG'))
     check("each condition reopens the camera (settings are sticky)",
-          "cap = _open(cv2, index)" in _rem
-          and "finally:\n        cap.release()" in _rem)
+          "cap = _open(cv2, index)" in _rem and "cap.release()" in _rem)
     check("auto-exposure is given time to settle before measuring",
           "t_warm" in _rem)
     check("no workable condition points at lighting, not more settings",

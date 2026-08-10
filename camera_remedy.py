@@ -118,6 +118,31 @@ def _open(cv2, index: int):
     return cv2.VideoCapture(index)
 
 
+def _restore_auto_exposure(cap, cv2) -> None:
+    """Hand the camera back to auto-exposure.
+
+    NOT optional, and not merely tidy. Exposure lives in the DEVICE, not
+    in the OpenCV handle: on Windows/DirectShow a manual exposure set by
+    one process survives ``release()`` and is still in force when the
+    next process opens the camera. Without this, every condition after a
+    manual-exposure one inherits it — which is exactly what happened on
+    the first real run of this script, where the '320x240, auto
+    exposure' row reported brightness 25/255 while the baseline reported
+    141/255. Same camera, same room, same auto setting; the only
+    difference was that two manual conditions had run in between.
+
+    Worse, it leaves the participant's camera pinned dark AFTER the
+    script exits, so the next session records in the dark for reasons
+    nothing in the log explains.
+    """
+    for auto in (0.75, 3, 1):
+        try:
+            if cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, auto):
+                return
+        except Exception:  # noqa: BLE001
+            continue
+
+
 def _set_manual_exposure(cap, cv2) -> bool:
     """Return True if manual exposure actually took.
 
@@ -159,6 +184,11 @@ def _condition(cv2, index: int, seconds: float, *, width: int, height: int,
         except Exception:  # noqa: BLE001
             pass
         applied = True
+        # ALWAYS start from auto, whatever the previous condition left
+        # in the device, then opt into manual if this condition wants
+        # it. Reopening the handle is not enough — see
+        # _restore_auto_exposure.
+        _restore_auto_exposure(cap, cv2)
         if manual_exposure:
             applied = _set_manual_exposure(cap, cv2)
         res = _measure(cap, cv2, seconds)
@@ -168,6 +198,12 @@ def _condition(cv2, index: int, seconds: float, *, width: int, height: int,
             cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         return res
     finally:
+        # Never leave the camera pinned dark for the next process.
+        if manual_exposure:
+            try:
+                _restore_auto_exposure(cap, cv2)
+            except Exception:  # noqa: BLE001
+                pass
         cap.release()
 
 
@@ -261,15 +297,29 @@ def main() -> int:
     winner = next((r for r in results if r.get("ok") and usable(r)), None)
 
     if baseline and baseline["fps"] >= ACCEPTABLE_FPS:
-        print("  The camera already delivers %.1f fps with no changes at "
-              "all." % baseline["fps"])
+        print("  THE CAMERA IS NOT THE PROBLEM.")
         print()
-        print("  So the camera is NOT the bottleneck right now — whatever")
-        print("  was throttling it (most likely the light) has changed")
-        print("  since the rate gate ran. Re-run the rate gate and see")
-        print("  whether it now passes. If it still reports ~15 Hz while")
-        print("  this reports 30, the loss is inside the pipeline, not the")
-        print("  camera: run diagnose_rate.py.")
+        print("  It delivers %.1f fps at brightness %.0f/255 with no"
+              % (baseline["fps"], baseline["brightness"] or 0))
+        print("  changes at all, so no camera setting is going to help and")
+        print("  none of the rows above is worth adopting.")
+        print()
+        print("  If the rate gate still reports roughly HALF this, the")
+        print("  loss is inside the pipeline. The mechanism to suspect is")
+        print("  the synchronous capture callback: GazeFollower runs the")
+        print("  whole per-frame chain — FaceMesh, the gaze CNN, its")
+        print("  filter, its subscriber dispatch and a CSV write+flush —")
+        print("  INSIDE the capture loop, so the loop cannot start the")
+        print("  next frame until that returns. The instant total work")
+        print("  crosses the frame period (33.3 ms at 30 fps) the loop")
+        print("  misses every second frame, and the rate does not sag,")
+        print("  it HALVES. An exact 30 -> 15 is that signature.")
+        print()
+        print("  Note that the MODEL stages alone (~18 ms) are not the")
+        print("  whole callback — the rest of it was untimed until now.")
+        print("  Re-run a session on the current build: the rate gate")
+        print("  reports total callback cost and the subscriber count,")
+        print("  which is where duplicated CSV writers show up.")
         return 0
 
     if winner is None:
