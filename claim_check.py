@@ -230,8 +230,62 @@ def check_all(claims: list, samples: list, accuracy_deg: float,
         if results else None,
         "accuracy_deg_used": accuracy_deg,
         "support_threshold": SUPPORT_THRESHOLD,
+        # CHANCE. A correspondence percentage means nothing on its own
+        # once the answer space is a fixed vocabulary: a model guessing
+        # uniformly among nine regions is right 11 % of the time, and
+        # one that always says "middle-centre" does better than that,
+        # because gaze concentrates centrally. Reporting 68 % without
+        # the baseline invites the reader to compare it against 100 when
+        # the honest comparison is against chance.
+        #
+        # Two baselines, because they fail differently:
+        #   uniform   1/n regions — the floor for any guess
+        #   majority  always naming the region the gaze visited most.
+        #             This is the one that matters: it is what a model
+        #             that has learned nothing about THIS recording,
+        #             only about where people usually look, would score.
+        "chance": _chance_baselines(results, samples, grid),
         "offset_analysis": offset_analysis(results, px_per_deg,
                                            video_w, video_h, accuracy_deg),
+    }
+
+
+def _chance_baselines(results: list, samples: list,
+                      grid: "dict | None") -> "dict | None":
+    """What a model that learned nothing would score.
+
+    ``majority`` is the demanding one. Gaze is not uniformly
+    distributed — people look at the middle of a frame — so a model that
+    always names the busiest region scores well above 1/n while
+    demonstrating no sensitivity to the recording at all. A
+    correspondence figure that does not beat it has not shown anything.
+    """
+    if not grid or not grid.get("admissible") or not samples:
+        return None
+    regions = grid["regions"]
+    n = len(regions)
+    counts = {r["name"]: 0 for r in regions}
+    total = 0
+    for s in samples:
+        if len(s) >= 4 and not s[3]:
+            continue
+        for r in regions:
+            x, y, w, h = r["bbox"]
+            if x <= s[1] < x + w and y <= s[2] < y + h:
+                counts[r["name"]] += 1
+                total += 1
+                break
+    if not total:
+        return None
+    top = max(counts.items(), key=lambda kv: kv[1])
+    return {
+        "n_regions": n,
+        "uniform_pct": round(100.0 / n, 1),
+        "majority_region": top[0],
+        "majority_pct": round(100.0 * top[1] / total, 1),
+        "note": ("a model that always said %r would score %.1f %%; "
+                 "beating %.1f %% (uniform guessing) is not evidence of "
+                 "anything" % (top[0], 100.0 * top[1] / total, 100.0 / n)),
     }
 
 
