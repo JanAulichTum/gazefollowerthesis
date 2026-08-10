@@ -99,3 +99,7 @@ Thumbs.db
 #                                  weights themselves are excluded
 #   data/manifests_anonymised/     pseudonymised session metadata
 #   templates/, static/            the experiment UI
+
+# autopush runtime artefacts
+data/autopush.log
+data/autopush.err
