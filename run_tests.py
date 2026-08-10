@@ -1959,6 +1959,17 @@ try:
           "OVER BUDGET" in _dr and "skips alternate frames" in _dr)
     check("more than two subscribers is called out",
           "EXPECTED 2" in _dr)
+    # A control measurement is only useful if it exists for the healthy
+    # case. diagnose_rate.py measured 31.1 Hz / 17.1 ms / 0.2 ms of
+    # non-model work in-process; the live app must print the comparable
+    # figures on EVERY run, not only when the gate already failed,
+    # otherwise there is nothing to compare a bad session against.
+    check("the live callback figures are logged pass or fail",
+          "Callback (live): total" in _tsvc3
+          and "Callback (live): NOT MEASURED" in _tsvc3)
+    check("a timer that failed to install says so rather than reading "
+          "as zero cost",
+          "the timer did not install" in _tsvc3)
     check("duty prefers total callback cost over model cost",
           'or (live_cb or {}).get("callback_ms_median")' in _tsvc3)
     check("a duty figure computed from models alone is marked as such",

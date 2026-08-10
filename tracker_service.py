@@ -1491,6 +1491,26 @@ class Service:
                         "apart. Run camera_remedy.py to measure the camera "
                         "directly." % (work, interval_ms,
                                        result["pipeline_duty_pct"]))
+        # ALWAYS log the callback figures, passing or failing. A control
+        # measurement is only worth having if it exists for the healthy
+        # case too: diagnose_rate.py reports 31.1 Hz at 17.1 ms per frame
+        # with 0.2 ms of non-model work, and that number is only useful
+        # if the live app prints the comparable one on every run rather
+        # than only when something has already gone wrong.
+        if live_cb:
+            log("Callback (live): total %s ms median / %s ms p90 over %d "
+                "frames | camera delivered %s Hz INTO the callback, %s Hz "
+                "of samples came OUT (%s %% yield) | subscribers %s"
+                % (live_cb.get("callback_ms_median"),
+                   live_cb.get("callback_ms_p90"),
+                   live_cb.get("n_callbacks"),
+                   live_cb.get("delivered_hz"), result["sustained_hz"],
+                   result.get("sample_yield_pct"), result["subscribers"]))
+        else:
+            log("Callback (live): NOT MEASURED — the timer did not install, "
+                "so total per-frame cost and the delivered camera rate are "
+                "unavailable and any duty figure below counts only the two "
+                "model stages.")
         if capture:
             served = capture.get("served_hz_this_window")
             cb_med = capture.get("callback_ms_median")
