@@ -293,6 +293,9 @@ def check_all(claims: list, samples: list, accuracy_deg: float,
         #             only about where people usually look, would score.
         "box_reuse": box_reuse(claims),
         "alignment": alignment_check(claims, frame_times),
+        "crowding": crowding_analysis(
+            results, claims, accuracy_deg * px_per_deg,
+            video_w, video_h),
         "gaze_summary": gaze_summary(samples),
         "offset_analysis": offset_analysis(results, px_per_deg,
                                            video_w, video_h, accuracy_deg),
@@ -368,6 +371,104 @@ def alignment_check(claims: list, frame_times: list) -> "dict | None":
             "(median mismatch %.2f s). No systematic shift."
             % zero_err),
     }
+
+
+def crowding_analysis(results: list, claims: list, err_px: float,
+                      video_w: int, video_h: int) -> "dict | None":
+    """Does correspondence depend on how CROWDED the target was?
+
+    F9 says attribution is governed by the SEPARATION between candidate
+    objects rather than by object size. That predicts something
+    testable: a claim about an object with nothing else near it should
+    be supported more often than one about an object packed among
+    neighbours.
+
+    Crucially this does NOT need a second, sparser stimulus. Crowding
+    varies WITHIN one busy scene — a poster on an empty stretch of wall
+    is isolated, a student in the middle of a row is not — so the
+    contrast is available per fixation, as a continuous measure, from a
+    single clip. That is a stronger design than a two-level
+    between-clips factor: more units, and no confound with whatever
+    else differs between two videos.
+
+    Separation here is measured between the CLAIMED objects, so it
+    needs no object detector and no extra API call: the model has
+    already told us where it thinks things are.
+    """
+    boxes = [c["bbox"] for c in claims
+             if isinstance(c, dict) and c.get("bbox")
+             and len(c["bbox"]) == 4]
+    if len(boxes) < 6 or not err_px:
+        return None
+
+    def _gap(a, b) -> float:
+        ax, ay, aw, ah = (float(v) for v in a)
+        bx, by, bw, bh = (float(v) for v in b)
+        dx = max(bx - (ax + aw), ax - (bx + bw), 0.0) * video_w
+        dy = max(by - (ay + ah), ay - (by + bh), 0.0) * video_h
+        return (dx * dx + dy * dy) ** 0.5
+
+    rows = []
+    for r in results:
+        if r.get("verdict") not in (SUPPORTED, CONSISTENT, CONTRADICTED):
+            continue
+        own = None
+        for c in claims:
+            if (isinstance(c, dict) and c.get("attended") == r.get("attended")
+                    and c.get("t_start") == r.get("t_start")):
+                own = c.get("bbox")
+                break
+        if not own:
+            continue
+        # Distance to the nearest OTHER claimed object. Boxes identical
+        # to this one are the same object claimed at another moment, not
+        # a neighbour, so they are excluded.
+        gaps = [_gap(own, b) for b in boxes
+                if [round(float(v), 4) for v in b]
+                != [round(float(v), 4) for v in own]]
+        if not gaps:
+            continue
+        rows.append((min(gaps), r["verdict"]))
+
+    # 20 is not arbitrary. Split in half, fewer than ten per side makes
+    # the comparison sampling noise: a synthetic check with ten a side
+    # produced a 40 % vs 10 % gap from nothing but the random seed, in
+    # the OPPOSITE direction to the hypothesis. A pooled session set
+    # (~60 claims x 10 participants) is comfortably above this; one
+    # session may not be, and then the honest output is nothing.
+    if len(rows) < 20:
+        return None
+    rows.sort()
+    half = len(rows) // 2
+    out = {"n": len(rows), "err_px": round(err_px)}
+    for label, part in (("crowded", rows[:half]), ("isolated", rows[half:])):
+        sup = sum(1 for _g, v in part if v == SUPPORTED)
+        out[label] = {
+            "n": len(part),
+            "median_separation_px": round(part[len(part) // 2][0]),
+            "supported_pct": round(100.0 * sup / len(part), 1),
+        }
+    diff = (out["isolated"]["supported_pct"]
+            - out["crowded"]["supported_pct"])
+    out["difference_pp"] = round(diff, 1)
+    # EXPLORATORY, and labelled as such. F9 concerns ambiguity between
+    # candidate objects; this measures whether correspondence covaries
+    # with separation, which is consistent with that mechanism but does
+    # not isolate it — a claim is scored against its OWN box here, not
+    # chosen among neighbours. Treat a difference as a lead worth
+    # following, not as a test that F9 passed.
+    out["reading"] = (
+        "isolated %.1f %% vs crowded %.1f %% supported (%+.1f pp; median "
+        "separation %d px vs %d px, measurement error %d px). "
+        "EXPLORATORY: this shows whether correspondence covaries with "
+        "separation. It does not isolate the ambiguity mechanism, "
+        "because each claim is scored against its own box rather than "
+        "chosen among neighbours."
+        % (out["isolated"]["supported_pct"],
+           out["crowded"]["supported_pct"], diff,
+           out["isolated"]["median_separation_px"],
+           out["crowded"]["median_separation_px"], round(err_px)))
+    return out
 
 
 def box_reuse(claims: list) -> dict:
@@ -924,6 +1025,24 @@ def main() -> int:
               % (br["reuse_pct"] or 0))
         print("  reading each FRAME gives slightly different coordinates")
         print("  every time; one reciting a PRIOR stamps the same box.")
+
+    cw = res.get("crowding")
+    if cw:
+        print()
+        print("  " + "-" * 68)
+        print("  DOES CORRESPONDENCE COVARY WITH SEPARATION?  (exploratory)")
+        print("  " + "-" * 68)
+        print("  %-10s %3d claims, median separation %4d px -> %5.1f %% "
+              "supported" % ("crowded", cw["crowded"]["n"],
+                             cw["crowded"]["median_separation_px"],
+                             cw["crowded"]["supported_pct"]))
+        print("  %-10s %3d claims, median separation %4d px -> %5.1f %% "
+              "supported" % ("isolated", cw["isolated"]["n"],
+                             cw["isolated"]["median_separation_px"],
+                             cw["isolated"]["supported_pct"]))
+        print()
+        for line in _wrap(cw["reading"], 68):
+            print("  " + line)
 
     oa = res.get("offset_analysis")
     if oa:

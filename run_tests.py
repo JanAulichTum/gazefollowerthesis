@@ -2696,6 +2696,30 @@ try:
     check("it lists what is still missing before evaluation collection",
           "Open items before evaluation collection" in _find)
 
+    # ── Crowding, measured WITHIN one scene ──────────────────────────
+    # Two clips from the same busy classroom still permit F9's contrast,
+    # because crowding varies within a single scene: a poster on empty
+    # wall is isolated, a student mid-row is not. No sparse stimulus is
+    # required, and the measure is continuous rather than two-level.
+    check("crowding is measured from the claims themselves, no extra API "
+          "call",
+          "def crowding_analysis" in _cc and "nearest OTHER claimed" in _cc)
+    check("it is labelled EXPLORATORY rather than a test F9 passed",
+          "EXPLORATORY" in _cc and "does not isolate the ambiguity" in _cc)
+    check("too few claims withholds the split instead of reporting noise",
+          "if len(rows) < 20:" in _cc)
+    _mkc = lambda n: (
+        [{"t_start": i, "t_end": i, "attended": "o%d" % i,
+          "bbox": [0.1 + 0.04 * i, 0.4, 0.04, 0.09]} for i in range(n)],
+        [(float(i), 0.12 + 0.04 * i, 0.44, True) for i in range(n)])
+    _c10, _s10 = _mkc(10)
+    _c24, _s24 = _mkc(24)
+    check("...verified: 10 claims -> withheld, 24 -> reported",
+          _ccmod.check_all(_c10, _s10, 2.13, 58.2, 1680,
+                           945)["crowding"] is None
+          and _ccmod.check_all(_c24, _s24, 2.13, 58.2, 1680,
+                               945)["crowding"] is not None)
+
     # ── The stimulus set actually presented ──────────────────────────
     _rs = read("windows/run_session.bat")
     check("collection presents the real stimulus set, not the pilot clip",
