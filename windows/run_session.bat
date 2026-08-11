@@ -48,6 +48,17 @@ set GF_PERF_PRIORITY=above_normal
 set GF_CAMERA_FIX=1
 set GF_TELEMETRY=1
 
+REM Present EVERY stimulus in the folder, full length. The default in
+REM config.py is "clip30" (one 30 s helper clip) because that is right
+REM for a pilot run; real collection shows the actual stimulus set, and
+REM that decision belongs in the frozen launcher rather than in a
+REM default someone has to remember to override.
+REM
+REM Files beginning with _testclip are helper clips and are never
+REM presented, so the folder should contain exactly the two 30 s study
+REM clips (F16). The check below refuses to start if it does not.
+set SESSION_STIMULUS_MODE=all
+
 REM Fake-camera switches MUST be empty for a real participant. Setting
 REM them marks the data as simulated in the manifest, but an unnoticed
 REM leftover would waste the participant's time entirely.
@@ -69,7 +80,31 @@ echo    camera fix   : ON  (native 640x480 capture)
 echo    telemetry    : ON
 echo    fake camera  : off (real participant)
 echo   ================================================
+REM ---- How many REAL stimuli will be presented? ---------------------
+REM  "all" with an empty folder is a session that records nothing, and
+REM  the participant is already sitting down when you find out.
+for /f %%n in ('python -c "import config;print(len(config.discover_stimuli()))" 2^>nul') do set NSTIM=%%n
+if "%NSTIM%"=="" set NSTIM=?
+if "%NSTIM%"=="0" (
+    echo.
+    echo    *** NO STIMULI FOUND. ***
+    echo    SESSION_STIMULUS_MODE=all but the stimuli folder contains no
+    echo    playable video (files starting with _testclip do not count).
+    echo    The participant would watch nothing. Fix this first.
+    echo.
+    pause
+    exit /b 1
+)
+if not "%NSTIM%"=="2" (
+    echo.
+    echo    NOTE: %NSTIM% stimuli found, not the 2 the protocol specifies.
+    echo    Every participant must see the SAME set - a set that changes
+    echo    between participants cannot be pooled.
+    echo.
+)
+
 echo.
+echo    stimuli     : %NSTIM% (mode=all, full length)
 echo    Expect ~30 Hz and "perf_mode ... ACTIVE" in the log.
 echo    If the rate gate reports under 25 Hz, stop and investigate
 echo    BEFORE running the participant.

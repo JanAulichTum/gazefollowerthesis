@@ -113,6 +113,53 @@ def log(msg: str) -> None:
     sys.stderr.flush()
 
 
+_IRIS_MESH = None
+
+
+def refined_landmarks_for_frame(frame):
+    """478-point landmarks for a BGR frame, or None.
+
+    The refined mesh is the only one that carries the iris points
+    (468-477), and GazeFollower does not use it — its FaceInfo holds the
+    coarse 468-point mesh, which is why the iris ruler silently never
+    ran. Built lazily and reused: the FaceMesh constructor is expensive,
+    the inference is not.
+
+    Module-level ON PURPOSE. The live session reaches it through
+    ``Service._refined_landmarks`` with a frame grabbed from
+    GazeFollower's camera, and the standalone probe reaches it with a
+    frame it captured itself. A probe that verified its own private copy
+    of this code would verify nothing about the session.
+
+    Never raises — an unavailable iris must degrade to the inter-ocular
+    estimate, not stop a validation.
+    """
+    global _IRIS_MESH
+    try:
+        import cv2
+
+        if frame is None:
+            return None
+        if _IRIS_MESH is None:
+            import mediapipe as mp
+
+            _IRIS_MESH = mp.solutions.face_mesh.FaceMesh(
+                static_image_mode=False, max_num_faces=1,
+                refine_landmarks=True,     # <- the whole point
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5)
+            log("Refined FaceMesh created for iris measurement "
+                "(GazeFollower's own mesh has no iris landmarks).")
+        res = _IRIS_MESH.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        if not res.multi_face_landmarks:
+            return None
+        return res.multi_face_landmarks[0].landmark
+    except Exception as exc:  # noqa: BLE001
+        log("Refined mesh unavailable (%s) — falling back to the "
+            "inter-ocular distance." % exc)
+        return None
+
+
 _mnn_preloaded = False
 
 
@@ -1651,6 +1698,17 @@ class Service:
     # positioning guidance (which is relative).
     _ASSUMED_HFOV_DEG = 60.0
 
+    def _refined_landmarks(self):
+        """478-point landmarks for the CURRENT frame, or None.
+
+        Never raises — an unavailable iris must degrade to the
+        inter-ocular estimate, not stop a validation.
+        """
+        frame = self._grab_frame()
+        if frame is None:
+            return None
+        return refined_landmarks_for_frame(frame)
+
     def _grab_frame(self):
         """Best-effort read of GazeFollower's latest camera frame.
 
@@ -1837,6 +1895,25 @@ class Service:
 
             lm = self._attr(fi, ("landmarks", "face_landmarks",
                                  "landmark", "points", "mesh"))
+            # GazeFollower's FaceInfo carries the COARSE 468-point mesh.
+            # The iris landmarks are 468-477 and simply do not exist
+            # there, so the better ruler was never available and every
+            # session silently fell back to the eye rectangles — whose
+            # centres are not the pupil centres that the 6.3 cm
+            # inter-pupillary constant describes.
+            #
+            # Run our OWN refined mesh on the current frame instead.
+            # This is affordable because it happens on demand, at
+            # validation time, not on the per-frame path: one extra
+            # FaceMesh pass costs ~10 ms and buys the physiological
+            # constant (iris 11.7 mm +- 0.5, ~4 %) in place of a
+            # population mean applied to the wrong landmarks (~11 %,
+            # and yaw-dependent).
+            if not lm or len(lm) < 478:
+                own = self._refined_landmarks()
+                if own is not None:
+                    lm = own
+                    m["iris_landmarks_from"] = "own refined FaceMesh"
             focal_px, _meas = self._focal_px(w)
             iris = iris_distance.estimate(
                 lm, m.get("inter_ocular_px") or 0.0, focal_px, w, h)
@@ -2193,8 +2270,177 @@ def _apply_perf_mode_early() -> dict:
         return {}
 
 
+def _distance_probe(seconds: float = 10.0) -> int:
+    """Which ruler measures the head distance — live, without recording.
+
+    Every accuracy figure in this study is an ANGLE, and an angle is
+    pixels divided by a distance. If the iris measurement fails, the
+    code falls back to an inter-ocular estimate whose population spread
+    is ~11 % rather than ~4 %, and it does so silently: the number still
+    appears, still looks reasonable, and every degree in the thesis is
+    quietly scaled by it.
+
+    WHY THIS DOES NOT GO THROUGH GAZEFOLLOWER
+    -----------------------------------------
+    The obvious probe — start sampling and read the position guide —
+    cannot work before a calibration exists. In SAMPLING state
+    GazeFollower calls ``calibration.predict`` and RAISES when no model
+    has been fitted, and it does so BEFORE ``dispatch_face_gaze_info``:
+
+        gaze_info = self.gaze_estimator.detect(frame, face_info)
+        if gaze_info.status ...:
+            calibrated, coords = self.calibration.predict(...)
+            if not calibrated:
+                raise Exception("No calibration model is available")
+        self.dispatch_face_gaze_info(face_info, gaze_info)   # never reached
+
+    So no FaceInfo is ever dispatched, no metrics exist, and the probe
+    would report "no face" — blaming the camera for a calibration state.
+    GazeFollower also never persists a calibration between runs, so
+    there is no fitted model to borrow.
+
+    What this probe therefore does is capture its own frames and run
+    ``refined_landmarks_for_frame`` — the SAME function the live session
+    uses — followed by the same ``iris_distance.estimate``. That covers
+    the part that actually failed before (the coarse mesh has no iris
+    landmarks) without needing a calibration.
+
+    WHAT IT DOES NOT COVER: the plumbing from that measurement into the
+    manifest. That is verified on the first real session by reading
+    ``head_distance_cm`` — it names its own ruler.
+
+    Requires the camera to be FREE: close any running session first.
+    """
+    print("=" * 66)
+    print("  DISTANCE PROBE — which ruler is actually measuring?")
+    print("=" * 66)
+    print("  Sit as you would for a session and look at the camera.")
+    print("  %.0f seconds. Nothing is recorded, no session is created."
+          % seconds)
+    print()
+
+    try:
+        import cv2
+
+        import camera_geometry
+        import iris_distance
+    except Exception as exc:  # noqa: BLE001
+        print("  cannot import what the probe needs: %s" % exc)
+        return 1
+
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("  CAMERA BUSY OR UNAVAILABLE.")
+        print("  Close any running session (the webcam has one owner)")
+        print("  and try again.")
+        return 1
+
+    ok_iris = 0
+    frames = 0
+    faces = 0
+    dists: list = []
+    iod_dists: list = []
+    errors: dict = {}
+    focal_px = None
+    focal_measured = False
+    try:
+        t_end = time.time() + seconds
+        while time.time() < t_end:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            frames += 1
+            h, w = frame.shape[0], frame.shape[1]
+            if focal_px is None:
+                geom = camera_geometry.load() or {}
+                focal_px = geom.get("focal_px")
+                focal_measured = bool(focal_px)
+                if not focal_px:
+                    # Same assumed 60 deg HFOV the service falls back to.
+                    focal_px = (w / 2.0) / math.tan(math.radians(60.0 / 2))
+            lm = refined_landmarks_for_frame(frame)
+            if lm is None:
+                continue
+            faces += 1
+            res = iris_distance.estimate(lm, 0.0, focal_px, w, h)
+            if res.get("error"):
+                e = str(res["error"])[:100]
+                errors[e] = errors.get(e, 0) + 1
+                continue
+            iris_blk = res.get("iris") or {}
+            if iris_blk.get("error"):
+                e = str(iris_blk["error"])[:100]
+                errors[e] = errors.get(e, 0) + 1
+            cm = ((res.get("from_iris") or {}) or {}).get("distance_cm")
+            if cm:
+                ok_iris += 1
+                dists.append(float(cm))
+            iod_cm = ((res.get("from_iod") or {}) or {}).get("distance_cm")
+            if iod_cm:
+                iod_dists.append(float(iod_cm))
+            time.sleep(0.05)
+    finally:
+        cap.release()
+
+    print("  frames read        : %d" % frames)
+    print("  frames with a face : %d" % faces)
+    print("  focal length       : %.1f px (%s)"
+          % (focal_px or 0.0,
+             "MEASURED — camera_geometry.json" if focal_measured
+             else "ASSUMED 60 deg HFOV — run the focal calibration"))
+    if dists:
+        dists.sort()
+        print("  iris distance      : %.1f cm median (range %.1f-%.1f)"
+              % (dists[len(dists) // 2], dists[0], dists[-1]))
+    for e, n in errors.items():
+        print("  iris error         : %s  (x%d)" % (e, n))
+    print()
+
+    if not frames:
+        print("  THE CAMERA RETURNED NO FRAMES. Not a ruler result — a")
+        print("  camera problem. Fix that first.")
+        return 1
+    if not faces:
+        print("  NO FACE was detected in any frame. Not a ruler result —")
+        print("  a lighting or positioning problem. Fix that first.")
+        return 1
+
+    share = 100.0 * ok_iris / faces
+    if ok_iris >= 0.5 * faces:
+        print("  PASS — the iris measured %.0f %% of the frames that had a"
+              % share)
+        print("  face. Distances rest on an 11.7 mm anatomical constant")
+        print("  with a ~4 %% population spread, not on a population mean")
+        print("  applied to eye-rectangle centres.")
+        if not focal_measured:
+            print()
+            print("  BUT the focal length is ASSUMED, so the distance is")
+            print("  only as good as a guessed field of view. Run the")
+            print("  focal calibration (menu 7 -> c) to make it measured.")
+            return 1
+        print()
+        print("  Confirm on the first session: head_distance_cm should")
+        print("  read 'via iris', not 'via UNKNOWN RULER'.")
+        return 0
+    print("  FALLBACK IN USE — the iris measured only %.0f %% of frames"
+          % share)
+    print("  with a face. Distances would come from the inter-ocular")
+    print("  estimate, whose population spread is ~11 %% and which uses")
+    print("  eye-rect centres that are not pupil centres. Every accuracy")
+    print("  figure in degrees inherits that. Report it as a limitation,")
+    print("  or fix the iris path before collecting.")
+    return 1
+
+
 if __name__ == "__main__":
     _EARLY_PERF = _apply_perf_mode_early()
+    if "--distance" in sys.argv:
+        # python tracker_service.py --distance
+        _secs = 10.0
+        for _i, _a in enumerate(sys.argv):
+            if _a == "--seconds" and _i + 1 < len(sys.argv):
+                _secs = float(sys.argv[_i + 1])
+        sys.exit(_distance_probe(_secs))
     if "--check" in sys.argv:
         # Standalone diagnosis:  python tracker_service.py --check
         result = Service().cmd_check()

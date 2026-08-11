@@ -14,6 +14,7 @@ Checks (no server or camera needed):
   6. Tracker subprocess protocol: spawn → ping → check → shutdown.
 """
 
+import glob
 import json
 import logging
 import math
@@ -2378,6 +2379,18 @@ try:
           'record["attempt"] = len(prior) + 1' in _app3
           and "PROTOCOL:" in _app3)
 
+    # ── The written rule and the applied rule must be the same rule ──
+    # metrics_spec.INCLUSION is the pre-declared criterion; verify_metrics
+    # is what actually decides. If the spec names the post-stimulus check
+    # and the code averages two checks, the thesis states a rule it did
+    # not apply — and nobody would notice, because both are defensible.
+    _incl = importlib.import_module("metrics_spec").INCLUSION
+    check("the inclusion rule names the figure the code computes",
+          "mean of pre_check and post" in _incl["canonical_accuracy"]
+          and "mean of pre_check %.2f and post %.2f" in _vm,
+          _incl["canonical_accuracy"])
+    check("the inclusion rule carries the date it was decided",
+          bool(_incl.get("decided_on")) and bool(_incl.get("revised_on")))
     check("verify_metrics reports pre_check as an out-of-sample figure",
           'v.get("phase") == "pre_check"' in _vm
           and "the correction was never" in _vm)
@@ -2696,6 +2709,291 @@ try:
     check("it lists what is still missing before evaluation collection",
           "Open items before evaluation collection" in _find)
 
+    # ── Crowding, measured WITHIN one scene ──────────────────────────
+    # Two clips from the same busy classroom still permit F9's contrast,
+    # because crowding varies within a single scene: a poster on empty
+    # wall is isolated, a student mid-row is not. No sparse stimulus is
+    # required, and the measure is continuous rather than two-level.
+    check("crowding is measured from the claims themselves, no extra API "
+          "call",
+          "def crowding_analysis" in _cc and "nearest OTHER claimed" in _cc)
+    check("it is labelled EXPLORATORY rather than a test F9 passed",
+          "EXPLORATORY" in _cc and "does not isolate the ambiguity" in _cc)
+    check("too few claims withholds the split instead of reporting noise",
+          "if len(rows) < 20:" in _cc)
+    _mkc = lambda n: (
+        [{"t_start": i, "t_end": i, "attended": "o%d" % i,
+          "bbox": [0.1 + 0.04 * i, 0.4, 0.04, 0.09]} for i in range(n)],
+        [(float(i), 0.12 + 0.04 * i, 0.44, True) for i in range(n)])
+    _c10, _s10 = _mkc(10)
+    _c24, _s24 = _mkc(24)
+    check("...verified: 10 claims -> withheld, 24 -> reported",
+          _ccmod.check_all(_c10, _s10, 2.13, 58.2, 1680,
+                           945)["crowding"] is None
+          and _ccmod.check_all(_c24, _s24, 2.13, 58.2, 1680,
+                               945)["crowding"] is not None)
+
+    # ── Evaluation data lands in its own folder ──────────────────────
+    _cfgmod = importlib.import_module("config")
+    importlib.reload(_cfgmod)
+    check("collection has a start boundary, with a TIME on the first day",
+          bool(_cfgmod._eval_boundary()),
+          _cfgmod.EVALUATION_FROM_DATE)
+    check("the boundary excludes the same day's earlier debug runs",
+          _cfgmod.is_evaluation_session(
+              "13_47_11.08_2026-08-11_135021") is False)
+    check("...and includes a session recorded after it that same day",
+          _cfgmod.is_evaluation_session("P01_2026-08-11_143000") is True)
+    check("evaluation sessions route to data/study",
+          _cfgmod.session_dir_for("P01_2026-08-11_143000")
+          .endswith("study"))
+    check("development sessions stay in gazefollower_raw",
+          _cfgmod.session_dir_for("x_2026-07-16_163647")
+          .endswith("gazefollower_raw"))
+    check("a date-only boundary still works",
+          _cfgmod._eval_boundary() is not None)
+    check("the label and the folder use the SAME comparison",
+          "config.is_evaluation_session(session_id)" in _vm
+          and "do NOT compare date strings" in _vm)
+    check("the app routes by timestamp, not by memory",
+          "session_dir_for(base)" in _app3
+          and "not by anyone remembering" in _app3)
+    check("every analysis tool reads BOTH directories",
+          all("_session_glob" in read(f) for f in
+              ("verify_metrics.py", "calibration_diagnosis.py",
+               "inverse_check.py", "share_results.py",
+               "quality_report.py")))
+    check("claim_check --latest searches both too",
+          'DATA_DIR, "study"' in _cc)
+    # A tool left globbing only the old folder goes blind on day one,
+    # and the failure is silent — it simply reports fewer sessions.
+    check("NO tool still globs gazefollower_raw alone",
+          not any("glob(os.path.join(RAW_DIR" in read(f) for f in
+                  ("verify_metrics.py", "calibration_diagnosis.py",
+                   "inverse_check.py", "share_results.py",
+                   "quality_report.py", "anonymise_manifests.py",
+                   "backfill_manifests.py")))
+    check("share_results publishes from both directories",
+          '("manifests", _session_glob())' in read("share_results.py"))
+    check("raw participant data in data/study is NOT published",
+          any(l.strip() == "data/study/" for l in read(".gitignore")
+              .splitlines()))
+
+    # ── Which ruler measured the distance, BEFORE participant 1 ──────
+    # The manifest field can only be read after a session exists, so
+    # the first real participant would otherwise be the test of a path
+    # that has never run on a camera. The probe answers it while
+    # recording nothing.
+    _ts_src = read("tracker_service.py")
+    check("a distance probe exists that records nothing",
+          '"--distance" in sys.argv' in _ts_src
+          and "def _distance_probe" in _ts_src)
+    _probe_src = _ts_src.split("def _distance_probe")[1].split(
+        'if __name__')[0]
+    check("the probe runs the REAL mesh function, not a private copy",
+          "refined_landmarks_for_frame(frame)" in _probe_src
+          and "iris_distance.estimate(" in _probe_src)
+    # It must NOT go through GazeFollower: in SAMPLING state with no
+    # fitted calibration, process_frame raises BEFORE dispatching
+    # FaceInfo, so a GazeFollower-based probe reports "no face" and
+    # blames the camera for a calibration state.
+    check("the probe does not depend on a calibration existing",
+          "cmd_position_info" not in _probe_src
+          and "Service()" not in _probe_src)
+    check("...and says why, so the next person does not re-try it",
+          "No calibration model is available" in _ts_src
+          and "never reached" in _ts_src)
+    check("the probe FAILS when the fallback ruler is in use",
+          "FALLBACK IN USE" in _probe_src and
+          _probe_src.strip().endswith("return 1"))
+    check("no face is a lighting problem, not a ruler result",
+          "NO FACE was detected" in _probe_src
+          and "THE CAMERA RETURNED NO FRAMES" in _probe_src)
+    check("a busy camera is named as such",
+          "CAMERA BUSY OR UNAVAILABLE" in _probe_src)
+    # An assumed field of view is not a measurement. Passing the iris
+    # check on a guessed focal length would license a false claim.
+    check("an ASSUMED focal length does not count as a pass",
+          "the focal length is ASSUMED" in _probe_src)
+    check("the probe states what it does NOT cover",
+          "WHAT IT DOES NOT COVER" in _ts_src)
+
+    _tsmod = importlib.import_module("tracker_service")
+    importlib.reload(_tsmod)
+    check("the shared mesh helper returns None instead of raising",
+          _tsmod.refined_landmarks_for_frame(None) is None)
+
+    # ── Verifying the ruler must not be able to become a refit ───────
+    # --calibrate 60 SOLVES the focal so that 60 comes out; asking it
+    # afterwards whether it reads 60 is a fit scoring itself.
+    _cg = read("camera_geometry.py")
+    _ver = _cg.split("def _verify")[1].split("\ndef ")[0]
+    check("there is a verify mode that does not refit",
+          '"--verify"' in _cg and "def _verify" in _cg)
+    check("verify writes nothing",
+          "save(" not in _ver and "json.dump" not in _ver)
+    check("verify uses the SAVED focal, not a fresh solve",
+          "load() or {}" in _ver and "calibrate(" not in _ver)
+    check("verify says why calibration is not validation",
+          "CALIBRATION IS NOT VALIDATION" in _cg
+          and "circular" in _cg)
+    check("verify fails on a head that moved, before judging the ruler",
+          "you moved" in _ver and _ver.index("you moved")
+          < _ver.index("PASS —"))
+    check("a failure states the consequence in degrees",
+          "really %.2f deg" in _ver)
+    check("the launcher offers verify separately from calibrate",
+          "camera_geometry.py --verify" in read("windows/START.bat"))
+    check("the launcher offers the probe",
+          "tracker_service.py --distance" in read("windows/START.bat"))
+
+    # ── Correspondence is never reported as a single number ──────────
+    # 16.9 % strict alone reads as "the model was wrong 83 % of the
+    # time" when part of that gap is the tracker's own error; the
+    # lenient rate alone assumes every near miss was a hit.
+    _vm_src = read("verify_metrics.py")
+    check("the report shows the strict AND lenient correspondence",
+          "correspondence_lenient_pct" in _vm_src
+          and "strict /" in _vm_src)
+
+    _res_c = _vmod.Result()
+    _vmod.check_session({"llm": {"clip.mp4": {
+        "llm_model_id": "m", "structured": [{"bbox": [0, 0, 1, 1]}] * 40,
+        "correspondence": {"correspondence_pct": 16.9,
+                           "correspondence_lenient_pct": 61.0,
+                           "n_testable": 59}}}}, _res_c)
+    _row = [r for r in _res_c.rows
+            if r[1].startswith("claim_metric_correspondence")]
+    check("both rates reach the printed value",
+          bool(_row) and "16.9" in _row[0][3] and "61.0" in _row[0][3],
+          _row[0][3] if _row else "no row")
+
+    # A run that never scored the lenient rate must still report — the
+    # older manifests do not carry it and must not vanish from the table.
+    _res_c2 = _vmod.Result()
+    _vmod.check_session({"llm": {"clip.mp4": {
+        "llm_model_id": "m", "structured": [{"bbox": [0, 0, 1, 1]}] * 40,
+        "correspondence": {"correspondence_pct": 16.9,
+                           "n_testable": 59}}}}, _res_c2)
+    _row2 = [r for r in _res_c2.rows
+             if r[1].startswith("claim_metric_correspondence")]
+    check("a manifest without the lenient rate still reports the strict one",
+          bool(_row2) and "16.9" in _row2[0][3], _row2[0][3] if _row2 else "-")
+
+    # ── The rubric freeze, enforced rather than promised ─────────────
+    # A rubric that changes mid-collection splits the data into two
+    # studies and every session still looks fine on its own.
+    import shutil as _sh
+    import tempfile as _tf
+
+    _tmp_r = _tf.mkdtemp(prefix="rubric_")
+    try:
+        def _mk_r(name, rubric):
+            p = os.path.join(_tmp_r, name)
+            with open(p, "w", encoding="utf-8") as fh:
+                json.dump({"llm": {"clip.mp4": {"rubric": rubric}}}, fh)
+            return p
+
+        # Both AFTER the evaluation boundary, so both count.
+        _a = _mk_r("A_2026-12-01_100000_manifest.json", "C1 ... C2 ... C3")
+        _b = _mk_r("B_2026-12-02_100000_manifest.json", "C1 ... C2 ... C3")
+        _c = _mk_r("C_2026-12-03_100000_manifest.json", "C1 ... C2 only")
+        _dev = _mk_r("D_2020-01-01_100000_manifest.json", "something else")
+
+        _same = _vmod.rubric_drift([_a, _b])
+        check("identical rubrics collapse to one variant", len(_same) == 1,
+              "%d variants" % len(_same))
+        _diff = _vmod.rubric_drift([_a, _b, _c])
+        check("a changed rubric is detected", len(_diff) == 2,
+              "%d variants" % len(_diff))
+        check("...and names the sessions on each side",
+              any("C_2026-12-03" in s for v in _diff.values() for s in v))
+        # A development session must not be able to trip the freeze —
+        # it is not part of the frozen set.
+        _mixed = _vmod.rubric_drift([_a, _b, _dev])
+        check("development sessions are excluded from the freeze check",
+              len(_mixed) == 1, "%d variants" % len(_mixed))
+        check("the check is exposed on the command line",
+              '"--rubric"' in _vm_src and "_report_rubric" in _vm_src)
+        # Behaviour, not source text: a drifted set must exit nonzero,
+        # or the check is a printout rather than a gate.
+        import contextlib as _ctx2
+        import io as _io2
+
+        with _ctx2.redirect_stdout(_io2.StringIO()) as _buf_r:
+            _rc_drift = _vmod._report_rubric([_a, _b, _c])
+        with _ctx2.redirect_stdout(_io2.StringIO()):
+            _rc_same = _vmod._report_rubric([_a, _b])
+        check("drift exits nonzero, agreement exits zero",
+              _rc_drift == 1 and _rc_same == 0,
+              "drift=%s same=%s" % (_rc_drift, _rc_same))
+        check("the drift report names the differing rubrics",
+              "DRIFT" in _buf_r.getvalue()
+              and "C_2026-12-03" in _buf_r.getvalue())
+    finally:
+        _sh.rmtree(_tmp_r, ignore_errors=True)
+
+    # ── The stimulus set actually presented ──────────────────────────
+    _rs = read("windows/run_session.bat")
+    check("collection presents the real stimulus set, not the pilot clip",
+          "set SESSION_STIMULUS_MODE=all" in _rs)
+    check("...set in the frozen launcher, not left to a default",
+          'SESSION_STIMULUS_MODE", "clip30"' in read("config.py"))
+    check("an empty stimulus folder stops the run before the participant "
+          "sits down",
+          "NO STIMULI FOUND" in _rs and "exit /b 1" in _rs)
+    check("a set that is not the protocol's 2 clips is called out",
+          "not the 2 the protocol specifies" in _rs)
+    check("the mode and the ACTUAL order are recorded per session",
+          '"stimulus_mode": SESSION_STIMULUS_MODE' in _app3
+          and '"stimulus_order"' in _app3)
+    check("helper clips can never be presented",
+          "TESTCLIP_PREFIX" in read("config.py")
+          and "not f.startswith(TESTCLIP_PREFIX)" in read("config.py"))
+
+    # ── The iris ruler, finally available ────────────────────────────
+    # GazeFollower's FaceInfo carries the COARSE 468-point mesh, so the
+    # iris landmarks (468-477) never existed and every session silently
+    # used the eye RECTANGLES with an inter-pupillary constant. Both
+    # 2026-08-11 sessions reported "UNKNOWN RULER" at ~75 cm, and every
+    # degree divides by that distance.
+    _ts = read("tracker_service.py")
+    check("a coarse mesh triggers our OWN refined pass",
+          "if not lm or len(lm) < 478:" in _ts
+          and "def _refined_landmarks" in _ts)
+    check("the refined mesh is actually requested",
+          "refine_landmarks=True" in _ts)
+    check("it is built lazily and reused, not per frame",
+          '_IRIS_MESH' in _ts and "Built lazily and reused" in _ts)
+    check("the mesh helper is module-level, so the probe shares it",
+          "def refined_landmarks_for_frame(frame)" in _ts
+          and "return refined_landmarks_for_frame(frame)" in _ts)
+    check("an unavailable iris degrades instead of stopping a validation",
+          "falling back to the" in _ts)
+    check("the source is recorded when the fallback mesh is used",
+          '"iris_landmarks_from"' in _ts)
+    # The switch must CHANGE the outcome, or it is decoration.
+    class _P:
+        __slots__ = ("x", "y", "z")
+
+        def __init__(self, x, y):
+            self.x, self.y, self.z = x, y, 0.0
+
+    def _mesh_n(n):
+        lm = [_P(0.5, 0.5) for _ in range(n)]
+        if n >= 478:
+            for i, (px, py) in {469: (306, 240), 471: (294, 240),
+                                474: (406, 240), 476: (394, 240)}.items():
+                lm[i] = _P(px / 640, py / 480)
+        return lm
+
+    check("...verified: a 468-point mesh cannot measure the iris",
+          bool(_iris_mod.iris_diameter_px(_mesh_n(468), 640, 480)
+               .get("error")))
+    check("...and a 478-point mesh can",
+          _iris_mod.iris_diameter_px(_mesh_n(478), 640, 480)
+          .get("mean_px") == 12.0)
+
     # ── Sharing results publicly ─────────────────────────────────────
     _sr = read("share_results.py")
     _srmod = importlib.import_module("share_results")
@@ -2869,6 +3167,75 @@ try:
     # the participant id) and this repository is public.
     check("data/coding/ is gitignored",
           any(l.strip() == "data/coding/" for l in _ignore.splitlines()))
+
+    # ── EVERY output path under data/, not just the ones I remembered ─
+    # Naming the sensitive directories one by one fails the day a new
+    # one is added: data/llm_replay/ was written for months, holds the
+    # base64 stimulus frames, and was one commit away from a public
+    # push because nobody thought to add a line for it.
+    #
+    # So: find the data/ paths the code actually writes, and require
+    # each to be either explicitly PUBLISHED or actually ignored —
+    # asked of git itself, which knows the pattern semantics, rather
+    # than by matching strings against .gitignore.
+    _PUBLISHED = {"shared", "manifests_anonymised", "models.json"}
+    _data_paths = set()
+    for _f in sorted(glob.glob(os.path.join(BASE, "*.py"))):
+        _src = read(os.path.basename(_f))
+        for _m in re.finditer(
+                r'os\.path\.join\(\s*(?:BASE\s*,\s*)?(?:DATA_DIR|"data")\s*,'
+                r'\s*"([A-Za-z0-9_.\-]+)"', _src):
+            _data_paths.add(_m.group(1))
+    check("the scan found the known data/ output paths",
+          {"llm_replay", "coding", "shared"} <= _data_paths,
+          "%d paths: %s" % (len(_data_paths), ", ".join(sorted(_data_paths))))
+
+    _leaks, _git_ok = [], True
+    for _p in sorted(_data_paths):
+        if _p in _PUBLISHED:
+            continue
+        # A representative path inside it. check-ignore matches on the
+        # string, so the file need not exist.
+        _probe = "data/%s" % _p if "." in _p else "data/%s/probe.json" % _p
+        try:
+            _rc = subprocess.call(["git", "check-ignore", "-q", _probe],
+                                  cwd=BASE,
+                                  stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL)
+        except OSError:
+            _git_ok = False
+            break
+        if _rc != 0:
+            _leaks.append(_probe)
+    if _git_ok:
+        check("every data/ output path is ignored or deliberately published",
+              not _leaks,
+              "NOT IGNORED: %s" % ", ".join(_leaks) if _leaks else "")
+
+        # And the specific ones, by name, because these are the two that
+        # actually went wrong: participant faces, and a per-machine
+        # calibration that would rescale every accuracy figure.
+        for _probe, _why in (
+                ("data/llm_replay/x.json", "base64 stimulus frames"),
+                ("data/camera_geometry.json", "per-machine calibration"),
+                ("data/study/x_manifest.json", "raw participant sessions"),
+                ("data/coding/x.json", "participant-linked verdicts")):
+            check("git ignores %s (%s)" % (_probe, _why),
+                  subprocess.call(["git", "check-ignore", "-q", _probe],
+                                  cwd=BASE, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL) == 0)
+
+        # Nothing sensitive may be TRACKED either. check-ignore says what
+        # git would do with a new file; this says what it is already
+        # carrying — a file added before the rule was written stays
+        # tracked and .gitignore does not touch it.
+        _tracked = subprocess.run(
+            ["git", "ls-files", "data/llm_replay", "data/study",
+             "data/coding", "data/camera_geometry.json",
+             "data/gazefollower_raw"],
+            cwd=BASE, capture_output=True, text=True).stdout.split()
+        check("none of them is already tracked in git",
+              not _tracked, "TRACKED: %s" % ", ".join(_tracked[:5]))
 
     _cr = read("coding_report.py")
     check("the coding report separates accuracy from reliability",
@@ -3137,6 +3504,44 @@ try:
               _got["drift_deg"][1] == "-0.10", _got["drift_deg"][1])
         check("e2e: a measured distance is reported as measured",
               _got["head_distance_cm"][0] == _vmod.PRESENT)
+
+        # ── the RENDERER, not just the computation ───────────────────
+        # Everything above exercises check_session and reads res.rows
+        # directly. That is exactly how a KeyError in report() survived
+        # a green suite and then crashed on the first real session: the
+        # status-to-mark table had no entry for N/A, so the metrics were
+        # all computed correctly and NONE of them were printed. Run the
+        # actual printing path and capture what it emits.
+        import contextlib as _ctx
+        import io as _io
+
+        _buf_out = _io.StringIO()
+        with _ctx.redirect_stdout(_buf_out):
+            _rc = _vmod.report(_man_path)
+        _out = _buf_out.getvalue()
+        check("e2e: report() renders without raising", isinstance(_rc, int))
+        check("e2e: report() prints every row it computed",
+              _out.count("\n   [") == len(_r.rows),
+              "%d printed vs %d rows" % (_out.count("\n   ["), len(_r.rows)))
+        check("e2e: report() renders N/A rows as n/a, not a crash",
+              ("[n/a ]" in _out) == any(s == _vmod.NOT_APPLICABLE
+                                        for _, _, s, _, _ in _r.rows))
+        check("e2e: report() reaches its own summary line",
+              "n/a by design" in _out)
+
+        # Every status the Result can hold must have a mark. Asserting
+        # the table directly means a NEW status added later fails here
+        # rather than in front of a participant.
+        _statuses = {_vmod.PRESENT, _vmod.MISSING, _vmod.DEGENERATE,
+                     _vmod.NOT_APPLICABLE}
+        _marks = {_vmod.PRESENT: "OK  ", _vmod.MISSING: "MISS",
+                  _vmod.DEGENERATE: "BAD ", _vmod.NOT_APPLICABLE: "n/a "}
+        check("every metric status has a display mark",
+              _statuses <= set(_marks) and
+              all(("%s:" % s) or True for s in _statuses) and
+              all(s in read("verify_metrics.py") for s in
+                  ("NOT_APPLICABLE: \"n/a", ".get(status,")),
+              "renderer must not use a bare dict lookup")
     finally:
         _sh.rmtree(_tmp, ignore_errors=True)
 

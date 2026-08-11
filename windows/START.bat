@@ -183,6 +183,8 @@ echo   ----------------------------------------------------------------
 echo    a  Which camera setting restores the frame rate
 echo    b  Per-stage rate diagnosis (session-like conditions)
 echo    c  Camera focal calibration (needs a tape measure)
+echo    e  WHICH RULER measures the distance (iris or fallback)
+echo    f  VERIFY the ruler against a tape measure (no refit)
 echo    d  Back
 echo   ----------------------------------------------------------------
 set "D="
@@ -194,6 +196,18 @@ if /i "%D%"=="c" (
     set "CM="
     set /p CM=   Measured distance, camera lens to bridge of nose, in cm:
     python camera_geometry.py --calibrate !CM! --measure
+    pause & goto :diag
+)
+REM Records nothing, so it is safe to run on a collection day. The
+REM manifest field alone cannot answer this before a session exists,
+REM and finding out from participant 1 is finding out too late.
+if /i "%D%"=="e" ( python tracker_service.py --distance & pause & goto :diag )
+REM VERIFY, not calibrate. Option c refits the constant, which makes
+REM any check that follows it circular; this one only measures.
+if /i "%D%"=="f" (
+    set "VCM="
+    set /p VCM=   Tape distance NOW, lens to bridge of nose, in cm:
+    python camera_geometry.py --verify !VCM!
     pause & goto :diag
 )
 goto :menu

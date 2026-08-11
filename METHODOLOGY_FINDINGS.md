@@ -221,7 +221,23 @@ better ruler was unavailable. Most likely cause: GazeFollower's FaceInfo
 carries the coarse 468-point mesh, in which the iris landmarks (468–477)
 do not exist.
 
-**Status: mechanism identified, not yet confirmed on a live run.**
+**RESOLVED 2026-08-11.** The cause was confirmed: GazeFollower's
+FaceInfo carries the coarse 468-point mesh, and the iris landmarks are
+468-477 — they do not exist in it, so the better ruler was never
+available. Both 2026-08-11 sessions therefore read ~75 cm from the eye
+RECTANGLES, whose centres are not the pupil centres the 6.3 cm
+inter-pupillary constant describes.
+
+Fix: when the supplied landmarks are coarse, the tracker now runs its
+OWN refined FaceMesh on the current frame. Affordable because it is on
+demand at validation time, not per frame (~10 ms, once). Trades a
+population mean applied to the wrong landmarks (~11 %, yaw-dependent)
+for a physiological constant (iris 11.7 mm ± 0.5, ~4 %).
+
+**Check on the next session:** `head_distance_cm` should report
+`via iris`, not `UNKNOWN RULER`. If the measured distance moves away
+from ~75 cm, every degree figure in the earlier sessions was scaled by
+that error — 1.03° at 74.7 cm would be 1.28° at 60 cm.
 
 ## F14 · Camera focal length, measured
 **2026-08-10 · Methods (apparatus)**
@@ -261,10 +277,220 @@ being read — and the real gap was buried among nine phantoms.
 
 ---
 
+## F16 · Stimulus design: two 30 s clips, differing in crowding
+**2026-08-11 · Methods (materials) — DECISION**
+
+This is a pipeline validation, not a study of teacher attention, so the
+stimulus set is chosen to test the METHOD rather than to sample a
+domain. Two 30 s clips, identical for every participant.
+
+**Why two rather than one.** One clip cannot separate "the pipeline
+works" from "the pipeline works on this clip", and F9 makes that a live
+concern: attribution depends on how far apart the candidate objects
+are, so a crowded scene and a sparse one should behave differently. Two
+clips chosen to DIFFER on crowding turn a redundancy into a
+manipulation with a testable prediction — correspondence should be
+higher, and the ambiguous share lower, on the sparse clip.
+
+**Why not more.** The precision gain is small and falls off fast:
+
+| clips | fixations/participant | claims at N=10 | 95 % CI (worst case) |
+|---|---|---|---|
+| 1 | 70 | 699 | ±3.7 pp |
+| 2 | 140 | 1398 | ±2.6 pp |
+| 3 | 210 | 2097 | ±2.1 pp |
+
+The second clip costs 30 s of participant time and buys both a scene
+contrast and a third off the confidence interval. The third buys 0.5 pp
+and no new contrast.
+
+**Why 30 s specifically.** At the measured 2.33 fixations/s, the
+200-frame cap binds above **86 s** of video (F10). A 30 s clip sends
+~70 frames — comfortably inside, with no silent truncation.
+
+**Order** is already counterbalanced: `_stimuli_for()` shuffles
+deterministically per participant from a hash of the participant ID, so
+roughly half see each clip first and the order is reproducible. The
+actual presentation order is recorded per session in the manifest's
+`stimuli` list, so it is auditable rather than assumed.
+
+**Analysis note:** report correspondence PER CLIP as well as pooled.
+Pooling a crowded and a sparse scene averages two different ambiguity
+rates into a number that describes neither.
+
+---
+
+## F17 · Collection boundary and data separation
+**2026-08-11 · Methods (procedure) — DECISION**
+
+`EVALUATION_FROM_DATE = 2026-08-11T14:00`. Everything before it is
+development data; everything after counts toward the study.
+
+**Why it carries a TIME, not just a date.** Collection starting "today"
+must not sweep in the debugging sessions recorded that same morning —
+and two were (`HFP 9:40` and `13:47 11.08`). A date-only boundary would
+have promoted both into the evaluation set, which is precisely what the
+constant exists to prevent.
+
+**Physical separation.** Evaluation sessions are written to
+`data/study/`, development ones stay in `data/gazefollower_raw/`, and
+the routing is automatic from the session's own timestamp. Two folders
+distinguished only by a date inside a filename is an analysis waiting
+to pool them by accident, silently. Every analysis tool reads both
+directories, so nothing goes half-blind the day collection starts.
+
+The label a report prints and the folder a session is written to use
+the SAME comparison — an earlier version compared date strings, under
+which `"2026-08-11" < "2026-08-11T14:00"` is true and a session
+recorded at 14:30 would have been filed as development while sitting in
+the study folder.
+
+## F18 · The replay payload is the file that must never be published
+**2026-08-11 · Ethics / data management**
+
+`app.py` writes the LLM request to `data/llm_replay/` **with the images
+included**, so `model_comparison.py` can send a byte-identical prompt to
+a second model. That is the right design for a fair model comparison —
+rebuilding the prompt per model would confound model identity with
+prompt drift — but it means those files hold base64 JPEG frames of the
+classroom stimulus: identifiable people, in a school, on a public
+repository if committed.
+
+Three of these were staged for commit before anything caught it. What
+caught it in the end was the *update guard* refusing to pull with a
+dirty index, not a rule about the files themselves.
+
+Fixed structurally rather than by name: the test suite now enumerates
+every `data/` path the code writes to, and asks **git** — not a string
+match against `.gitignore` — whether each is ignored. Anything neither
+ignored nor on the short published allowlist (`data/shared/`,
+`data/manifests_anonymised/`) fails the suite. It immediately found a
+sixth directory nobody had listed, `data/agreement/`.
+
+Related, and a different kind of hazard: `data/camera_geometry.json` is
+a **per-machine** measurement. Sharing it is not a privacy problem, it
+is a correctness one — a pull could replace the recording laptop's own
+focal length with another machine's, and every distance, and therefore
+every accuracy figure in degrees, would rescale with nothing visible in
+the output to show it. Also excluded.
+
+For the thesis: state that the audit log stores images as SHA-256
+references and only the local replay file holds pixels, and that the
+published artefact set is JSON metrics with pseudonymised labels.
+
+## F19 · The model names correctly and localises badly — and the gap
+## between strict and lenient proves the tracker is not the cause
+**2026-08-11 · Results (RQ3) · PROVISIONAL, development session**
+
+Session `13:47 11.08`, 59 claims, all 59 localised, tracker accuracy
+0.90° out-of-sample:
+
+| | |
+|---|---|
+| strict (gaze inside the claimed box) | **16.9 %** |
+| lenient (adds misses smaller than the session's own error) | **28.8 %** |
+| human coding of the same session, semantic | **88 % correct** |
+
+The lenient rule adds only **11.9 percentage points**. That is the
+informative part. If the tracker's error were responsible for the
+misses, relaxing the criterion by exactly that error would recover
+most of them; it recovers a fifth. **The misses are much larger than
+the measurement error**, which exonerates the tracker without needing
+a separate argument — and matches the earlier observation of shared
++160 and +404 px offsets.
+
+Against that, a human watching the replay judged 88 % of the claims
+correct. The two are not in conflict: they measure different things.
+The human is asking *did it name the right object*; the correspondence
+metric is asking *did it put the box where the participant looked*.
+
+So the finding is: **the model identifies plausible attended content
+but cannot localise it**, and a marker burned into the frame is enough
+for it to name something without being able to place it. This is a
+result about multimodal LLMs as an eye-tracking analysis instrument,
+not a defect in the pipeline — and it is the direct justification for
+the inverse check (`inverse_check.py`), where localisation is done on
+CLEAN frames with no gaze present and the assignment is arithmetic.
+
+Consequence for the design: report correspondence as a PAIR (strict,
+lenient) with the accuracy that separates them, never as one number.
+Treat the LLM's own boxes as evidence about the model, and the inverse
+check as the attribution instrument.
+
+The inverse check is post-hoc analysis over recorded fixations and
+clean frames — it consumes nothing from the session protocol, so it
+can be built after collection without splitting participants across
+pipeline versions.
+
+## F20 · Nothing about the face can be measured before calibration
+**2026-08-11 · Methods (apparatus) · upstream behaviour**
+
+`GazeFollower.process_frame` in SAMPLING state predicts gaze before it
+dispatches anything, and raises when no calibration model has been
+fitted:
+
+```
+gaze_info = self.gaze_estimator.detect(frame, face_info)
+if gaze_info.status ...:
+    calibrated, coords = self.calibration.predict(...)
+    if not calibrated:
+        raise Exception("No calibration model is available")
+self.dispatch_face_gaze_info(face_info, gaze_info)   # never reached
+```
+
+So **FaceInfo is never delivered to subscribers before calibration** —
+not merely the gaze. Consequences worth stating rather than
+discovering: the pre-calibration positioning guide cannot use
+GazeFollower's face geometry and falls back to its own detection; and
+any diagnostic that wants face measurements before a calibration must
+capture its own frames. Combined with the fact that GazeFollower never
+persists a calibration between runs, there is no fitted model to borrow
+either.
+
+The head distance in the manifest is measured at the `pre_check`
+validation, which is *after* calibration — so the iris ruler is
+available where it matters. `tracker_service.py --distance` verifies
+the measurement itself from its own capture, sharing the same
+`refined_landmarks_for_frame` the session uses; the plumbing into the
+manifest is confirmed by reading `head_distance_cm` on the first
+session, which names its own ruler.
+
+## F21 · The distance ruler was wrong, and the inclusion bar was kept anyway
+**2026-08-11 · Methods (apparatus, inclusion criteria)**
+
+The live probe measured the iris at **58.8 cm** median (100 % of frames,
+on a measured focal length of 652.8 px). The same setup had been
+recording **74.7 and 76.0 cm** from the inter-ocular fallback — a 27 %
+overestimate.
+
+Every accuracy figure is an angle, and `error_deg = error_px /
+px_per_deg` with `px_per_deg ∝ distance`. A distance that is too large
+makes the angle too small. Corrected, the two development sessions read
+~1.31° and ~3.76° rather than 1.03° and 2.91°.
+
+The inclusion threshold is in DEGREES, so 3.0° means the same thing
+before and after; what changed is the measured values. **The threshold
+was left at 3.0°** — a decision taken on 2026-08-11, after learning that
+it had become stricter and that a known session would now fail it, and
+before any evaluation session existed. Derivation: 3.0° = 175 px of
+error, so 349 px is the smallest region it can resolve, and the four
+rubric regions are separated by considerably more (F9).
+
+The exclusion rate that follows is reported as a **result** — "webcam
+eye tracking at this quality excludes N of M participants" is the kind
+of number a method-validation study exists to produce — and not as a
+parameter to tune until everyone passes.
+
+Open: whether the 27 % gap is the ruler or a difference in posture
+between the probe and the sessions. The first session's manifest
+measures both rulers on the same frames and records
+`distance_agreement_pct`, which settles it.
+
+---
+
 ## Open items before evaluation collection
 
-- `EVALUATION_FROM_DATE` is empty: **every session so far is development
-  data.** Set it on the first real collection day.
+- ~~`EVALUATION_FROM_DATE`~~ **SET to 2026-08-11T14:00** (F17).
 - No rubric has been supplied, so `criteria_met` is null throughout and
   the **evaluative half of RQ3 has no data at all**. Write it once and
   freeze it.

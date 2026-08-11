@@ -54,6 +54,23 @@ except ImportError:      # standalone use outside the project venv
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 RAW_DIR = os.path.join(BASE, "data", "gazefollower_raw")
+STUDY_DIR = os.path.join(BASE, "data", "study")
+
+
+def _session_glob(pattern: str = "*_manifest.json") -> list:
+    """Sessions from BOTH directories.
+
+    Evaluation sessions are written to data/study/ and development ones
+    to data/gazefollower_raw/. A tool that globs only one of them goes
+    quietly blind to half the study the day collection starts, which is
+    the worst possible moment for a silent failure.
+    """
+    import glob as _g
+
+    out = []
+    for d in (STUDY_DIR, RAW_DIR):
+        out.extend(_g.glob(os.path.join(d, pattern)))
+    return sorted(out, key=lambda p: os.path.basename(p))
 
 
 def report_manifest(path: str) -> "dict | None":
@@ -413,7 +430,7 @@ def _center_verdict(findings: "list[str]") -> None:
 
 
 def main() -> None:
-    paths = sys.argv[1:] or sorted(glob.glob(os.path.join(RAW_DIR, "*.csv")))
+    paths = sys.argv[1:] or _session_glob("*.csv")
     if not paths:
         print("No session CSVs found in", RAW_DIR)
         return

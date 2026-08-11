@@ -65,6 +65,17 @@ except ImportError:      # standalone use outside the project venv
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 RAW_DIR = os.path.join(BASE, "data", "gazefollower_raw")
+STUDY_DIR = os.path.join(BASE, "data", "study")
+
+
+def _session_glob(pattern: str = "*_manifest.json") -> list:
+    """Sessions from BOTH directories (evaluation lives in data/study)."""
+    import glob as _g
+
+    out = []
+    for d in (STUDY_DIR, RAW_DIR):
+        out.extend(_g.glob(os.path.join(d, pattern)))
+    return sorted(out, key=lambda p: os.path.basename(p))
 BACKFILL_VERSION = "2026-07-31-nominal-rate"
 
 
@@ -198,7 +209,7 @@ def main() -> int:
     args = ap.parse_args()
 
     paths = args.manifests or sorted(
-        glob.glob(os.path.join(RAW_DIR, "*_manifest.json")))
+        _session_glob())
     paths = [p for p in paths if not p.endswith(".pre-backfill.json")]
     if not paths:
         print("No manifests found in", RAW_DIR)

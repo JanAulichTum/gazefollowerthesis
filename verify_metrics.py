@@ -50,6 +50,23 @@ except Exception:  # noqa: BLE001
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 RAW_DIR = os.path.join(BASE, "data", "gazefollower_raw")
+STUDY_DIR = os.path.join(BASE, "data", "study")
+
+
+def _session_glob(pattern: str = "*_manifest.json") -> list:
+    """Sessions from BOTH directories.
+
+    Evaluation sessions are written to data/study/ and development ones
+    to data/gazefollower_raw/. A tool that globs only one of them goes
+    quietly blind to half the study the day collection starts, which is
+    the worst possible moment for a silent failure.
+    """
+    import glob as _g
+
+    out = []
+    for d in (STUDY_DIR, RAW_DIR):
+        out.extend(_g.glob(os.path.join(d, pattern)))
+    return sorted(out, key=lambda p: os.path.basename(p))
 
 import metrics_spec as SPEC  # noqa: E402
 
@@ -124,24 +141,31 @@ def pilot_status(path: str) -> "tuple":
     """
     try:
         import config
-
-        start = (getattr(config, "EVALUATION_FROM_DATE", "") or "").strip()
     except Exception:  # noqa: BLE001
-        start = ""
-    date = _session_date(path)
+        return None, ""
+
+    start = (getattr(config, "EVALUATION_FROM_DATE", "") or "").strip()
     if not start:
         return True, ("DEVELOPMENT — collection has not started. Every "
                       "session so far exists to build and debug the "
                       "pipeline and counts toward nothing. Set "
                       "EVALUATION_FROM_DATE in config.py on the first "
                       "real collection day.")
-    if not date:
-        return None, ""
-    if date < start:
-        return True, ("DEVELOPMENT — recorded %s, before collection "
-                      "started on %s. Do not pool with evaluation "
-                      "sessions." % (date, start))
-    return False, "EVALUATION session (recorded %s)" % date
+
+    # Ask config, do NOT compare date strings.
+    # The boundary carries a TIME on the first day, and "2026-08-11" <
+    # "2026-08-11T14:00" is true as a string — so a session recorded at
+    # 14:30 that day would have been filed as development. The routing
+    # that decides which FOLDER a session is written to already uses
+    # the real comparison; the label must use the same one or the two
+    # disagree.
+    session_id = os.path.basename(path).replace("_manifest.json", "")
+    date = _session_date(path) or "?"
+    if config.is_evaluation_session(session_id):
+        return False, "EVALUATION session (recorded %s)" % date
+    return True, ("DEVELOPMENT — recorded %s, before collection started "
+                  "at %s. Do not pool with evaluation sessions."
+                  % (date, start))
 
 
 def check_session(manifest: dict, res: Result) -> None:
@@ -487,10 +511,25 @@ def check_session(manifest: dict, res: Result) -> None:
                     "only %d testable claims — too few to report as a "
                     "rate" % testable)
         else:
+            # BOTH rates, always. The strict one counts only claims whose
+            # box CONTAINS the gaze; the lenient one adds claims that
+            # miss by less than the session's own measurement error. A
+            # strict figure quoted alone reads as "the model was wrong
+            # 83 % of the time" when much of that gap is the tracker's
+            # error, and a lenient figure alone assumes every near miss
+            # was really a hit. Neither is defensible without the other,
+            # so the report never shows one without the other.
+            lenient = corr.get("correspondence_lenient_pct")
+            val = "%.1f %% of %d" % (pct, testable)
+            if lenient is not None:
+                val = "%.1f %% strict / %.1f %% lenient of %d" % (
+                    pct, lenient, testable)
             res.add("RQ3", "claim_metric_correspondence %s" % tag, PRESENT,
-                    "%.1f %% of %d" % (pct, testable),
-                    "scored against the recorded gaze, tolerance from the "
-                    "%s" % (corr.get("accuracy_source") or "validation"))
+                    val,
+                    "strict = gaze inside the box; lenient adds misses "
+                    "smaller than this session's error. Tolerance from "
+                    "the %s"
+                    % (corr.get("accuracy_source") or "validation"))
 
         # The evaluative half of RQ3. With no rubric the prompt tells
         # the model to return criteria_met: null, so there is no
@@ -507,6 +546,78 @@ def check_session(manifest: dict, res: Result) -> None:
             res.add("RQ3", "criteria_met %s" % tag,
                     PRESENT if judged else DEGENERATE,
                     "%d/%d judged" % (len(judged), len(claims)))
+
+
+def rubric_drift(paths: list) -> dict:
+    """Is every evaluation session carrying the SAME rubric string?
+
+    A rubric that changes mid-collection splits the data into two
+    studies, and the change is invisible: each session looks fine on its
+    own, `criteria_met` is populated throughout, and κ is computed over
+    judgments made to two different standards. The manifest already
+    stores the rubric text (app.py writes it per session), so the check
+    costs nothing — it was simply never made.
+
+    Text, not a hash. A hash tells you that something moved; the text
+    tells you what it moved to, which is what you need in order to
+    decide whether the sessions can still be pooled.
+    """
+    import config
+
+    seen: dict = {}
+    for p in paths:
+        try:
+            with open(p, encoding="utf-8") as fh:
+                man = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not config.is_evaluation_session(os.path.basename(p)):
+            continue
+        for stim, blk in (man.get("llm") or {}).items():
+            if not isinstance(blk, dict):
+                continue
+            text = (blk.get("rubric") or "").strip()
+            seen.setdefault(text, []).append(
+                "%s [%s]" % (os.path.basename(p), stim))
+    return seen
+
+
+def _report_rubric(paths: list) -> int:
+    variants = rubric_drift(paths)
+    print("=" * 78)
+    print("  RUBRIC FREEZE CHECK — evaluation sessions only")
+    print("=" * 78)
+    if not variants:
+        print("  No evaluation session carries an LLM run yet.")
+        return 0
+    empty = variants.pop("", None)
+    if empty:
+        print("  %d run(s) with NO rubric at all:" % len(empty))
+        for s in empty[:8]:
+            print("      %s" % s)
+        print("  criteria_met is null for these; they cannot enter kappa.")
+        print()
+    if not variants:
+        return 1
+    if len(variants) == 1:
+        text = next(iter(variants))
+        print("  OK — one rubric across %d run(s), %d characters."
+              % (len(next(iter(variants.values()))), len(text)))
+        print()
+        print("  " + (text[:200] + ("…" if len(text) > 200 else "")))
+        return 0
+    print("  DRIFT — %d DIFFERENT rubrics are in use." % len(variants))
+    print("  Judgments made to different standards cannot be pooled;")
+    print("  kappa over them is not an estimate of anything.")
+    for i, (text, where) in enumerate(sorted(
+            variants.items(), key=lambda kv: -len(kv[1])), 1):
+        print()
+        print("  variant %d — %d run(s), %d characters"
+              % (i, len(where), len(text)))
+        for s in where[:5]:
+            print("      %s" % s)
+        print("      \"%s…\"" % text[:120])
+    return 1
 
 
 def report(path: str) -> int:
@@ -529,7 +640,13 @@ def report(path: str) -> int:
         if rq != cur:
             print("\n  ── %s ──" % rq)
             cur = rq
-        mark = {PRESENT: "OK  ", MISSING: "MISS", DEGENERATE: "BAD "}[status]
+        # .get, not [], and every status listed. A bare lookup here
+        # crashed the whole report the first time an N/A row reached it:
+        # the metrics were all computed correctly and none of them were
+        # printed, because one renderer did not know about a status the
+        # rest of the file had used for days.
+        mark = {PRESENT: "OK  ", MISSING: "MISS", DEGENERATE: "BAD ",
+                NOT_APPLICABLE: "n/a "}.get(status, "????")
         line = "   [%s] %-42s %s" % (mark, name[:42], value)
         print(line)
         if note:
@@ -582,7 +699,13 @@ def main() -> int:
                     help="only sessions on or after this date")
     ap.add_argument("--spec", action="store_true",
                     help="print the specification and exit")
+    ap.add_argument("--rubric", action="store_true",
+                    help="check every evaluation session carries the SAME "
+                         "rubric, and exit")
     args = ap.parse_args()
+
+    if args.rubric:
+        return _report_rubric(_session_glob())
 
     if args.spec:
         ppd = SPEC.px_per_degree()
@@ -600,7 +723,7 @@ def main() -> int:
         print(SPEC.summary())
         return 0
 
-    files = sorted(glob.glob(os.path.join(RAW_DIR, "*_manifest.json")))
+    files = _session_glob()
     if args.path:
         files = [args.path]
     else:

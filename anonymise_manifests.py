@@ -51,6 +51,17 @@ except Exception:  # noqa: BLE001
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 RAW_DIR = os.path.join(BASE, "data", "gazefollower_raw")
+STUDY_DIR = os.path.join(BASE, "data", "study")
+
+
+def _session_glob(pattern: str = "*_manifest.json") -> list:
+    """Sessions from BOTH directories (evaluation lives in data/study)."""
+    import glob as _g
+
+    out = []
+    for d in (STUDY_DIR, RAW_DIR):
+        out.extend(_g.glob(os.path.join(d, pattern)))
+    return sorted(out, key=lambda p: os.path.basename(p))
 OUT_DIR = os.path.join(BASE, "data", "manifests_anonymised")
 # NOT committed — see .gitignore. Holds the reidentification mapping.
 KEY_FILE = os.path.join(BASE, "data", "participant_key.json")
@@ -157,7 +168,7 @@ def main() -> int:
                     help="scan the output for any surviving real name")
     args = ap.parse_args()
 
-    files = sorted(glob.glob(os.path.join(RAW_DIR, "*_manifest.json")))
+    files = _session_glob()
     if not files:
         print("No manifests in %s" % RAW_DIR)
         return 1
