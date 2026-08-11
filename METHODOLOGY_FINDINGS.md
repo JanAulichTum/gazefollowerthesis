@@ -455,6 +455,37 @@ the measurement itself from its own capture, sharing the same
 manifest is confirmed by reading `head_distance_cm` on the first
 session, which names its own ruler.
 
+## F21 · The distance ruler was wrong, and the inclusion bar was kept anyway
+**2026-08-11 · Methods (apparatus, inclusion criteria)**
+
+The live probe measured the iris at **58.8 cm** median (100 % of frames,
+on a measured focal length of 652.8 px). The same setup had been
+recording **74.7 and 76.0 cm** from the inter-ocular fallback — a 27 %
+overestimate.
+
+Every accuracy figure is an angle, and `error_deg = error_px /
+px_per_deg` with `px_per_deg ∝ distance`. A distance that is too large
+makes the angle too small. Corrected, the two development sessions read
+~1.31° and ~3.76° rather than 1.03° and 2.91°.
+
+The inclusion threshold is in DEGREES, so 3.0° means the same thing
+before and after; what changed is the measured values. **The threshold
+was left at 3.0°** — a decision taken on 2026-08-11, after learning that
+it had become stricter and that a known session would now fail it, and
+before any evaluation session existed. Derivation: 3.0° = 175 px of
+error, so 349 px is the smallest region it can resolve, and the four
+rubric regions are separated by considerably more (F9).
+
+The exclusion rate that follows is reported as a **result** — "webcam
+eye tracking at this quality excludes N of M participants" is the kind
+of number a method-validation study exists to produce — and not as a
+parameter to tune until everyone passes.
+
+Open: whether the 27 % gap is the ruler or a difference in posture
+between the probe and the sessions. The first session's manifest
+measures both rulers on the same frames and records
+`distance_agreement_pct`, which settles it.
+
 ---
 
 ## Open items before evaluation collection

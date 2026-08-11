@@ -237,6 +237,19 @@ INCLUSION = {
                   "grid-B checks when the two-grid protocol was "
                   "introduced (F6). Thresholds unchanged.",
     "applies_from": "sessions recorded after EVALUATION_FROM_DATE",
+    # Re-affirmed KNOWING it got harder, which is the part that makes it
+    # auditable. On 2026-08-11 the distance ruler was corrected from the
+    # inter-ocular estimate to the iris; measured angles rise by roughly
+    # a quarter, and a development session that read 2.91 deg now reads
+    # ~3.76 and would FAIL. The threshold was left at 3.0 anyway, before
+    # any evaluation session existed. Geometry: 3.0 deg = 175 px of
+    # error, so 349 px is the smallest region the criterion can resolve,
+    # and the four rubric regions are separated by far more than that.
+    "reaffirmed_on": "2026-08-11 — kept at 3.0 deg after the iris-ruler "
+                     "correction made it stricter, not looser; no "
+                     "evaluation session had been recorded. The "
+                     "resulting exclusion rate is reported as a result, "
+                     "not treated as a problem to tune away.",
 }
 
 
