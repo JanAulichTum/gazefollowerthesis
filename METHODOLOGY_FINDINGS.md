@@ -422,6 +422,39 @@ clean frames — it consumes nothing from the session protocol, so it
 can be built after collection without splitting participants across
 pipeline versions.
 
+## F20 · Nothing about the face can be measured before calibration
+**2026-08-11 · Methods (apparatus) · upstream behaviour**
+
+`GazeFollower.process_frame` in SAMPLING state predicts gaze before it
+dispatches anything, and raises when no calibration model has been
+fitted:
+
+```
+gaze_info = self.gaze_estimator.detect(frame, face_info)
+if gaze_info.status ...:
+    calibrated, coords = self.calibration.predict(...)
+    if not calibrated:
+        raise Exception("No calibration model is available")
+self.dispatch_face_gaze_info(face_info, gaze_info)   # never reached
+```
+
+So **FaceInfo is never delivered to subscribers before calibration** —
+not merely the gaze. Consequences worth stating rather than
+discovering: the pre-calibration positioning guide cannot use
+GazeFollower's face geometry and falls back to its own detection; and
+any diagnostic that wants face measurements before a calibration must
+capture its own frames. Combined with the fact that GazeFollower never
+persists a calibration between runs, there is no fitted model to borrow
+either.
+
+The head distance in the manifest is measured at the `pre_check`
+validation, which is *after* calibration — so the iris ruler is
+available where it matters. `tracker_service.py --distance` verifies
+the measurement itself from its own capture, sharing the same
+`refined_landmarks_for_frame` the session uses; the plumbing into the
+manifest is confirmed by reading `head_distance_cm` on the first
+session, which names its own ruler.
+
 ---
 
 ## Open items before evaluation collection

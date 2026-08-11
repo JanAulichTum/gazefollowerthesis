@@ -2776,16 +2776,40 @@ try:
     check("a distance probe exists that records nothing",
           '"--distance" in sys.argv' in _ts_src
           and "def _distance_probe" in _ts_src)
-    check("the probe runs the REAL path, not a reimplementation",
-          "cmd_position_info()" in _ts_src.split("def _distance_probe")[1]
-          and "_metrics_from_face_info()" in
-          _ts_src.split("def _distance_probe")[1])
+    _probe_src = _ts_src.split("def _distance_probe")[1].split(
+        'if __name__')[0]
+    check("the probe runs the REAL mesh function, not a private copy",
+          "refined_landmarks_for_frame(frame)" in _probe_src
+          and "iris_distance.estimate(" in _probe_src)
+    # It must NOT go through GazeFollower: in SAMPLING state with no
+    # fitted calibration, process_frame raises BEFORE dispatching
+    # FaceInfo, so a GazeFollower-based probe reports "no face" and
+    # blames the camera for a calibration state.
+    check("the probe does not depend on a calibration existing",
+          "cmd_position_info" not in _probe_src
+          and "Service()" not in _probe_src)
+    check("...and says why, so the next person does not re-try it",
+          "No calibration model is available" in _ts_src
+          and "never reached" in _ts_src)
     check("the probe FAILS when the fallback ruler is in use",
-          "FALLBACK IN USE" in _ts_src and
-          _ts_src.split("FALLBACK IN USE")[1]
-          .split("if __name__")[0].strip().endswith("return 1"))
-    check("no face is reported as a camera problem, not a ruler result",
-          "NO FACE was measured" in _ts_src)
+          "FALLBACK IN USE" in _probe_src and
+          _probe_src.strip().endswith("return 1"))
+    check("no face is a lighting problem, not a ruler result",
+          "NO FACE was detected" in _probe_src
+          and "THE CAMERA RETURNED NO FRAMES" in _probe_src)
+    check("a busy camera is named as such",
+          "CAMERA BUSY OR UNAVAILABLE" in _probe_src)
+    # An assumed field of view is not a measurement. Passing the iris
+    # check on a guessed focal length would license a false claim.
+    check("an ASSUMED focal length does not count as a pass",
+          "the focal length is ASSUMED" in _probe_src)
+    check("the probe states what it does NOT cover",
+          "WHAT IT DOES NOT COVER" in _ts_src)
+
+    _tsmod = importlib.import_module("tracker_service")
+    importlib.reload(_tsmod)
+    check("the shared mesh helper returns None instead of raising",
+          _tsmod.refined_landmarks_for_frame(None) is None)
     check("the launcher offers the probe",
           "tracker_service.py --distance" in read("windows/START.bat"))
 
@@ -2853,7 +2877,10 @@ try:
     check("the refined mesh is actually requested",
           "refine_landmarks=True" in _ts)
     check("it is built lazily and reused, not per frame",
-          '_iris_mesh' in _ts and "Built lazily and reused" in _ts)
+          '_IRIS_MESH' in _ts and "Built lazily and reused" in _ts)
+    check("the mesh helper is module-level, so the probe shares it",
+          "def refined_landmarks_for_frame(frame)" in _ts
+          and "return refined_landmarks_for_frame(frame)" in _ts)
     check("an unavailable iris degrades instead of stopping a validation",
           "falling back to the" in _ts)
     check("the source is recorded when the fallback mesh is used",
