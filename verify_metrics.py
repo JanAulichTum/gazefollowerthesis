@@ -511,10 +511,25 @@ def check_session(manifest: dict, res: Result) -> None:
                     "only %d testable claims — too few to report as a "
                     "rate" % testable)
         else:
+            # BOTH rates, always. The strict one counts only claims whose
+            # box CONTAINS the gaze; the lenient one adds claims that
+            # miss by less than the session's own measurement error. A
+            # strict figure quoted alone reads as "the model was wrong
+            # 83 % of the time" when much of that gap is the tracker's
+            # error, and a lenient figure alone assumes every near miss
+            # was really a hit. Neither is defensible without the other,
+            # so the report never shows one without the other.
+            lenient = corr.get("correspondence_lenient_pct")
+            val = "%.1f %% of %d" % (pct, testable)
+            if lenient is not None:
+                val = "%.1f %% strict / %.1f %% lenient of %d" % (
+                    pct, lenient, testable)
             res.add("RQ3", "claim_metric_correspondence %s" % tag, PRESENT,
-                    "%.1f %% of %d" % (pct, testable),
-                    "scored against the recorded gaze, tolerance from the "
-                    "%s" % (corr.get("accuracy_source") or "validation"))
+                    val,
+                    "strict = gaze inside the box; lenient adds misses "
+                    "smaller than this session's error. Tolerance from "
+                    "the %s"
+                    % (corr.get("accuracy_source") or "validation"))
 
         # The evaluative half of RQ3. With no rubric the prompt tells
         # the model to return criteria_met: null, so there is no

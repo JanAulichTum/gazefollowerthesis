@@ -2767,6 +2767,61 @@ try:
           any(l.strip() == "data/study/" for l in read(".gitignore")
               .splitlines()))
 
+    # ── Which ruler measured the distance, BEFORE participant 1 ──────
+    # The manifest field can only be read after a session exists, so
+    # the first real participant would otherwise be the test of a path
+    # that has never run on a camera. The probe answers it while
+    # recording nothing.
+    _ts_src = read("tracker_service.py")
+    check("a distance probe exists that records nothing",
+          '"--distance" in sys.argv' in _ts_src
+          and "def _distance_probe" in _ts_src)
+    check("the probe runs the REAL path, not a reimplementation",
+          "cmd_position_info()" in _ts_src.split("def _distance_probe")[1]
+          and "_metrics_from_face_info()" in
+          _ts_src.split("def _distance_probe")[1])
+    check("the probe FAILS when the fallback ruler is in use",
+          "FALLBACK IN USE" in _ts_src and
+          _ts_src.split("FALLBACK IN USE")[1]
+          .split("if __name__")[0].strip().endswith("return 1"))
+    check("no face is reported as a camera problem, not a ruler result",
+          "NO FACE was measured" in _ts_src)
+    check("the launcher offers the probe",
+          "tracker_service.py --distance" in read("windows/START.bat"))
+
+    # ── Correspondence is never reported as a single number ──────────
+    # 16.9 % strict alone reads as "the model was wrong 83 % of the
+    # time" when part of that gap is the tracker's own error; the
+    # lenient rate alone assumes every near miss was a hit.
+    _vm_src = read("verify_metrics.py")
+    check("the report shows the strict AND lenient correspondence",
+          "correspondence_lenient_pct" in _vm_src
+          and "strict /" in _vm_src)
+
+    _res_c = _vmod.Result()
+    _vmod.check_session({"llm": {"clip.mp4": {
+        "llm_model_id": "m", "structured": [{"bbox": [0, 0, 1, 1]}] * 40,
+        "correspondence": {"correspondence_pct": 16.9,
+                           "correspondence_lenient_pct": 61.0,
+                           "n_testable": 59}}}}, _res_c)
+    _row = [r for r in _res_c.rows
+            if r[1].startswith("claim_metric_correspondence")]
+    check("both rates reach the printed value",
+          bool(_row) and "16.9" in _row[0][3] and "61.0" in _row[0][3],
+          _row[0][3] if _row else "no row")
+
+    # A run that never scored the lenient rate must still report — the
+    # older manifests do not carry it and must not vanish from the table.
+    _res_c2 = _vmod.Result()
+    _vmod.check_session({"llm": {"clip.mp4": {
+        "llm_model_id": "m", "structured": [{"bbox": [0, 0, 1, 1]}] * 40,
+        "correspondence": {"correspondence_pct": 16.9,
+                           "n_testable": 59}}}}, _res_c2)
+    _row2 = [r for r in _res_c2.rows
+             if r[1].startswith("claim_metric_correspondence")]
+    check("a manifest without the lenient rate still reports the strict one",
+          bool(_row2) and "16.9" in _row2[0][3], _row2[0][3] if _row2 else "-")
+
     # ── The stimulus set actually presented ──────────────────────────
     _rs = read("windows/run_session.bat")
     check("collection presents the real stimulus set, not the pilot clip",

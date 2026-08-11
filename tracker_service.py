@@ -2250,8 +2250,111 @@ def _apply_perf_mode_early() -> dict:
         return {}
 
 
+def _distance_probe(seconds: float = 10.0) -> int:
+    """Which ruler measures the head distance — live, without recording.
+
+    Every accuracy figure in this study is an ANGLE, and an angle is
+    pixels divided by a distance. If the iris measurement fails, the
+    code falls back to an inter-ocular estimate whose population spread
+    is ~11 %% rather than ~4 %%, and it does so silently: the number
+    still appears, still looks reasonable, and every degree in the
+    thesis is quietly scaled by it.
+
+    The failure has already happened once — GazeFollower's FaceInfo
+    carries the COARSE 468-point mesh, which has no iris landmarks at
+    all, so the iris path never ran on a real camera while the tests
+    stayed green on synthetic landmarks.
+
+    This runs the real path (``cmd_position_info`` -> FaceInfo ->
+    refined mesh -> iris) on live frames and reports which ruler won.
+    It records nothing and creates no session, so it can be run at any
+    point in a collection day without producing data to explain.
+    """
+    print("=" * 62)
+    print("  DISTANCE PROBE — which ruler is actually measuring?")
+    print("=" * 62)
+    print("  Sit as you would for a session and look at the screen.")
+    print("  %.0f seconds. Nothing is recorded." % seconds)
+    print()
+
+    svc = Service()
+    sources, dists, errors, warnings = {}, [], {}, {}
+    frames = 0
+    t_end = time.time() + seconds
+    try:
+        while time.time() < t_end:
+            try:
+                svc.cmd_position_info()
+                m = svc._metrics_from_face_info()
+            except Exception as exc:  # noqa: BLE001
+                errors[str(exc)[:100]] = errors.get(str(exc)[:100], 0) + 1
+                m = None
+            if m:
+                frames += 1
+                src = m.get("distance_source") or "(none)"
+                sources[src] = sources.get(src, 0) + 1
+                if m.get("est_distance_cm"):
+                    dists.append(float(m["est_distance_cm"]))
+                if m.get("iris_error"):
+                    e = str(m["iris_error"])[:100]
+                    errors[e] = errors.get(e, 0) + 1
+                if m.get("distance_warning"):
+                    w = str(m["distance_warning"])[:100]
+                    warnings[w] = warnings.get(w, 0) + 1
+            time.sleep(0.2)
+    finally:
+        try:
+            svc.cmd_shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+
+    print("  frames with a face : %d" % frames)
+    if not frames:
+        print()
+        print("  NO FACE was measured. That is not a distance result — it")
+        print("  is a camera or lighting problem. Fix it before reading")
+        print("  anything into the ruler.")
+        return 1
+
+    for src, n in sorted(sources.items(), key=lambda kv: -kv[1]):
+        print("  %-45s %d frames (%.0f %%)"
+              % (src, n, 100.0 * n / frames))
+    if dists:
+        dists.sort()
+        print("  median distance    : %.1f cm  (range %.1f-%.1f)"
+              % (dists[len(dists) // 2], dists[0], dists[-1]))
+    for e, n in errors.items():
+        print("  iris error         : %s  (x%d)" % (e, n))
+    for w, n in warnings.items():
+        print("  warning            : %s  (x%d)" % (w, n))
+
+    iris = sources.get("iris", 0)
+    print()
+    if iris >= 0.5 * frames:
+        print("  PASS — the iris ruler measured %.0f %% of frames."
+              % (100.0 * iris / frames))
+        print("  Distances rest on an 11.7 mm anatomical constant with a")
+        print("  ~4 %% population spread.")
+        return 0
+    print("  FALLBACK IN USE — the iris measured only %.0f %% of frames."
+          % (100.0 * iris / frames))
+    print("  The distances above come from the inter-ocular estimate,")
+    print("  whose population spread is ~11 %% and which uses eye-rect")
+    print("  centres that are not pupil centres. Every accuracy figure")
+    print("  in degrees inherits that. Report it as a limitation, or")
+    print("  fix the iris path before collecting.")
+    return 1
+
+
 if __name__ == "__main__":
     _EARLY_PERF = _apply_perf_mode_early()
+    if "--distance" in sys.argv:
+        # python tracker_service.py --distance
+        _secs = 10.0
+        for _i, _a in enumerate(sys.argv):
+            if _a == "--seconds" and _i + 1 < len(sys.argv):
+                _secs = float(sys.argv[_i + 1])
+        sys.exit(_distance_probe(_secs))
     if "--check" in sys.argv:
         # Standalone diagnosis:  python tracker_service.py --check
         result = Service().cmd_check()
