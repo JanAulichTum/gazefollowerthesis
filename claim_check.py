@@ -93,8 +93,7 @@ def _expand(bbox, pad_x: float, pad_y: float):
 
 
 def check_claim(claim: dict, samples: list, accuracy_deg: float,
-                px_per_deg: float, video_w: int, video_h: int,
-                grid: "dict | None" = None) -> dict:
+                px_per_deg: float, video_w: int, video_h: int) -> dict:
     """Score one claim against the gaze samples in its time window.
 
     ``samples``: (t_seconds, nx, ny, valid) in normalised video coords.
@@ -105,25 +104,7 @@ def check_claim(claim: dict, samples: list, accuracy_deg: float,
         "attended": claim.get("attended"),
         "confidence": claim.get("confidence"),
     }
-    # A claim naming a REGION from the fixed vocabulary carries its own
-    # rectangle: the grid is known, so the model cannot misplace it and
-    # the claim is scoreable by construction. This is what removes the
-    # model's localisation error from the correspondence measure — the
-    # failure mode that made 46 of 60 claims unscoreable and sent the
-    # remaining misses 404 px in one direction.
     bbox = claim.get("bbox")
-    if claim.get("region") and grid:
-        import regions as _regions
-
-        reg = _regions.region_by_name(grid, claim["region"])
-        if reg:
-            bbox = reg["bbox"]
-            out["region"] = reg["name"]
-        else:
-            out["verdict"] = NO_BOX
-            out["note"] = ("named a region outside the vocabulary: %r"
-                           % claim["region"])
-            return out
     if not bbox or len(bbox) != 4 or any(b is None for b in bbox):
         out["verdict"] = NO_BOX
         out["note"] = "model did not localise this claim"
@@ -266,10 +247,9 @@ def check_claim(claim: dict, samples: list, accuracy_deg: float,
 
 
 def check_all(claims: list, samples: list, accuracy_deg: float,
-              px_per_deg: float, video_w: int, video_h: int,
-              grid: "dict | None" = None) -> dict:
+              px_per_deg: float, video_w: int, video_h: int) -> dict:
     results = [check_claim(c, samples, accuracy_deg, px_per_deg,
-                           video_w, video_h, grid) for c in claims]
+                           video_w, video_h) for c in claims]
     counts = {k: sum(1 for r in results if r["verdict"] == k)
               for k in (SUPPORTED, CONSISTENT, CONTRADICTED, UNTESTABLE,
                         NO_BOX)}
@@ -310,50 +290,10 @@ def check_all(claims: list, samples: list, accuracy_deg: float,
         #             This is the one that matters: it is what a model
         #             that has learned nothing about THIS recording,
         #             only about where people usually look, would score.
-        "chance": _chance_baselines(results, samples, grid),
         "box_reuse": box_reuse(claims),
         "gaze_summary": gaze_summary(samples),
         "offset_analysis": offset_analysis(results, px_per_deg,
                                            video_w, video_h, accuracy_deg),
-    }
-
-
-def _chance_baselines(results: list, samples: list,
-                      grid: "dict | None") -> "dict | None":
-    """What a model that learned nothing would score.
-
-    ``majority`` is the demanding one. Gaze is not uniformly
-    distributed — people look at the middle of a frame — so a model that
-    always names the busiest region scores well above 1/n while
-    demonstrating no sensitivity to the recording at all. A
-    correspondence figure that does not beat it has not shown anything.
-    """
-    if not grid or not grid.get("admissible") or not samples:
-        return None
-    regions = grid["regions"]
-    n = len(regions)
-    counts = {r["name"]: 0 for r in regions}
-    total = 0
-    for s in samples:
-        if len(s) >= 4 and not s[3]:
-            continue
-        for r in regions:
-            x, y, w, h = r["bbox"]
-            if x <= s[1] < x + w and y <= s[2] < y + h:
-                counts[r["name"]] += 1
-                total += 1
-                break
-    if not total:
-        return None
-    top = max(counts.items(), key=lambda kv: kv[1])
-    return {
-        "n_regions": n,
-        "uniform_pct": round(100.0 / n, 1),
-        "majority_region": top[0],
-        "majority_pct": round(100.0 * top[1] / total, 1),
-        "note": ("a model that always said %r would score %.1f %%; "
-                 "beating %.1f %% (uniform guessing) is not evidence of "
-                 "anything" % (top[0], 100.0 * top[1] / total, 100.0 / n)),
     }
 
 
@@ -410,13 +350,8 @@ def gaze_summary(samples: list) -> dict:
         return {}
     xs = sorted(s[1] for s in valid)
     ys = sorted(s[2] for s in valid)
-    cells = [[0] * 3 for _ in range(3)]
-    outside = 0
-    for s in valid:
-        if not (0 <= s[1] <= 1 and 0 <= s[2] <= 1):
-            outside += 1
-            continue
-        cells[min(2, int(s[2] * 3))][min(2, int(s[1] * 3))] += 1
+    outside = sum(1 for s in valid
+                  if not (0 <= s[1] <= 1 and 0 <= s[2] <= 1))
     n = len(valid)
     return {
         "n": n,
@@ -424,7 +359,6 @@ def gaze_summary(samples: list) -> dict:
         "x_range": [round(xs[int(0.05 * n)], 3), round(xs[int(0.95 * n)], 3)],
         "y_range": [round(ys[int(0.05 * n)], 3), round(ys[int(0.95 * n)], 3)],
         "outside_frame_pct": round(100.0 * outside / n, 1),
-        "grid_pct": [[round(100.0 * c / n, 1) for c in row] for row in cells],
     }
 
 
@@ -879,11 +813,6 @@ def main() -> int:
                  gs["x_range"][1], gs["y_range"][0], gs["y_range"][1]))
         print("  %.1f %% of samples fell outside the frame entirely"
               % gs["outside_frame_pct"])
-        print()
-        print("      distribution over the frame (%% of samples)")
-        for r, row in enumerate(gs["grid_pct"]):
-            band = ("top   ", "middle", "bottom")[r]
-            print("        %s  %5.1f  %5.1f  %5.1f" % (band, *row))
         print()
         print("  Open the review tool and check this against the video. If")
         print("  the marker on screen does NOT sit where this says, the")

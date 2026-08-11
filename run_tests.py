@@ -2428,47 +2428,16 @@ try:
     #  Region vocabulary + calibration diagnosis
     # ══════════════════════════════════════════════════════════════
     print("\n[18] Region vocabulary and calibration diagnosis")
-    _reg = importlib.import_module("regions")
-    importlib.reload(_reg)
-
-    # The grid is DERIVED from accuracy, not chosen. min cell >= 2x
-    # accuracy is the same rule metrics_spec states for AOIs.
-    for _deg, _want in ((1.5, (3, 3)), (2.13, (3, 3)), (3.0, (3, 2))):
-        _g = _reg.admissible_grid(_deg * 58.2, 1680, 945)
-        check("%.2f deg admits a %dx%d grid" % (_deg, _want[0], _want[1]),
-              _g["admissible"] and (_g["cols"], _g["rows"]) == _want,
-              "%s, cells %s" % (
-                  "%dx%d" % (_g["cols"], _g["rows"]) if _g["admissible"]
-                  else "none", _g.get("cell_px")))
-    _bad = _reg.admissible_grid(5.0 * 58.2, 1680, 945)
-    check("an accuracy too poor for ANY grid is refused, not rounded down",
-          _bad["admissible"] is False and not _bad["regions"])
-    check("every admitted cell really is >= 2 x accuracy",
-          all(min(_reg.admissible_grid(d * 58.2, 1680, 945)["cell_px"])
-              >= 2 * d * 58.2
-              for d in (1.5, 2.13, 3.0)))
-    _g3 = _reg.admissible_grid(2.13 * 58.2, 1680, 945)
-    check("region rects tile the frame exactly once",
-          abs(sum(r["bbox"][2] * r["bbox"][3] for r in _g3["regions"]) - 1.0)
-          < 0.01)
-    check("region names are spatial words, not coordinates",
-          "upper-left" in {r["name"] for r in _g3["regions"]})
-    check("the prompt vocabulary lists every region",
-          all(r["name"] in _reg.vocabulary_text(_g3)
-              for r in _g3["regions"]))
-
-    # The grid derivation stays in regions.py — it is the argument for
-    # what the method can resolve, and the validity document cites it —
-    # but the PROMPT no longer imposes a vocabulary. Object-level claims
-    # graded by distance replaced it (section [19]).
-    check("the region grid is still derivable for the resolution "
-          "argument",
-          "def admissible_grid" in read("regions.py"))
-    check("a region claim is scored against the KNOWN rect, not the "
-          "model's box",
-          'claim.get("region") and grid' in _cc)
-    check("a region outside the vocabulary is rejected, not guessed at",
-          "named a region outside the vocabulary" in _cc)
+    # regions.py DELETED. The 3x3 vocabulary is gone from the prompt,
+    # the scorer and the summaries — object-level claims graded by
+    # distance replaced it. The resolution argument survives as prose,
+    # not as a grid nobody wanted.
+    check("the region grid is gone entirely",
+          not os.path.exists(os.path.join(BASE, "regions.py")))
+    check("nothing still imports it",
+          "import regions" not in _cc and "import regions" not in _app3)
+    check("the gaze summary reports position, not a grid",
+          "grid_pct" not in _cc and '"median"' in _cc)
 
     # calibration_diagnosis: does it tell the four causes apart?
     _cd = importlib.import_module("calibration_diagnosis")

@@ -99,6 +99,31 @@ def _grade(value, *, lo=None, hi=None, zero_ok=False):
     return PRESENT, "%.3g" % v
 
 
+def pilot_status(path: str) -> "tuple":
+    """Is this session pilot data or evaluation data?
+
+    Read from the session date against config.PILOT_BEFORE_DATE. The
+    boundary lives in config precisely so it cannot be decided per
+    session, after the numbers are in — which is the difference between
+    a pre-registration and a rationalisation.
+    """
+    try:
+        import config
+
+        cutoff = getattr(config, "PILOT_BEFORE_DATE", None)
+    except Exception:  # noqa: BLE001
+        cutoff = None
+    date = _session_date(path)
+    if not cutoff or not date:
+        return None, ""
+    if date < cutoff:
+        return True, ("PILOT — recorded %s, before the %s boundary. "
+                      "Proof of concept: the protocol was still changing. "
+                      "Do not pool with evaluation sessions."
+                      % (date, cutoff))
+    return False, "evaluation session (recorded %s)" % date
+
+
 def check_session(manifest: dict, res: Result) -> None:
     # ── RQ1: validations ──────────────────────────────────────────
     vals = manifest.get("validations") or []
@@ -416,6 +441,9 @@ def report(path: str) -> int:
     print("=" * 78)
     print("  participant : %s" % manifest.get("participant_id"))
     print("  finalised   : %s" % manifest.get("finalized_at_utc"))
+    is_pilot, why = pilot_status(path)
+    if is_pilot is not None:
+        print("  status      : %s" % why)
     print()
     cur = None
     for rq, name, status, value, note in res.rows:

@@ -70,8 +70,27 @@ LLM_WINDOW_SECONDS = float(os.environ.get("LLM_WINDOW_SECONDS", "5"))
 # Validation & preregistered data-quality thresholds
 # (report these in the methods section; decided BEFORE data collection)
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# THE PILOT BOUNDARY
+# ---------------------------------------------------------------------------
+# Every session recorded BEFORE this date is proof-of-concept: collected
+# while the protocol was being developed, on a pipeline that changed
+# between sessions. They are the data the method was built on.
+#
+# Using them to DEVELOP the protocol is legitimate. Using them to
+# EVALUATE it is not, and the difference is invisible in a folder of
+# manifests unless it is written down somewhere the tools can read.
+# Deciding the boundary afterwards, once the results are known, is the
+# thing this constant exists to make impossible.
+#
+# Concretely, the pilot sessions include: repeated pre-validations with
+# the gain refitted each time, 5-point calibrations, sessions recorded
+# before the sampling rate was fixed at ~31 Hz, and sessions whose
+# viewing distance was assumed rather than measured.
+PILOT_BEFORE_DATE = os.environ.get("PILOT_BEFORE_DATE", "2026-08-11")
+
 # Assumed viewing distance for px → degrees-of-visual-angle conversion.
-# Webcam setups cannot measure this; the assumption is logged per session.
+# Used only when the validation could not measure it; logged per session.
 VIEWING_DISTANCE_CM = float(os.environ.get("VIEWING_DISTANCE_CM", "60"))
 
 # Fallback screen diagonal (inches) when the participant does not enter

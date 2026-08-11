@@ -3270,16 +3270,10 @@ def _persist_llm_result(session: str, stimulus: str, block: dict) -> None:
                     float(scr.get("diag_inches") or 15.6), float(dist))
                 rect = next(s["video_rect"] for s in manifest["stimuli"]
                             if s.get("stimulus") == stimulus)
-                import regions
-
                 vw = int(rect.get("w") or 1920)
                 vh = int(rect.get("h") or 1080)
-                grid = regions.admissible_grid(acc * ppd, vw, vh)
                 scored = claim_check.check_all(
-                    claims, samples, acc, ppd, vw, vh, grid)
-                scored["grid"] = {k: grid.get(k) for k in
-                                  ("cols", "rows", "cell_px",
-                                   "required_px", "admissible", "rule")}
+                    claims, samples, acc, ppd, vw, vh)
                 scored["accuracy_source"] = acc_src
                 block["correspondence"] = scored
             else:
