@@ -2619,6 +2619,32 @@ try:
           _overlap_hits(2.1, 0.9) and 2.1 in _overlap_hits(2.1, 0.9))
     check("a fixation with no claim near it matches nothing",
           not _overlap_hits(9.9, 0.2))
+
+    # ── The Windows launcher ─────────────────────────────────────────
+    # A menu that offers a script which does not exist fails at the
+    # worst possible moment: with a participant sitting there. Batch
+    # has no import system to catch that, so check it here.
+    _start = read("windows/START.bat")
+    _referenced = set(re.findall(r'(?:call\s+)?(windows\\[\w.]+\.bat)',
+                                 _start))
+    for _bat in sorted(_referenced):
+        check("START.bat offers %s, and it exists" % _bat,
+              os.path.exists(os.path.join(BASE, _bat.replace("\\", "/"))))
+    _scripts = set(re.findall(r'python\s+([\w_]+\.py)', _start))
+    for _py in sorted(_scripts):
+        check("START.bat offers %s, and it exists" % _py,
+              os.path.exists(os.path.join(BASE, _py)))
+    check("every goto in START.bat has a label",
+          not (set(m.lower() for m in re.findall(r'goto\s+:(\w+)', _start))
+               - set(l.strip()[1:].lower() for l in _start.splitlines()
+                     if l.strip().startswith(":")
+                     and not l.strip().startswith("::"))))
+    check("START.bat is pure ASCII (cmd's codepage mangles the rest)",
+          all(ord(c) < 128 for c in _start))
+    check("it refuses to pull over uncommitted local changes",
+          "NOT pulling" in _start)
+    check("it leaves a usable prompt rather than closing",
+          "cmd /k" in _start)
     check("running with no arguments says how to score a real session",
           "showing the DEMO on synthetic data" in _cc)
     check("duty prefers total callback cost over model cost",
