@@ -201,9 +201,12 @@ RQ3_FEEDBACK = [
 # anyway (a face subtends ~1.9 deg; assignment needs <= 0.9 deg).
 NOT_APPLICABLE = [
     ("aoi_dwell_proportion", "superseded by claim_correspondence_pct"),
+    ("aoi_dwell_time_s", "no fixed AOI set to dwell in"),
     ("aoi_first_entry_s", "superseded by the model's phase timeline"),
+    ("aoi_revisits", "no fixed AOI set to revisit"),
     ("aoi_coverage_pct", "no fixed AOI set exists to cover"),
 ]
+NOT_APPLICABLE_NAMES = {n for n, _ in NOT_APPLICABLE}
 
 ALL = {"RQ1": RQ1_QUALITY, "RQ2": RQ2_EVENTS, "RQ3": RQ3_FEEDBACK}
 

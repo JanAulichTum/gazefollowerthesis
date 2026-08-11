@@ -54,6 +54,10 @@ RAW_DIR = os.path.join(BASE, "data", "gazefollower_raw")
 import metrics_spec as SPEC  # noqa: E402
 
 PRESENT, MISSING, DEGENERATE = "PRESENT", "MISSING", "DEGENERATE"
+#: A metric this study deliberately does not collect. Reporting it as
+#: MISSING treats a design decision as an omission — and five phantom
+#: gaps in every report is how a reader stops reading the gaps.
+NOT_APPLICABLE = "N/A"
 
 
 class Result:
@@ -61,6 +65,17 @@ class Result:
         self.rows = []
 
     def add(self, rq, name, status, value="", note=""):
+        # A metric can be checked by two code paths — once from the
+        # events block and once from a module that has not been wired
+        # in. Reporting it PRESENT and then MISSING makes the count
+        # meaningless: the 2026-08-11 report listed saccade_count,
+        # saccade_amplitude_median_deg and idt_min_duration_s in both
+        # columns at once. If it was found, it is not missing.
+        base = str(name).split(" [")[0]
+        if status == MISSING and any(
+                str(n).split(" [")[0] == base and s == PRESENT
+                for _rq, n, s, _v, _n in self.rows):
+            return
         self.rows.append((rq, name, status, value, note))
 
     def count(self, status):
@@ -377,12 +392,19 @@ def check_session(manifest: dict, res: Result) -> None:
                 PRESENT if manifest.get("saccades") else MISSING, "",
                 "aoi_metrics.saccade_metrics() exists; wire it into the "
                 "analysis step" if not manifest.get("saccades") else "")
+    # AOI metrics are NOT MISSING — this study deliberately draws no
+    # AOIs. metrics_spec.NOT_APPLICABLE records the reason for each, so
+    # the decision is auditable instead of looking like an oversight.
     aoi = manifest.get("aoi") or {}
+    _why = dict(SPEC.NOT_APPLICABLE)
     for name in ("aoi_dwell_proportion", "aoi_dwell_time_s",
                  "aoi_first_entry_s", "aoi_revisits", "aoi_coverage_pct"):
-        res.add("RQ2", name, PRESENT if aoi else MISSING, "",
-                "no AOI definition for this stimulus (data/aoi/<stem>.json)"
-                if not aoi else "")
+        if aoi:
+            res.add("RQ2", name, PRESENT, "", "")
+        else:
+            res.add("RQ2", name, NOT_APPLICABLE, "",
+                    "by design: no hand-drawn AOIs — %s"
+                    % _why.get(name, "see metrics_spec.NOT_APPLICABLE"))
 
     # I-DT parameters, and whether the minimum duration is defensible.
     thr = manifest.get("quality_thresholds") or {}
@@ -399,9 +421,29 @@ def check_session(manifest: dict, res: Result) -> None:
         res.add("RQ2", "idt_min_duration_s", PRESENT if ok else DEGENERATE,
                 "%.0f ms" % (mind * 1000),
                 "3-sample floor at %.1f Hz is %.0f ms" % (hz, floor * 1000))
-    res.add("RQ2", "idt_dispersion_threshold_deg",
-            PRESENT if thr.get("fixation_dispersion_deg") else MISSING, "",
-            "stored normalised (screen-dependent); record in degrees")
+    # The dispersion threshold IS recorded in degrees, per stimulus, in
+    # the events block — `idt_dispersion_deg`. This looked for it under
+    # quality_thresholds and reported MISSING while the value sat in the
+    # manifest, which is the same lookup mismatch that hid the RQ2
+    # metrics and the viewing distance.
+    _disp = [(stim, blk.get("idt_dispersion_deg"))
+             for stim, blk in events.items()
+             if isinstance(blk, dict) and blk.get("idt_dispersion_deg")]
+    if _disp:
+        for stim, val in _disp:
+            res.add("RQ2", "idt_dispersion_threshold_deg [%s]" % str(stim)[:18],
+                    PRESENT, "%.2f" % float(val),
+                    "converted from the normalised %.3g using this "
+                    "session's own geometry"
+                    % (thr.get("fixation_dispersion_norm")
+                       or _get(manifest, "quality_thresholds",
+                               "fixation_dispersion_norm") or 0.05))
+    elif thr.get("fixation_dispersion_deg"):
+        res.add("RQ2", "idt_dispersion_threshold_deg", PRESENT,
+                "%.2f" % float(thr["fixation_dispersion_deg"]))
+    else:
+        res.add("RQ2", "idt_dispersion_threshold_deg", MISSING, "",
+                "not in manifest['events'] — was the session finalised?")
 
     # ── RQ3 ───────────────────────────────────────────────────────
     # manifest["llm"] is keyed by stimulus: one feedback run per video.
@@ -496,8 +538,14 @@ def report(path: str) -> int:
 
     print()
     print("-" * 78)
-    print("  %d present · %d missing · %d degenerate"
-          % (res.count(PRESENT), res.count(MISSING), res.count(DEGENERATE)))
+    print("  %d present · %d missing · %d degenerate · %d n/a by design"
+          % (res.count(PRESENT), res.count(MISSING), res.count(DEGENERATE),
+             res.count(NOT_APPLICABLE)))
+    # Name what is actually outstanding. A count alone sends you looking
+    # through the whole report for the entries that matter.
+    _gaps = [r[1] for r in res.rows if r[2] == MISSING]
+    if _gaps:
+        print("  still missing: %s" % ", ".join(_gaps))
 
     blocking = [r for r in res.rows
                 if r[2] == DEGENERATE

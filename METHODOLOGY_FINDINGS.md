@@ -237,6 +237,30 @@ Tape-measured calibration at 60 cm, iris-based:
 
 ---
 
+## F15 · The metric report was inflating its own gap count
+**2026-08-11 · (housekeeping, but it changes what the reports mean)**
+
+`verify_metrics` listed **10 missing** metrics on a healthy session. On
+inspection: 3 were duplicates of metrics reported PRESENT in the same
+run (checked by two code paths — `saccade_count`,
+`saccade_amplitude_median_deg`, `idt_min_duration_s`), 5 were AOI
+metrics this study **deliberately does not collect**, and 1 was recorded
+in the manifest under a key the checker did not read
+(`idt_dispersion_deg`, in the events block).
+
+**Exactly one was a real gap: `criteria_met`, because no rubric exists.**
+
+Fixed: a metric found PRESENT can no longer also be reported MISSING;
+AOI metrics report **N/A by design** with the reason from
+`metrics_spec.NOT_APPLICABLE`; the dispersion threshold is read from
+where it is written; and the summary now names what is outstanding
+instead of only counting it.
+
+Worth stating because a report that over-reports gaps is one that stops
+being read — and the real gap was buried among nine phantoms.
+
+---
+
 ## Open items before evaluation collection
 
 - `EVALUATION_FROM_DATE` is empty: **every session so far is development

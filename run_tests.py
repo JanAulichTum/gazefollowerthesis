@@ -2696,6 +2696,40 @@ try:
     check("it lists what is still missing before evaluation collection",
           "Open items before evaluation collection" in _find)
 
+    # ── The report must not cry wolf ─────────────────────────────────
+    # The 2026-08-11 report listed 10 "missing" metrics. Three were
+    # DUPLICATES of metrics reported PRESENT in the same run (checked by
+    # two code paths), five were AOI metrics this study deliberately
+    # does not collect, and one was recorded in the manifest under a key
+    # the checker did not read. Exactly ONE was a real gap. A report
+    # that inflates its own gap count is one nobody reads.
+    check("a metric found PRESENT is never also reported MISSING",
+          "If it was found, it is not missing" in _vm
+          and 'str(n).split(" [")[0] == base' in _vm)
+    check("AOI metrics are N/A by design, not MISSING",
+          'NOT_APPLICABLE = "N/A"' in _vm
+          and "by design: no hand-drawn AOIs" in _vm)
+    check("the design reason for each is recorded in the spec",
+          read("metrics_spec.py").count("aoi_") >= 5
+          and "NOT_APPLICABLE_NAMES" in read("metrics_spec.py"))
+    check("the dispersion threshold is read from events, where it is "
+          "written",
+          'blk.get("idt_dispersion_deg")' in _vm)
+    check("the summary names what is still missing, not just a count",
+          "still missing: " in _vm)
+
+    # Behavioural: a duplicate MISSING must be suppressed.
+    _rr = _vmod.Result()
+    _rr.add("RQ2", "saccade_count [clip]", _vmod.PRESENT, "70")
+    _rr.add("RQ2", "saccade_count", _vmod.MISSING, "", "wire it in")
+    check("...verified: the duplicate is dropped, not printed",
+          len(_rr.rows) == 1 and _rr.rows[0][2] == _vmod.PRESENT,
+          "%d row(s)" % len(_rr.rows))
+    _rr2 = _vmod.Result()
+    _rr2.add("RQ2", "aoi_revisits", _vmod.MISSING, "")
+    check("...but a genuine MISSING is still reported",
+          len(_rr2.rows) == 1 and _rr2.rows[0][2] == _vmod.MISSING)
+
     # ── The keyframe cap: what the model was never shown ─────────────
     # 71 fixations, LLM_MAX_FRAMES=60, and sample_gaze_frames keeps the
     # LONGEST. So 11 fixations were dropped and nothing recorded which,
