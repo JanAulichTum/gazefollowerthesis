@@ -311,6 +311,8 @@ def check_all(claims: list, samples: list, accuracy_deg: float,
         #             that has learned nothing about THIS recording,
         #             only about where people usually look, would score.
         "chance": _chance_baselines(results, samples, grid),
+        "box_reuse": box_reuse(claims),
+        "gaze_summary": gaze_summary(samples),
         "offset_analysis": offset_analysis(results, px_per_deg,
                                            video_w, video_h, accuracy_deg),
     }
@@ -352,6 +354,77 @@ def _chance_baselines(results: list, samples: list,
         "note": ("a model that always said %r would score %.1f %%; "
                  "beating %.1f %% (uniform guessing) is not evidence of "
                  "anything" % (top[0], 100.0 * top[1] / total, 100.0 / n)),
+    }
+
+
+def box_reuse(claims: list) -> dict:
+    """Does the model re-stamp one box per label, or look at each frame?
+
+    A model that localises from the FRAME gives slightly different
+    coordinates each time — objects shift, the camera moves, its own
+    estimate wobbles. A model that localises from a PRIOR decides where
+    a thing is once and reuses that box verbatim.
+
+    The two are indistinguishable in any single claim and obvious across
+    a session, so this counts distinct boxes per label. It is the
+    cheapest available evidence about whether the localisation step is
+    doing any work at all, and it needs no gaze data — which makes it
+    independent of every other check here.
+    """
+    by_label: dict = {}
+    for c in claims:
+        if not isinstance(c, dict) or not c.get("bbox"):
+            continue
+        lab = str(c.get("attended") or "?")
+        key = tuple(round(float(v), 4) for v in c["bbox"])
+        by_label.setdefault(lab, []).append(key)
+    rows = []
+    reused = total = 0
+    for lab, boxes in by_label.items():
+        n, d = len(boxes), len(set(boxes))
+        rows.append({"label": lab, "claims": n, "distinct_boxes": d})
+        total += n
+        if n > 1 and d == 1:
+            reused += n
+    rows.sort(key=lambda r: -r["claims"])
+    return {
+        "rows": rows,
+        "n_claims_with_box": total,
+        "n_in_reused_boxes": reused,
+        "reuse_pct": round(100.0 * reused / total, 1) if total else None,
+    }
+
+
+def gaze_summary(samples: list) -> dict:
+    """Where the gaze actually was, as a 3x3 distribution and a median.
+
+    A sanity check on MY arithmetic before anyone draws a conclusion
+    about the model. The gaze arrives in screen pixels and is mapped
+    into video coordinates through the manifest's video_rect; if that
+    mapping is wrong, every claim is scored against displaced gaze and
+    the result is a constant offset — which is exactly what a
+    systematically mis-localising model also produces.
+    """
+    valid = [s for s in samples if len(s) < 4 or s[3]]
+    if not valid:
+        return {}
+    xs = sorted(s[1] for s in valid)
+    ys = sorted(s[2] for s in valid)
+    cells = [[0] * 3 for _ in range(3)]
+    outside = 0
+    for s in valid:
+        if not (0 <= s[1] <= 1 and 0 <= s[2] <= 1):
+            outside += 1
+            continue
+        cells[min(2, int(s[2] * 3))][min(2, int(s[1] * 3))] += 1
+    n = len(valid)
+    return {
+        "n": n,
+        "median": [round(xs[n // 2], 3), round(ys[n // 2], 3)],
+        "x_range": [round(xs[int(0.05 * n)], 3), round(xs[int(0.95 * n)], 3)],
+        "y_range": [round(ys[int(0.05 * n)], 3), round(ys[int(0.95 * n)], 3)],
+        "outside_frame_pct": round(100.0 * outside / n, 1),
+        "grid_pct": [[round(100.0 * c / n, 1) for c in row] for row in cells],
     }
 
 
@@ -792,6 +865,48 @@ def main() -> int:
         print("  %.2f deg this pipeline can resolve REGIONS of the scene,"
               % res["accuracy_deg_used"])
         print("  not individual people.")
+
+    # ── Two checks that must come BEFORE any conclusion ──────────────
+    gs = gaze_summary(samples)
+    if gs:
+        print()
+        print("  " + "-" * 68)
+        print("  SANITY CHECK — where the gaze actually was")
+        print("  " + "-" * 68)
+        print("  median (%.2f, %.2f) of the video frame; middle 90 %% spans "
+              "x %.2f-%.2f, y %.2f-%.2f"
+              % (gs["median"][0], gs["median"][1], gs["x_range"][0],
+                 gs["x_range"][1], gs["y_range"][0], gs["y_range"][1]))
+        print("  %.1f %% of samples fell outside the frame entirely"
+              % gs["outside_frame_pct"])
+        print()
+        print("      distribution over the frame (%% of samples)")
+        for r, row in enumerate(gs["grid_pct"]):
+            band = ("top   ", "middle", "bottom")[r]
+            print("        %s  %5.1f  %5.1f  %5.1f" % (band, *row))
+        print()
+        print("  Open the review tool and check this against the video. If")
+        print("  the marker on screen does NOT sit where this says, the")
+        print("  fault is the screen-to-video mapping in THIS script, not")
+        print("  the model — and every verdict above is void.")
+
+    br = res.get("box_reuse") or {}
+    if br.get("rows"):
+        print()
+        print("  " + "-" * 68)
+        print("  IS THE MODEL LOOKING? — distinct boxes per label")
+        print("  " + "-" * 68)
+        for row in br["rows"][:8]:
+            flag = "  <- one box reused for all"  \
+                if row["claims"] > 1 and row["distinct_boxes"] == 1 else ""
+            print("    %-34s %2d claims, %2d distinct box(es)%s"
+                  % (str(row["label"])[:34], row["claims"],
+                     row["distinct_boxes"], flag))
+        print()
+        print("  %.0f %% of localised claims reuse a box verbatim. A model"
+              % (br["reuse_pct"] or 0))
+        print("  reading each FRAME gives slightly different coordinates")
+        print("  every time; one reciting a PRIOR stamps the same box.")
 
     oa = res.get("offset_analysis")
     if oa:
