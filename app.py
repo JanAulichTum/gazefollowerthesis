@@ -744,8 +744,14 @@ def api_coding_units():
     except Exception as exc:  # noqa: BLE001
         return {"units": [], "error": "fixation detection failed: %s" % exc}
 
-    # The model's claims, if a feedback run has been stored.
+    # The model's claims. TWO sources, in order, because the manifest
+    # write-back is recent: sessions whose feedback was generated before
+    # it exists have an empty llm block, and the only record of what the
+    # model said is the log directory. Without the fallback every
+    # fixation reads "no model claim covers this", which looks like a
+    # coding problem and is not one.
     claims = []
+    claims_source = None
     mpath = os.path.join(GAZEFOLLOWER_CSV_DIR, session + "_manifest.json")
     accuracy_deg = None
     if os.path.isfile(mpath):
@@ -754,18 +760,52 @@ def api_coding_units():
                 man = json.load(fh)
             claims = ((man.get("llm") or {}).get(stimulus) or {}).get(
                 "structured") or []
+            if claims:
+                claims_source = "session manifest"
             import claim_check
 
             accuracy_deg = claim_check._accuracy_deg(man)[0]
         except Exception:  # noqa: BLE001
             pass
+    if not claims:
+        try:
+            import claim_check
+
+            claims, log_path = claim_check.load_claims(session)
+            if claims:
+                claims_source = "log: %s" % os.path.basename(log_path or "?")
+        except Exception:  # noqa: BLE001
+            pass
+
+    # OVERLAP, not proximity to the midpoint.
+    # A claim in "fixations" mode names an INSTANT (t_start == t_end);
+    # a fixation has DURATION. Comparing the claim's start against the
+    # fixation's midpoint misses whenever the fixation is long — a
+    # 900 ms fixation puts its midpoint 450 ms from the claim that
+    # names its onset. Match anything landing inside the fixation, plus
+    # a margin for the sampling interval, and take the nearest.
+    MATCH_MARGIN_S = 0.35
+
+    def _match(f):
+        lo = f.t_start - MATCH_MARGIN_S
+        hi = f.t_start + f.duration + MATCH_MARGIN_S
+        hits = []
+        for c in claims:
+            if not isinstance(c, dict):
+                continue
+            cs = float(c.get("t_start") or 0)
+            ce = float(c.get("t_end") or cs)
+            if ce >= lo and cs <= hi:
+                centre = f.t_start + f.duration / 2.0
+                hits.append((abs((cs + ce) / 2.0 - centre), c))
+        hits.sort(key=lambda h: h[0])
+        return hits[0][1] if hits else None
 
     units = []
     for i, f in enumerate(fixations):
         mid = f.t_start + (f.duration / 2.0)
-        near = [c for c in claims
-                if isinstance(c, dict)
-                and abs(float(c.get("t_start") or 0) - mid) <= 0.6]
+        matched = _match(f)
+        near = [matched] if matched else []
         units.append({
             "index": i,
             "t_start": round(f.t_start, 3),
@@ -778,10 +818,24 @@ def api_coding_units():
             "model_bbox": (near[0].get("bbox") if near else None),
             "model_confidence": (near[0].get("confidence") if near else None),
         })
+    matched = sum(1 for u in units if u["model_claim"])
     return {"units": units, "stimulus": stimulus,
             "participant": participant, "session": session,
             "accuracy_deg": accuracy_deg,
-            "n_claims": len(claims)}
+            "n_claims": len(claims),
+            "claims_source": claims_source,
+            "n_matched": matched,
+            # "no claims were loaded" and "claims were loaded but none
+            # line up in time" are different faults with different
+            # fixes, and they look identical from inside the coder.
+            "match_warning": (
+                "No LLM claims found for this session at all — generate "
+                "the feedback in the review tool first."
+                if not claims else
+                ("Loaded %d claims but only %d of %d fixations matched one "
+                 "in time. Check that the claims come from THIS stimulus."
+                 % (len(claims), matched, len(units))
+                 if matched < 0.5 * len(units) else None))}
 
 
 @app.route("/api/coding_save", methods=["POST"])

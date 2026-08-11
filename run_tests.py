@@ -2589,6 +2589,36 @@ try:
           "gazeRing" in _coder and "accuracy_deg" in _coder)
     check("the coder is pointed at a second rater for kappa",
           "second coder" in _coder and "agreement_kit" in _coder)
+
+    # Every fixation read "no model claim covers this fixation". The
+    # cause was not the coder and not the matching: the manifest
+    # write-back is recent, so a session whose feedback predates it has
+    # an empty llm block and the only record is data/llm_logs/.
+    check("the coder falls back to the log directory for claims",
+          "claim_check.load_claims(session)" in _app3
+          and "claims_source" in _app3)
+    check("it distinguishes 'no claims loaded' from 'none matched'",
+          "match_warning" in _app3
+          and "No LLM claims found for this session at all" in _app3
+          and "only %d of %d fixations matched" in _app3)
+    check("the page shows where the claims came from",
+          "claimSource" in _coder and "d.claims_source" in _coder)
+    check("claims are matched by time OVERLAP, not midpoint proximity",
+          "if ce >= lo and cs <= hi" in _app3)
+
+    # A long fixation puts its midpoint far from the claim naming its
+    # onset, which is why overlap is the safer rule even though both
+    # schemes happen to agree on the 2026-08-10 data.
+    _claims_t = [0.3, 0.7, 1.1, 2.1, 2.6, 3.0, 3.4, 3.9]
+
+    def _overlap_hits(start, dur, margin=0.35):
+        lo, hi = start - margin, start + dur + margin
+        return [t for t in _claims_t if lo <= t <= hi]
+
+    check("a long fixation still matches the claim naming its onset",
+          _overlap_hits(2.1, 0.9) and 2.1 in _overlap_hits(2.1, 0.9))
+    check("a fixation with no claim near it matches nothing",
+          not _overlap_hits(9.9, 0.2))
     check("running with no arguments says how to score a real session",
           "showing the DEMO on synthetic data" in _cc)
     check("duty prefers total callback cost over model cost",

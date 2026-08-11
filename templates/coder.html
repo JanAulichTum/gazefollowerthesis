@@ -64,6 +64,7 @@
 
   <div class="card" id="codingCard" hidden>
     <p id="progressLine" style="font-weight:600"></p>
+    <p id="claimSource" style="color:#595959; font-size:0.85em"></p>
 
     <div style="position:relative; display:inline-block; max-width:100%">
       <video id="frameVideo" style="max-width:100%; display:block"
@@ -145,6 +146,21 @@
     meta = { coder: coder, participant: rec.participant_id,
              stimulus: rec.stimulus_name, session: rec.session_id || '',
              accuracy_deg: d.accuracy_deg, n_claims: d.n_claims };
+
+    // Say WHY there is nothing to judge, rather than letting every
+    // fixation read "no model claim covers this" — which looks like a
+    // property of the data and is actually a loading problem.
+    if (d.match_warning) {
+        showError(d.match_warning);
+        if (!d.n_claims) return;
+    } else {
+        $('coderError').hidden = true;
+    }
+    $('claimSource').textContent = d.claims_source
+        ? (d.n_claims + ' claims from the ' + d.claims_source
+           + ' · ' + d.n_matched + ' of ' + units.length
+           + ' fixations matched')
+        : '';
 
     const prev = await (await fetch('/api/coding_load?' + new URLSearchParams({
       coder: coder, session: meta.session, stimulus: meta.stimulus }))).json();
