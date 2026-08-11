@@ -2868,6 +2868,59 @@ try:
     check("a manifest without the lenient rate still reports the strict one",
           bool(_row2) and "16.9" in _row2[0][3], _row2[0][3] if _row2 else "-")
 
+    # ── The rubric freeze, enforced rather than promised ─────────────
+    # A rubric that changes mid-collection splits the data into two
+    # studies and every session still looks fine on its own.
+    import shutil as _sh
+    import tempfile as _tf
+
+    _tmp_r = _tf.mkdtemp(prefix="rubric_")
+    try:
+        def _mk_r(name, rubric):
+            p = os.path.join(_tmp_r, name)
+            with open(p, "w", encoding="utf-8") as fh:
+                json.dump({"llm": {"clip.mp4": {"rubric": rubric}}}, fh)
+            return p
+
+        # Both AFTER the evaluation boundary, so both count.
+        _a = _mk_r("A_2026-12-01_100000_manifest.json", "C1 ... C2 ... C3")
+        _b = _mk_r("B_2026-12-02_100000_manifest.json", "C1 ... C2 ... C3")
+        _c = _mk_r("C_2026-12-03_100000_manifest.json", "C1 ... C2 only")
+        _dev = _mk_r("D_2020-01-01_100000_manifest.json", "something else")
+
+        _same = _vmod.rubric_drift([_a, _b])
+        check("identical rubrics collapse to one variant", len(_same) == 1,
+              "%d variants" % len(_same))
+        _diff = _vmod.rubric_drift([_a, _b, _c])
+        check("a changed rubric is detected", len(_diff) == 2,
+              "%d variants" % len(_diff))
+        check("...and names the sessions on each side",
+              any("C_2026-12-03" in s for v in _diff.values() for s in v))
+        # A development session must not be able to trip the freeze —
+        # it is not part of the frozen set.
+        _mixed = _vmod.rubric_drift([_a, _b, _dev])
+        check("development sessions are excluded from the freeze check",
+              len(_mixed) == 1, "%d variants" % len(_mixed))
+        check("the check is exposed on the command line",
+              '"--rubric"' in _vm_src and "_report_rubric" in _vm_src)
+        # Behaviour, not source text: a drifted set must exit nonzero,
+        # or the check is a printout rather than a gate.
+        import contextlib as _ctx2
+        import io as _io2
+
+        with _ctx2.redirect_stdout(_io2.StringIO()) as _buf_r:
+            _rc_drift = _vmod._report_rubric([_a, _b, _c])
+        with _ctx2.redirect_stdout(_io2.StringIO()):
+            _rc_same = _vmod._report_rubric([_a, _b])
+        check("drift exits nonzero, agreement exits zero",
+              _rc_drift == 1 and _rc_same == 0,
+              "drift=%s same=%s" % (_rc_drift, _rc_same))
+        check("the drift report names the differing rubrics",
+              "DRIFT" in _buf_r.getvalue()
+              and "C_2026-12-03" in _buf_r.getvalue())
+    finally:
+        _sh.rmtree(_tmp_r, ignore_errors=True)
+
     # ── The stimulus set actually presented ──────────────────────────
     _rs = read("windows/run_session.bat")
     check("collection presents the real stimulus set, not the pilot clip",

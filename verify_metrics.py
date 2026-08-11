@@ -548,6 +548,78 @@ def check_session(manifest: dict, res: Result) -> None:
                     "%d/%d judged" % (len(judged), len(claims)))
 
 
+def rubric_drift(paths: list) -> dict:
+    """Is every evaluation session carrying the SAME rubric string?
+
+    A rubric that changes mid-collection splits the data into two
+    studies, and the change is invisible: each session looks fine on its
+    own, `criteria_met` is populated throughout, and κ is computed over
+    judgments made to two different standards. The manifest already
+    stores the rubric text (app.py writes it per session), so the check
+    costs nothing — it was simply never made.
+
+    Text, not a hash. A hash tells you that something moved; the text
+    tells you what it moved to, which is what you need in order to
+    decide whether the sessions can still be pooled.
+    """
+    import config
+
+    seen: dict = {}
+    for p in paths:
+        try:
+            with open(p, encoding="utf-8") as fh:
+                man = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not config.is_evaluation_session(os.path.basename(p)):
+            continue
+        for stim, blk in (man.get("llm") or {}).items():
+            if not isinstance(blk, dict):
+                continue
+            text = (blk.get("rubric") or "").strip()
+            seen.setdefault(text, []).append(
+                "%s [%s]" % (os.path.basename(p), stim))
+    return seen
+
+
+def _report_rubric(paths: list) -> int:
+    variants = rubric_drift(paths)
+    print("=" * 78)
+    print("  RUBRIC FREEZE CHECK — evaluation sessions only")
+    print("=" * 78)
+    if not variants:
+        print("  No evaluation session carries an LLM run yet.")
+        return 0
+    empty = variants.pop("", None)
+    if empty:
+        print("  %d run(s) with NO rubric at all:" % len(empty))
+        for s in empty[:8]:
+            print("      %s" % s)
+        print("  criteria_met is null for these; they cannot enter kappa.")
+        print()
+    if not variants:
+        return 1
+    if len(variants) == 1:
+        text = next(iter(variants))
+        print("  OK — one rubric across %d run(s), %d characters."
+              % (len(next(iter(variants.values()))), len(text)))
+        print()
+        print("  " + (text[:200] + ("…" if len(text) > 200 else "")))
+        return 0
+    print("  DRIFT — %d DIFFERENT rubrics are in use." % len(variants))
+    print("  Judgments made to different standards cannot be pooled;")
+    print("  kappa over them is not an estimate of anything.")
+    for i, (text, where) in enumerate(sorted(
+            variants.items(), key=lambda kv: -len(kv[1])), 1):
+        print()
+        print("  variant %d — %d run(s), %d characters"
+              % (i, len(where), len(text)))
+        for s in where[:5]:
+            print("      %s" % s)
+        print("      \"%s…\"" % text[:120])
+    return 1
+
+
 def report(path: str) -> int:
     with open(path, encoding="utf-8") as fh:
         manifest = json.load(fh)
@@ -627,7 +699,13 @@ def main() -> int:
                     help="only sessions on or after this date")
     ap.add_argument("--spec", action="store_true",
                     help="print the specification and exit")
+    ap.add_argument("--rubric", action="store_true",
+                    help="check every evaluation session carries the SAME "
+                         "rubric, and exit")
     args = ap.parse_args()
+
+    if args.rubric:
+        return _report_rubric(_session_glob())
 
     if args.spec:
         ppd = SPEC.px_per_degree()

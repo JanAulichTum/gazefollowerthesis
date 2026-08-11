@@ -26,10 +26,18 @@ half of RQ3 has no data at all.
 So the rubric is not documentation. **It is the operationalisation of
 the dependent variable in RQ3.** It is also, per Duvivier et al. (2026),
 the exact thing this literature is worst at reporting: their review of
-professional-vision eye-tracking calls AOI definition "a central
-methodological flaw" and finds reliability verification of AOI/video
-coding is rarely reported and almost never double-blind. A frozen,
-published rubric with a κ attached is a contribution in itself.
+27 professional-vision eye-tracking publications finds AOI definition
+handled inconsistently — defined before collection in some studies and
+after in others, with the shape frequently unspecified — and singles out
+the one study that used multiple coders and reported a reliability score
+as the exception rather than the norm. A frozen, published rubric with a
+κ attached is therefore a contribution in itself.
+
+> **Verified 2026-08-11 against the published article.** The DOI is
+> correct and the substance holds. The phrase "a central methodological
+> flaw" was in quotation marks here and is not theirs — removed. Read
+> their §on AOIs before citing it in the thesis; the paraphrase above is
+> from the article text, not from the abstract.
 
 ## 2 · What it has to satisfy
 
@@ -89,14 +97,26 @@ in ascending order of severity:
   the positive rate down and pushes κ into the region where Byrt, Bishop
   & Carlin's (1993) prevalence index dominates the statistic (§6).
 
-Rao & Callison-Burch (2026), on rubric-based LLM judges specifically:
-*"Always show the per-criterion 2×2 table alongside metrics computed from
-them. Any metric can be recomputed from a stored table, but the table
-cannot be recovered from reported metrics alone."* Their headline finding
-is that protocol choices alone — handling of ties, abstentions and
-aggregation — moved reported accuracy by **34.8 pp on identical judge
-verdicts**, which is larger than typical judge-to-judge gaps. The
-protocol is not a detail; it is most of the number.
+Rao & Callison-Burch (2026) address rubric-based LLM judges directly.
+Their reporting checklist names the judgment scale, the abstention and
+tie handling mode, coverage, **the confusion matrix**, and the
+aggregation level alongside any scalar coefficient — and their analytic
+result is that on non-degenerate binary criteria, Pearson's *r*,
+Spearman's ρ, Kendall's τ_b, φ and MCC all collapse to the same number,
+so reporting several of them "only creates an illusion of corroborating
+evidence". Cohen's κ is the one coefficient that adds information,
+because it normalises differently from φ and the gap between them
+measures how far the judge's positive-label rate has drifted from the
+human's — which is exactly the prevalence problem in §6.4, arriving
+from a second direction.
+
+> **Verified 2026-08-11 against the arXiv abstract.** Two earlier
+> claims in this section did not survive: a quoted sentence about the
+> 2×2 table, and a "34.8 pp" spread attributed to protocol choices. The
+> string "34.8" does not occur anywhere in the paper, and the quoted
+> sentence is not in it either. The *substance* — report the confusion
+> matrix, protocol choices are not neutral preprocessing — is the
+> paper's actual argument. Paraphrase it; do not quote it.
 
 So: **three independent binaries, plus a derived composite.** The
 composite is reported but is not the primary result.
@@ -110,7 +130,7 @@ signal-detection decision made by the researcher, and when fixation
 distributions to neighbouring objects overlap, a generous boundary
 manufactures false positives. Their recommendation — no margin when
 overlap is expected, >0.5° when it is not — is the spatial twin of F9,
-and is why the five region categories in §5 are drawn to be separated
+and is why the four region categories in §5 are drawn to be separated
 rather than to be small.) The windows mode is the only one that forces
 both raters onto identical, pre-declared boundaries ("Do NOT choose your
 own boundaries… The windows are fixed so that different raters describe
@@ -166,12 +186,11 @@ coder. It is deliberately long: it must be self-contained.
 > Judge each 5-second window on THREE INDEPENDENT criteria. Answer each
 > one separately; do not let one answer influence another.
 >
-> **Region categories.** Assign gaze to one of these five regions only.
+> **Region categories.** Assign gaze to one of these four regions only.
 > Do not attempt to identify individual students — the measurement
 > cannot separate them.
 > - STUDENTS — the seated pupil area, including any pupil currently
 >   speaking, standing or moving.
-> - TEACHER — the teaching adult, wherever they are.
 > - INSTRUCTIONAL SURFACE — board, screen, projection, or the material
 >   under discussion.
 > - NON-INSTRUCTIONAL — door, window, ceiling, floor, bare wall, unused
@@ -199,6 +218,16 @@ coder. It is deliberately long: it must be self-contained.
 > "not decidable from what I was shown"; FALSE means "decidable, and the
 > criterion does not hold". Name the general region rather than making
 > over-precise claims.
+
+**On the removed TEACHER category.** Four regions, not five. This is
+only safe if no teaching adult is visible in either clip. **Check both
+clips before freezing.** If an adult IS visible, decide *now* which
+region they belong to and write it into the string — looking at the
+teacher is not the same as looking at a door, so folding them into
+NON-INSTRUCTIONAL changes what C1 measures. What must not happen is
+leaving it unstated: two raters will each resolve it silently, in
+different directions, and the disagreement will look like rater
+unreliability when it is an unwritten rubric.
 
 ### Output schema change this requires
 
@@ -317,7 +346,7 @@ three-criterion one with a soft centre.
 
 **The computed Gini anchor for C3.** C3 is the one criterion whose truth
 is also computable from the gaze data with no rater at all. Gini over
-resolvable gaze time across the five regions, per window, is the
+resolvable gaze time across the four regions, per window, is the
 window-level form of the measure Cortina, Miller, McKenzie & Epstein
 (2015) and Smidekova, Janik, Minarikova & Holmqvist (2020) use at lesson
 level, and which the Keskin meta-analysis reports at *g* = 0.501. Compute
@@ -352,7 +381,95 @@ rather than hand-rolling it, and state which.
    manifest, so every session provably carries the same rubric and a
    reader can verify it. Do not edit after the first evaluation session.
 
-## 10 · References
+## 10 · Review, 2026-08-11 — five things that do not yet close
+
+Recorded here rather than fixed inline, because each is a decision, not
+an edit.
+
+### 10.1 · C1 and C3 need the AOIs the design says it does not have
+
+C1 is "more than half of the window's **resolvable gaze time** is on
+STUDENTS". C3 is "at least two regions each receive **20 % of the
+window's resolvable gaze time**". Both are proportions of gaze time
+*per region*. Computing a proportion per region requires region
+boundaries on the video — an AOI set.
+
+But `verify_metrics` reports all five `aoi_*` metrics as **"N/A by
+design: no hand-drawn AOIs"**, with the reasons frozen in
+`metrics_spec.NOT_APPLICABLE`, and that appears in every session report.
+The thesis cannot say both.
+
+The resolution is not to abandon one: it is to notice that **F9 already
+licenses coarse region AOIs and forbids only fine ones.** What F9 rules
+out is face-level attribution, because adjacent students are separated
+by less than the error. Four regions that are separated by far more than
+124 px are exactly the case F9 says *is* attributable. Draw them, and
+the N/A justification changes from "no AOIs" to "no *object-level*
+AOIs — region AOIs only, at a separation the measurement supports",
+which is a stronger claim than the one being made now.
+
+Two static clips, four polygons each, one camera position, ~20 minutes.
+Without them, §8's computed Gini anchor is not merely unbuilt — it is
+**uncomputable**, and the design loses the only non-circular reference
+it has.
+
+### 10.2 · The Gini anchor answers a different question from C3
+
+§8 says the C3 binary "is a threshold on the same quantity" as Gini. It
+is not. "At least two regions ≥ 20 %" is not a monotone function of the
+Gini coefficient: 34/33/33 across three regions and 79/21 across two
+both satisfy C3, and their Gini values are far apart; conversely two
+distributions with identical Gini can fall on opposite sides of the
+20 % rule.
+
+So κ(LLM, computed) computed against Gini would measure how well the
+model tracks a statistic nobody asked it to judge. **Define the computed
+rater with the identical decision rule** — two regions each clearing
+20 % of resolvable time — and it becomes a true third rater. Report
+Gini separately as a continuous descriptive, which is where it connects
+to Keskin's second DV. Both are worth having; they are not the same
+thing.
+
+### 10.3 · The N table is right for C1 and C3 and wrong for C2
+
+§4 gives 120/180/240 judgments "per criterion". C2 is NULL in every
+window with no marked event. Two 30 s clips will hold perhaps two or
+three salient events each, so C2's real N is roughly **4–6 per
+participant**, i.e. 40–60 at N = 10 — and κ on 50 judgments with a
+skewed positive rate has a confidence interval wide enough to cover
+most of Landis & Koch's scale, which is the exact failure Sim & Wright
+warn about. State the expected N **per criterion**, not per rubric, and
+decide in advance whether C2 is reportable at that N or is exploratory.
+
+### 10.4 · C2 references an event list that no code path supplies
+
+The canonical string says "the supplied event list marks a salient
+event". Nothing in `app.py` supplies one. The model will therefore
+decide for itself what counts as salient — which is precisely the
+circularity §8 identifies, arriving through the prompt rather than
+through the annotation.
+
+So §8's "build the event list" is not only an annotation task. The list
+has to be **injected into the prompt per clip**, and given to the human
+coder in the same form, or the two raters are answering different
+questions. That is a code change, and it is the only one C2 needs
+beyond the schema work in §5.
+
+### 10.5 · The freeze is stronger than §9.5 thinks, and unenforced
+
+§9.5 proposes recording the SHA-256 of the canonical string. But
+`app.py:1991` already writes **the rubric text itself** into the
+manifest. Storing the text strictly dominates storing a hash: a hash
+detects drift, the text also tells you what it drifted to.
+
+What is missing is not a hash — it is a *check*. `verify_metrics.py
+--rubric` now collects the rubric from every evaluation session and
+fails if they are not byte-identical, naming the sessions that differ.
+That converts §6 of the freeze protocol from a discipline into a
+mechanism, which is the only form of freeze that survives a long
+collection period.
+
+## 11 · References
 
 - Byrt, T., Bishop, J., & Carlin, J. B. (1993). Bias, prevalence and
   kappa. *Journal of Clinical Epidemiology, 46*(5), 423–429.
@@ -376,6 +493,10 @@ rather than hand-rolling it, and state which.
   Eye-tracking research on teacher professional vision: A meta-analytic
   review. *Educational Research Review, 42*, 100586.
   https://doi.org/10.1016/j.edurev.2023.100586
+  *Verified: real, 98 studies, meta-analyses gaze proportion AND the
+  Gini coefficient, direction as stated. The effect sizes quoted in §3
+  (g = 0.926, g = 0.501) are NOT confirmable from any open source —
+  read them off the PDF before either number enters the thesis.*
 - Landis, J. R., & Koch, G. G. (1977). The measurement of observer
   agreement for categorical data. *Biometrics, 33*(1), 159–174.
 - Norman, J. D., Rivera, M. U., & Hughes, D. A. (2026). Reliability
@@ -386,8 +507,10 @@ rather than hand-rolling it, and state which.
   interest as a signal detection problem in behavioral eye-tracking
   research. *Journal of Behavioral Decision Making, 29*(2–3), 103–115.
   https://doi.org/10.1002/bdm.1867
-- Rao, D., & Callison-Burch, C. (2026). Agreement measurement for
-  rubric-based LLM judges: What to report and why. arXiv:2606.00093.
+- Rao, D., & Callison-Burch, C. (2026). Agreement metrics for
+  LLM-as-Judge evaluation: What to report and why. arXiv:2606.00093
+  (submitted 25 May 2026). *Note: the arXiv listing title and the HTML
+  render differ; this is the canonical one.*
 - Sim, J., & Wright, C. C. (2005). The kappa statistic in reliability
   studies: Use, interpretation, and sample size requirements. *Physical
   Therapy, 85*(3), 257–268.
