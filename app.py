@@ -2659,6 +2659,13 @@ def handle_validation_result(payload: dict):
         # to accuracy, as is standard in eye-tracking method sections)
         "mean_precision_px": payload.get("mean_precision_px"),
         "mean_precision_deg": payload.get("mean_precision_deg"),
+        # RATE-INDEPENDENT precision. mean_precision_px is a
+        # sample-to-sample RMS, so it depends on how far apart in time
+        # consecutive samples are: raising the poll rate from 7 to
+        # 30 Hz exposes high-frequency noise decimation was hiding and
+        # the figure rises even though the signal is unchanged. This
+        # one is dispersion about the target median and does not.
+        "mean_precision_sd_px": payload.get("mean_precision_sd_px"),
         # Whether a gain correction was active while this validation
         # was measured (pre before fit: raw; post: usually corrected)
         "correction_active": _correction_payload(state.get("correction")),
