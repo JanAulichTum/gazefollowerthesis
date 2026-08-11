@@ -1796,7 +1796,44 @@ try:
                   _CG.estimate_distance(62.0, geometry=_cal)["sources"]))
     check("uncertainty sources combine in quadrature, not additively",
           abs(_CG.estimate_distance(62.0, geometry={})["relative_sd_pct"]
-              - 100 * math.hypot(0.10, 0.4 / 6.3)) < 0.2)
+              - 100 * math.hypot(0.10, 0.4 / 6.3)) < 0.2,
+          "%.1f %%" % _CG.estimate_distance(
+              62.0, geometry={})["relative_sd_pct"])
+
+    # THE BUG THIS BLOCK ONLY FOUND ON THE COLLECTION MACHINE.
+    # estimate_distance did `geometry = geometry or load()`, so an empty
+    # dict — meaning "model an uncalibrated camera" — fell through to
+    # whatever calibration happened to be saved on that machine. Every
+    # assertion above passed on a machine with no calibration file and
+    # failed on the one that had actually been calibrated, which is
+    # precisely backwards: the test broke when the setup was finished.
+    #
+    # Simulate a saved calibration and assert the two are now distinct.
+    import json as _json
+    import tempfile as _tf
+
+    _had = os.path.exists(_CG.GEOMETRY_FILE)
+    if not _had:
+        os.makedirs(os.path.dirname(_CG.GEOMETRY_FILE), exist_ok=True)
+        with open(_CG.GEOMETRY_FILE, "w", encoding="utf-8") as _fh:
+            _json.dump({"focal_px": 652.8, "image_w_px": 640,
+                        "known_distance_cm": 60.0, "distance_sd_cm": 1.0,
+                        "implied_hfov_deg": 52.2}, _fh)
+    try:
+        _empty = _CG.estimate_distance(62.0, geometry={})
+        _auto = _CG.estimate_distance(62.0)
+        check("an EMPTY geometry means uncalibrated, not 'go and load one'",
+              _empty["focal_measured"] is False,
+              "focal_measured=%s" % _empty["focal_measured"])
+        check("omitting geometry entirely DOES use the saved calibration",
+              _auto["focal_measured"] is True)
+        check("so the two give different uncertainty budgets",
+              abs(_empty["relative_sd_pct"] - _auto["relative_sd_pct"]) > 1.0,
+              "%.1f vs %.1f %%" % (_empty["relative_sd_pct"],
+                                   _auto["relative_sd_pct"]))
+    finally:
+        if not _had:
+            os.remove(_CG.GEOMETRY_FILE)
     # Degrees must carry the distance uncertainty through.
     _d = _CG.degrees_with_uncertainty(129.7, 58.5, 3.8)
     check("degrees are reported with a 95 % interval",
