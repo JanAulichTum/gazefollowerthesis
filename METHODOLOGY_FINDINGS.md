@@ -378,6 +378,50 @@ For the thesis: state that the audit log stores images as SHA-256
 references and only the local replay file holds pixels, and that the
 published artefact set is JSON metrics with pseudonymised labels.
 
+## F19 · The model names correctly and localises badly — and the gap
+## between strict and lenient proves the tracker is not the cause
+**2026-08-11 · Results (RQ3) · PROVISIONAL, development session**
+
+Session `13:47 11.08`, 59 claims, all 59 localised, tracker accuracy
+0.90° out-of-sample:
+
+| | |
+|---|---|
+| strict (gaze inside the claimed box) | **16.9 %** |
+| lenient (adds misses smaller than the session's own error) | **28.8 %** |
+| human coding of the same session, semantic | **88 % correct** |
+
+The lenient rule adds only **11.9 percentage points**. That is the
+informative part. If the tracker's error were responsible for the
+misses, relaxing the criterion by exactly that error would recover
+most of them; it recovers a fifth. **The misses are much larger than
+the measurement error**, which exonerates the tracker without needing
+a separate argument — and matches the earlier observation of shared
++160 and +404 px offsets.
+
+Against that, a human watching the replay judged 88 % of the claims
+correct. The two are not in conflict: they measure different things.
+The human is asking *did it name the right object*; the correspondence
+metric is asking *did it put the box where the participant looked*.
+
+So the finding is: **the model identifies plausible attended content
+but cannot localise it**, and a marker burned into the frame is enough
+for it to name something without being able to place it. This is a
+result about multimodal LLMs as an eye-tracking analysis instrument,
+not a defect in the pipeline — and it is the direct justification for
+the inverse check (`inverse_check.py`), where localisation is done on
+CLEAN frames with no gaze present and the assignment is arithmetic.
+
+Consequence for the design: report correspondence as a PAIR (strict,
+lenient) with the accuracy that separates them, never as one number.
+Treat the LLM's own boxes as evidence about the model, and the inverse
+check as the attribution instrument.
+
+The inverse check is post-hoc analysis over recorded fixations and
+clean frames — it consumes nothing from the session protocol, so it
+can be built after collection without splitting participants across
+pipeline versions.
+
 ---
 
 ## Open items before evaluation collection
