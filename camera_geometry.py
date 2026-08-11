@@ -450,6 +450,81 @@ def measure_live(seconds: float = 6.0, camera: int = 0,
     }
 
 
+def _verify(tape_cm: float, seconds: float = 6.0, width: int = 640) -> int:
+    """Does the SAVED focal length reproduce a tape measurement?
+
+    CALIBRATION IS NOT VALIDATION, and the difference is the whole
+    point of this function. ``--calibrate 60`` SOLVES the focal length
+    so that 60 cm comes out; asking it afterwards whether it reads 60 cm
+    is asking a fit to score itself, and it will always pass. Running it
+    again at a new distance does not help either — it just replaces the
+    constant, and the check stays circular.
+
+    This one measures with the constant it already has and compares
+    against an independent tape reading. Nothing is written, so the
+    check cannot quietly become a refit.
+
+    Verify at a distance DIFFERENT from the one you calibrated at. A
+    ruler that is right at its own fit point and wrong 15 cm away is not
+    a ruler, and participants will not all sit where you sat.
+    """
+    geom = load() or {}
+    focal = geom.get("focal_px")
+    print("=" * 68)
+    print("  VERIFY THE RULER — no refit, nothing is written")
+    print("=" * 68)
+    if not focal:
+        print("  No saved calibration to verify. Run:")
+        print("      python camera_geometry.py --calibrate <cm> --measure")
+        return 1
+    print("  saved focal        : %.1f px  (calibrated at %s cm)"
+          % (focal, geom.get("known_distance_cm", "?")))
+    print("  tape says          : %.1f cm" % tape_cm)
+    print("  Sit at exactly that distance, camera lens to the bridge of")
+    print("  your nose, and hold still for %.0f s…" % seconds)
+    print()
+
+    live = measure_live(seconds, width=width)
+    if not live:
+        return 1
+
+    import iris_distance
+
+    est = iris_distance.distance_from_iris(live["iris_px"], focal)
+    if not est:
+        print("  no usable iris measurement")
+        return 1
+    got = est["distance_cm"]
+    err_pct = 100.0 * abs(got - tape_cm) / tape_cm
+
+    print("  iris               : %.2f px (spread %.1f %% over %d frames)"
+          % (live["iris_px"], live["iris_spread_pct"], live["n_frames"]))
+    print("  iris says          : %.1f cm" % got)
+    print("  disagreement       : %.1f %%" % err_pct)
+    print()
+    if live["iris_spread_pct"] > 3.0:
+        print("  SPREAD %.1f %% — you moved. That is not a verification of"
+              % live["iris_spread_pct"])
+        print("  the ruler, it is a measurement of your head. Re-run.")
+        return 1
+    if err_pct <= 5.0:
+        print("  PASS — the saved focal length reproduces an independent")
+        print("  measurement to within %.1f %%, which is inside the iris"
+              % err_pct)
+        print("  ruler's own ~4 %% biological spread. Distances, and so")
+        print("  every accuracy figure in degrees, are trustworthy at")
+        print("  this distance.")
+        return 0
+    print("  FAIL — %.1f %% off. Every degree figure scales with the" % err_pct)
+    print("  distance, so an accuracy of 1.0 deg measured this way is")
+    print("  really %.2f deg. Check the tape (lens to nose bridge, not"
+          % (1.0 * tape_cm / got if got else 0.0))
+    print("  to the laptop edge) before re-calibrating — a bad tape")
+    print("  reading is the usual cause, and re-calibrating on it bakes")
+    print("  the error in permanently.")
+    return 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--calibrate", type=float, metavar="CM",
@@ -467,10 +542,16 @@ def main() -> int:
     ap.add_argument("--image-w", type=int, default=640)
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--sensitivity", type=float, metavar="ERROR_PX")
+    ap.add_argument("--verify", type=float, metavar="CM",
+                    help="check the SAVED focal length against a tape "
+                         "measurement WITHOUT refitting it")
     args = ap.parse_args()
 
     if args.sensitivity:
         return _sensitivity(args.sensitivity)
+
+    if args.verify:
+        return _verify(args.verify, args.seconds, args.image_w)
 
     if args.show:
         g = load()

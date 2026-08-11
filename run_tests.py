@@ -2810,6 +2810,28 @@ try:
     importlib.reload(_tsmod)
     check("the shared mesh helper returns None instead of raising",
           _tsmod.refined_landmarks_for_frame(None) is None)
+
+    # ── Verifying the ruler must not be able to become a refit ───────
+    # --calibrate 60 SOLVES the focal so that 60 comes out; asking it
+    # afterwards whether it reads 60 is a fit scoring itself.
+    _cg = read("camera_geometry.py")
+    _ver = _cg.split("def _verify")[1].split("\ndef ")[0]
+    check("there is a verify mode that does not refit",
+          '"--verify"' in _cg and "def _verify" in _cg)
+    check("verify writes nothing",
+          "save(" not in _ver and "json.dump" not in _ver)
+    check("verify uses the SAVED focal, not a fresh solve",
+          "load() or {}" in _ver and "calibrate(" not in _ver)
+    check("verify says why calibration is not validation",
+          "CALIBRATION IS NOT VALIDATION" in _cg
+          and "circular" in _cg)
+    check("verify fails on a head that moved, before judging the ruler",
+          "you moved" in _ver and _ver.index("you moved")
+          < _ver.index("PASS —"))
+    check("a failure states the consequence in degrees",
+          "really %.2f deg" in _ver)
+    check("the launcher offers verify separately from calibrate",
+          "camera_geometry.py --verify" in read("windows/START.bat"))
     check("the launcher offers the probe",
           "tracker_service.py --distance" in read("windows/START.bat"))
 
