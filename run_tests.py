@@ -2674,6 +2674,40 @@ try:
     check("a fixation with no claim near it matches nothing",
           not _overlap_hits(9.9, 0.2))
 
+    # ── The keyframe cap: what the model was never shown ─────────────
+    # 71 fixations, LLM_MAX_FRAMES=60, and sample_gaze_frames keeps the
+    # LONGEST. So 11 fixations were dropped and nothing recorded which,
+    # while the coding tool presented all 71 and invited a verdict on
+    # claims that were never made.
+    check("the frames the model saw are recorded with the result",
+          '"frame_times"' in _app3 and '"frames_dropped"' in _app3)
+    check("a cap that drops fixations is logged as a warning",
+          "LLM saw %d of %d fixations" in _app3)
+    check("the coder marks fixations the model never saw",
+          '"shown_to_model"' in _app3 and "def _was_shown" in _app3)
+    check("...and says so instead of showing an empty claim",
+          "NOT SHOWN TO THE MODEL" in _coder)
+    check("an unknown frame list assumes shown, rather than accusing",
+          "unknown: assume yes rather than accuse" in _app3)
+
+    # ── The off-by-one ───────────────────────────────────────────────
+    check("claim/frame alignment is checked, not eyeballed",
+          "def alignment_check" in _cc and "best_shift" in _cc)
+    _ft = sorted(round(0.37 * i + (i % 7) * 0.11, 1) for i in range(40))
+    _aligned = _ccmod.alignment_check(
+        [{"t_start": t, "t_end": t} for t in _ft], _ft)
+    _ahead = _ccmod.alignment_check(
+        [{"t_start": _ft[i + 1], "t_end": _ft[i + 1]}
+         for i in range(len(_ft) - 1)], _ft)
+    check("aligned claims report no shift",
+          _aligned["systematically_shifted"] is False)
+    check("claims describing the NEXT frame are caught",
+          _ahead["systematically_shifted"] is True
+          and _ahead["best_shift"] == 1,
+          "shift %+d" % _ahead["best_shift"])
+    check("a shift is only called when it fits much better than none",
+          "best_err < 0.5 * zero_err" in _cc)
+
     # ── The Windows launcher ─────────────────────────────────────────
     # A menu that offers a script which does not exist fails at the
     # worst possible moment: with a participant sitting there. Batch

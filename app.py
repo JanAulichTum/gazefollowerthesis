@@ -752,14 +752,16 @@ def api_coding_units():
     # coding problem and is not one.
     claims = []
     claims_source = None
+    frame_times = []
     mpath = os.path.join(GAZEFOLLOWER_CSV_DIR, session + "_manifest.json")
     accuracy_deg = None
     if os.path.isfile(mpath):
         try:
             with open(mpath, encoding="utf-8") as fh:
                 man = json.load(fh)
-            claims = ((man.get("llm") or {}).get(stimulus) or {}).get(
-                "structured") or []
+            _blk = (man.get("llm") or {}).get(stimulus) or {}
+            claims = _blk.get("structured") or []
+            frame_times = _blk.get("frame_times") or []
             if claims:
                 claims_source = "session manifest"
             import claim_check
@@ -801,12 +803,25 @@ def api_coding_units():
         hits.sort(key=lambda h: h[0])
         return hits[0][1] if hits else None
 
+    # Was this fixation SHOWN to the model?
+    # If it was not, no claim about it can be right or wrong — the model
+    # was never asked. Marking these rather than hiding them keeps the
+    # denominator honest: "the model saw 60 of 71 fixations" is a fact
+    # about the pipeline that belongs in the results, not a detail to
+    # quietly drop.
+    def _was_shown(mid: float) -> bool:
+        if not frame_times:
+            return True          # unknown: assume yes rather than accuse
+        return any(abs(float(t) - mid) <= 0.25 for t in frame_times)
+
     units = []
     for i, f in enumerate(fixations):
         mid = f.t_start + (f.duration / 2.0)
         matched = _match(f)
         near = [matched] if matched else []
+        shown = _was_shown(mid)
         units.append({
+            "shown_to_model": shown,
             "index": i,
             "t_start": round(f.t_start, 3),
             "t_end": round(f.t_start + f.duration, 3),
@@ -819,7 +834,10 @@ def api_coding_units():
             "model_confidence": (near[0].get("confidence") if near else None),
         })
     matched = sum(1 for u in units if u["model_claim"])
+    n_shown = sum(1 for u in units if u.get("shown_to_model"))
     return {"units": units, "stimulus": stimulus,
+            "n_shown_to_model": n_shown,
+            "n_frames_sent": len(frame_times),
             "participant": participant, "session": session,
             "accuracy_deg": accuracy_deg,
             "n_claims": len(claims),
@@ -1647,6 +1665,25 @@ def api_llm_feedback():
         except Exception:
             logger.exception("Frame annotation failed — stats-only feedback")
 
+    # Every fixation in the recording, so the number the model SAW can
+    # be compared against the number that exist. The gap is what makes
+    # the tail of a long recording unexplainable.
+    _all_fix_times = []
+    try:
+        from fixations import detect_fixations_df
+
+        _all_fix_times = [round(f.t_mid, 1) for f in detect_fixations_df(df)]
+    except Exception:  # noqa: BLE001
+        _all_fix_times = []
+    if _all_fix_times and frames and len(_all_fix_times) > len(frames):
+        logger.warning(
+            "LLM saw %d of %d fixations (LLM_MAX_FRAMES=%d). "
+            "sample_gaze_frames keeps the LONGEST fixations, so the "
+            "%d dropped are the SHORTEST — any claim about them is "
+            "unfounded, and the coding tool must not present them.",
+            len(frames), len(_all_fix_times), LLM_MAX_FRAMES,
+            len(_all_fix_times) - len(frames))
+
     log_ctx = {"participant": participant, "stimulus": stimulus,
                "session": session, "rubric": rubric, "n_runs": n_runs,
                "detail": detail}
@@ -1940,6 +1977,23 @@ def api_llm_feedback():
             "n_runs": n_runs,
             "keyframe_method": frames[0]["method"] if frames else None,
             "frames_used": len(frames),
+            # WHICH fixations the model actually saw.
+            # sample_gaze_frames caps at LLM_MAX_FRAMES and, when there
+            # are more fixations than that, keeps the LONGEST ones. So a
+            # 71-fixation recording sends 60 frames and drops 11 — and
+            # nothing downstream knew which 11. The coding tool showed
+            # all 71 and invited a human to judge claims that were never
+            # made about fixations the model never saw.
+            #
+            # Recording the timestamps makes the sampled set explicit
+            # everywhere afterwards, and makes the gap visible instead
+            # of leaving it to be discovered by a coder wondering why
+            # the tail is nonsense.
+            "frame_times": [f.get("t") for f in frames],
+            "n_fixations_total": len(_all_fix_times) if _all_fix_times
+            else None,
+            "frames_dropped": (len(_all_fix_times) - len(frames))
+            if _all_fix_times else None,
             "chained": bool(scene_description),
             "measured_error_px": error_px,
             "structured": first["structured"],
@@ -3336,7 +3390,8 @@ def _persist_llm_result(session: str, stimulus: str, block: dict) -> None:
                 vw = int(rect.get("w") or 1920)
                 vh = int(rect.get("h") or 1080)
                 scored = claim_check.check_all(
-                    claims, samples, acc, ppd, vw, vh)
+                    claims, samples, acc, ppd, vw, vh,
+                    frame_times=block.get("frame_times"))
                 scored["accuracy_source"] = acc_src
                 block["correspondence"] = scored
             else:

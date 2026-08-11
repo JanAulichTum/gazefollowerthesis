@@ -159,8 +159,18 @@
     $('claimSource').textContent = d.claims_source
         ? (d.n_claims + ' claims from the ' + d.claims_source
            + ' · ' + d.n_matched + ' of ' + units.length
-           + ' fixations matched')
+           + ' fixations matched'
+           + (d.n_frames_sent
+               ? '  ·  the model was shown ' + d.n_frames_sent + ' of '
+                 + units.length + ' fixations'
+               : ''))
         : '';
+    if (d.n_frames_sent && d.n_frames_sent < units.length) {
+        showError('The model was shown only ' + d.n_frames_sent + ' of '
+          + units.length + ' fixations — the keyframe sampler kept the '
+          + 'LONGEST ones. The ' + (units.length - d.n_frames_sent)
+          + ' it never saw are marked and should be coded unclear.');
+    }
 
     const prev = await (await fetch('/api/coding_load?' + new URLSearchParams({
       coder: coder, session: meta.session, stimulus: meta.stimulus }))).json();
@@ -193,10 +203,21 @@
       't = ' + u.t_mid.toFixed(2) + ' s · duration ' + u.duration_ms
       + ' ms · position (' + u.x.toFixed(2) + ', ' + u.y.toFixed(2) + ')';
 
-    const claim = u.model_claim
-      ? ('The model says: "' + u.model_claim + '"'
-         + (u.model_confidence ? ' (confidence: ' + u.model_confidence + ')' : ''))
-      : 'No model claim covers this fixation.';
+    // A fixation the model was never shown cannot be scored. Saying so
+    // is not the same as "the model had no comment": one is a gap in
+    // the pipeline, the other is a judgment, and coding the first as
+    // "wrong" would blame the model for a frame it never received.
+    let claim;
+    if (u.shown_to_model === false) {
+      claim = 'NOT SHOWN TO THE MODEL — this fixation was dropped when '
+        + 'the keyframes were sampled, so there is nothing to judge. '
+        + 'Press 3 (unclear) and move on.';
+    } else if (u.model_claim) {
+      claim = 'The model says: "' + u.model_claim + '"'
+        + (u.model_confidence ? ' (confidence: ' + u.model_confidence + ')' : '');
+    } else {
+      claim = 'No model claim covers this fixation.';
+    }
     $('claimText').textContent = claim;
     $('claimText').hidden = !revealed;
     $('claimHidden').hidden = revealed;

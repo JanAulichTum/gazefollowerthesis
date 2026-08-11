@@ -247,7 +247,8 @@ def check_claim(claim: dict, samples: list, accuracy_deg: float,
 
 
 def check_all(claims: list, samples: list, accuracy_deg: float,
-              px_per_deg: float, video_w: int, video_h: int) -> dict:
+              px_per_deg: float, video_w: int, video_h: int,
+              frame_times: "list | None" = None) -> dict:
     results = [check_claim(c, samples, accuracy_deg, px_per_deg,
                            video_w, video_h) for c in claims]
     counts = {k: sum(1 for r in results if r["verdict"] == k)
@@ -291,9 +292,81 @@ def check_all(claims: list, samples: list, accuracy_deg: float,
         #             that has learned nothing about THIS recording,
         #             only about where people usually look, would score.
         "box_reuse": box_reuse(claims),
+        "alignment": alignment_check(claims, frame_times),
         "gaze_summary": gaze_summary(samples),
         "offset_analysis": offset_analysis(results, px_per_deg,
                                            video_w, video_h, accuracy_deg),
+    }
+
+
+def alignment_check(claims: list, frame_times: list) -> "dict | None":
+    """Is claim i about frame i, or about its neighbour?
+
+    THE SYMPTOM THIS EXPLAINS
+    -------------------------
+    "Before the fixation it was saying it was the space on the left,
+    one screenshot before I looked left." That is a claim describing
+    the NEXT frame — an off-by-one, and it is invisible per claim
+    because each one is individually plausible.
+
+    Two causes produce it, and they need different fixes:
+
+      the model TRANSCRIBED the times wrong. Each frame is labelled
+        "t=X.Xs" and the model is asked to copy that into t_start. If
+        it instead counts frames and spaces them evenly, the times
+        drift wherever the real fixations are unevenly spaced — small
+        error early, large error late.
+
+      the model ANSWERED about the wrong frame, reading frame i+1 while
+        emitting frame i's timestamp.
+
+    Both show up as a systematic shift between the claim times and the
+    frame times that were actually sent. Trying every integer shift and
+    reporting which one minimises the mismatch distinguishes "the model
+    is one behind" from "the times are simply noisy", which eyeballing
+    a list of plausible sentences cannot.
+    """
+    ts = [float(c["t_start"]) for c in claims
+          if isinstance(c, dict) and c.get("t_start") is not None]
+    ft = [float(t) for t in (frame_times or []) if t is not None]
+    if len(ts) < 8 or len(ft) < 8:
+        return None
+
+    def _cost(shift: int) -> "tuple":
+        pairs = []
+        for i, t in enumerate(ts):
+            j = i + shift
+            if 0 <= j < len(ft):
+                pairs.append(abs(t - ft[j]))
+        if len(pairs) < 5:
+            return (1e9, 0)
+        pairs.sort()
+        return (pairs[len(pairs) // 2], len(pairs))
+
+    best = min(range(-3, 4), key=lambda s: _cost(s)[0])
+    best_err, n = _cost(best)
+    zero_err, _ = _cost(0)
+
+    # A shift only counts as real if it explains the mismatch much
+    # better than no shift at all. Otherwise the times are noisy and a
+    # shift is fitting that noise.
+    shifted = bool(best != 0 and best_err < 0.5 * zero_err)
+    return {
+        "n_claims": len(ts), "n_frames": len(ft),
+        "best_shift": best,
+        "median_error_s_at_best": round(best_err, 3),
+        "median_error_s_at_zero": round(zero_err, 3),
+        "systematically_shifted": shifted,
+        "count_mismatch": len(ts) - len(ft),
+        "reading": (
+            "OFF BY %+d — claim i lines up with frame i%+d (mismatch "
+            "%.2f s) far better than with frame i (%.2f s). The model "
+            "is answering about a neighbouring frame, or copying the "
+            "wrong label." % (best, best, best_err, zero_err)
+            if shifted else
+            "Claim times line up with the frames that were sent "
+            "(median mismatch %.2f s). No systematic shift."
+            % zero_err),
     }
 
 
@@ -738,8 +811,10 @@ def main() -> int:
                          float(scr.get("diag_inches") or 15.6), float(dist))
     rect = next(s for s in manifest["stimuli"]
                 if s.get("stimulus") == stimulus)["video_rect"]
+    _blk = (manifest.get("llm") or {}).get(stimulus) or {}
     res = check_all(claims, samples, acc, ppd,
-                    int(rect.get("w") or 1920), int(rect.get("h") or 1080))
+                    int(rect.get("w") or 1920), int(rect.get("h") or 1080),
+                    frame_times=_blk.get("frame_times"))
     res.update(session=session, stimulus=stimulus, llm_log=src,
                accuracy_source=acc_src, n_gaze_samples=len(samples))
 
@@ -818,6 +893,19 @@ def main() -> int:
         print("  the marker on screen does NOT sit where this says, the")
         print("  fault is the screen-to-video mapping in THIS script, not")
         print("  the model — and every verdict above is void.")
+
+    al = res.get("alignment")
+    if al:
+        print()
+        print("  " + "-" * 68)
+        print("  ARE THE CLAIMS ALIGNED WITH THE FRAMES?")
+        print("  " + "-" * 68)
+        print("  %d claims against %d frames actually sent%s"
+              % (al["n_claims"], al["n_frames"],
+                 ("  (%+d)" % al["count_mismatch"])
+                 if al["count_mismatch"] else ""))
+        for line in _wrap(al["reading"], 68):
+            print("  " + line)
 
     br = res.get("box_reuse") or {}
     if br.get("rows"):
