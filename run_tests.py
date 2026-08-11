@@ -2752,6 +2752,16 @@ try:
                "quality_report.py")))
     check("claim_check --latest searches both too",
           'DATA_DIR, "study"' in _cc)
+    # A tool left globbing only the old folder goes blind on day one,
+    # and the failure is silent — it simply reports fewer sessions.
+    check("NO tool still globs gazefollower_raw alone",
+          not any("glob(os.path.join(RAW_DIR" in read(f) for f in
+                  ("verify_metrics.py", "calibration_diagnosis.py",
+                   "inverse_check.py", "share_results.py",
+                   "quality_report.py", "anonymise_manifests.py",
+                   "backfill_manifests.py")))
+    check("share_results publishes from both directories",
+          '("manifests", _session_glob())' in read("share_results.py"))
     check("raw participant data in data/study is NOT published",
           any(l.strip() == "data/study/" for l in read(".gitignore")
               .splitlines()))

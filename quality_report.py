@@ -430,7 +430,7 @@ def _center_verdict(findings: "list[str]") -> None:
 
 
 def main() -> None:
-    paths = sys.argv[1:] or sorted(glob.glob(os.path.join(RAW_DIR, "*.csv")))
+    paths = sys.argv[1:] or _session_glob("*.csv")
     if not paths:
         print("No session CSVs found in", RAW_DIR)
         return

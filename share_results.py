@@ -160,8 +160,7 @@ def main() -> int:
         _pseudonym(name, mapping)
 
     sources = [
-        ("manifests", sorted(glob.glob(
-            os.path.join(RAW_DIR, "*_manifest.json")))),
+        ("manifests", _session_glob()),
         ("coding", sorted(glob.glob(os.path.join(CODING_DIR, "*.json")))),
         ("telemetry", sorted(glob.glob(
             os.path.join(BASE, "data", "*_telemetry.json")))),
