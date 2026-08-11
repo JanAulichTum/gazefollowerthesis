@@ -64,6 +64,8 @@ from config import (
     GEMINI_MODEL,
     LLM_LOG_DIR,
     LLM_MAX_FRAMES,
+    LLM_TIMEOUT_BASE_S,
+    LLM_TIMEOUT_PER_FRAME_S,
     LLM_N_RUNS_MAX,
     LLM_WINDOW_SECONDS,
     MAX_VALIDATION_ERROR_DEG,
@@ -1417,7 +1419,14 @@ def _call_gemini(api_key: str, parts: "str | list",
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            # Scale with the payload. A constant was already marginal
+            # at 60 frames (one request timed out and succeeded on
+            # retry) and 200 frames is several times the upload.
+            _n_imgs = sum(1 for p in (parts if isinstance(parts, list) else [])
+                          if isinstance(p, dict)
+                          and ("inline_data" in p or "inlineData" in p))
+            _timeout = LLM_TIMEOUT_BASE_S + LLM_TIMEOUT_PER_FRAME_S * _n_imgs
+            with urllib.request.urlopen(req, timeout=_timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             used_config = body["generationConfig"]
             break

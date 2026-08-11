@@ -47,9 +47,32 @@ GEMINI_API_KEY = _load_gemini_key()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash").strip()
 
 # Max annotated frames per AI-feedback request. All frames travel in ONE
-# API call. 60 ≈ one frame per 2 s on a 2-min video (~16k input tokens) —
-# dense but comfortably within Gemini's free-tier per-request limits.
-LLM_MAX_FRAMES = int(os.environ.get("LLM_MAX_FRAMES", "60"))
+# API call.
+#
+# RAISED 60 -> 200 on 2026-08-11, and this is a methods fact rather than
+# a tuning choice. A 30 s recording produced 71 fixations; the cap sent
+# 60 of them and sample_gaze_frames keeps the LONGEST, so the 11 dropped
+# were the SHORTEST. Human coding then scored fixations 0-61 at 88 %
+# correct and 62-70 at 0 % — a cliff that was the sampler, not the
+# model, because those frames were never sent.
+#
+# 200 covers a 30 s clip completely and a several-minute stimulus at a
+# realistic fixation rate. The cost is real: 200 images in one request
+# is a large payload, so LLM_REQUEST_TIMEOUT_S scales with the frame
+# count rather than sitting at a constant that was chosen for 60.
+#
+# If the cap ever binds again the run logs it and records
+# frames_dropped in the manifest, so the shortfall can never again be
+# discovered by a human coder wondering why the tail is nonsense.
+LLM_MAX_FRAMES = int(os.environ.get("LLM_MAX_FRAMES", "200"))
+
+# Seconds to wait for one Gemini call. A constant 120 s was already
+# marginal at 60 frames — one request timed out and succeeded on retry
+# — and 200 frames is a much larger upload. Scale with the payload:
+# a floor for the small stats-only calls, plus an allowance per frame.
+LLM_TIMEOUT_BASE_S = int(os.environ.get("LLM_TIMEOUT_BASE_S", "90"))
+LLM_TIMEOUT_PER_FRAME_S = float(os.environ.get("LLM_TIMEOUT_PER_FRAME_S",
+                                               "2.0"))
 
 # Every LLM request/response is logged here (audit trail for the thesis:
 # model, prompts, parameters, raw responses — images are logged as
