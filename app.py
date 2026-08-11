@@ -64,6 +64,8 @@ from config import (
     GEMINI_MODEL,
     LLM_LOG_DIR,
     LLM_MAX_FRAMES,
+    LLM_TIMEOUT_BASE_S,
+    LLM_TIMEOUT_PER_FRAME_S,
     LLM_N_RUNS_MAX,
     LLM_WINDOW_SECONDS,
     MAX_VALIDATION_ERROR_DEG,
@@ -744,29 +746,84 @@ def api_coding_units():
     except Exception as exc:  # noqa: BLE001
         return {"units": [], "error": "fixation detection failed: %s" % exc}
 
-    # The model's claims, if a feedback run has been stored.
+    # The model's claims. TWO sources, in order, because the manifest
+    # write-back is recent: sessions whose feedback was generated before
+    # it exists have an empty llm block, and the only record of what the
+    # model said is the log directory. Without the fallback every
+    # fixation reads "no model claim covers this", which looks like a
+    # coding problem and is not one.
     claims = []
+    claims_source = None
+    frame_times = []
     mpath = os.path.join(GAZEFOLLOWER_CSV_DIR, session + "_manifest.json")
     accuracy_deg = None
     if os.path.isfile(mpath):
         try:
             with open(mpath, encoding="utf-8") as fh:
                 man = json.load(fh)
-            claims = ((man.get("llm") or {}).get(stimulus) or {}).get(
-                "structured") or []
+            _blk = (man.get("llm") or {}).get(stimulus) or {}
+            claims = _blk.get("structured") or []
+            frame_times = _blk.get("frame_times") or []
+            if claims:
+                claims_source = "session manifest"
             import claim_check
 
             accuracy_deg = claim_check._accuracy_deg(man)[0]
         except Exception:  # noqa: BLE001
             pass
+    if not claims:
+        try:
+            import claim_check
+
+            claims, log_path = claim_check.load_claims(session)
+            if claims:
+                claims_source = "log: %s" % os.path.basename(log_path or "?")
+        except Exception:  # noqa: BLE001
+            pass
+
+    # OVERLAP, not proximity to the midpoint.
+    # A claim in "fixations" mode names an INSTANT (t_start == t_end);
+    # a fixation has DURATION. Comparing the claim's start against the
+    # fixation's midpoint misses whenever the fixation is long — a
+    # 900 ms fixation puts its midpoint 450 ms from the claim that
+    # names its onset. Match anything landing inside the fixation, plus
+    # a margin for the sampling interval, and take the nearest.
+    MATCH_MARGIN_S = 0.35
+
+    def _match(f):
+        lo = f.t_start - MATCH_MARGIN_S
+        hi = f.t_start + f.duration + MATCH_MARGIN_S
+        hits = []
+        for c in claims:
+            if not isinstance(c, dict):
+                continue
+            cs = float(c.get("t_start") or 0)
+            ce = float(c.get("t_end") or cs)
+            if ce >= lo and cs <= hi:
+                centre = f.t_start + f.duration / 2.0
+                hits.append((abs((cs + ce) / 2.0 - centre), c))
+        hits.sort(key=lambda h: h[0])
+        return hits[0][1] if hits else None
+
+    # Was this fixation SHOWN to the model?
+    # If it was not, no claim about it can be right or wrong — the model
+    # was never asked. Marking these rather than hiding them keeps the
+    # denominator honest: "the model saw 60 of 71 fixations" is a fact
+    # about the pipeline that belongs in the results, not a detail to
+    # quietly drop.
+    def _was_shown(mid: float) -> bool:
+        if not frame_times:
+            return True          # unknown: assume yes rather than accuse
+        return any(abs(float(t) - mid) <= 0.25 for t in frame_times)
 
     units = []
     for i, f in enumerate(fixations):
         mid = f.t_start + (f.duration / 2.0)
-        near = [c for c in claims
-                if isinstance(c, dict)
-                and abs(float(c.get("t_start") or 0) - mid) <= 0.6]
+        matched = _match(f)
+        near = [matched] if matched else []
+        shown = _was_shown(mid)
         units.append({
+            "shown_to_model": shown,
             "index": i,
             "t_start": round(f.t_start, 3),
             "t_end": round(f.t_start + f.duration, 3),
@@ -778,10 +835,27 @@ def api_coding_units():
             "model_bbox": (near[0].get("bbox") if near else None),
             "model_confidence": (near[0].get("confidence") if near else None),
         })
+    matched = sum(1 for u in units if u["model_claim"])
+    n_shown = sum(1 for u in units if u.get("shown_to_model"))
     return {"units": units, "stimulus": stimulus,
+            "n_shown_to_model": n_shown,
+            "n_frames_sent": len(frame_times),
             "participant": participant, "session": session,
             "accuracy_deg": accuracy_deg,
-            "n_claims": len(claims)}
+            "n_claims": len(claims),
+            "claims_source": claims_source,
+            "n_matched": matched,
+            # "no claims were loaded" and "claims were loaded but none
+            # line up in time" are different faults with different
+            # fixes, and they look identical from inside the coder.
+            "match_warning": (
+                "No LLM claims found for this session at all — generate "
+                "the feedback in the review tool first."
+                if not claims else
+                ("Loaded %d claims but only %d of %d fixations matched one "
+                 "in time. Check that the claims come from THIS stimulus."
+                 % (len(claims), matched, len(units))
+                 if matched < 0.5 * len(units) else None))}
 
 
 @app.route("/api/coding_save", methods=["POST"])
@@ -1345,7 +1419,14 @@ def _call_gemini(api_key: str, parts: "str | list",
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            # Scale with the payload. A constant was already marginal
+            # at 60 frames (one request timed out and succeeded on
+            # retry) and 200 frames is several times the upload.
+            _n_imgs = sum(1 for p in (parts if isinstance(parts, list) else [])
+                          if isinstance(p, dict)
+                          and ("inline_data" in p or "inlineData" in p))
+            _timeout = LLM_TIMEOUT_BASE_S + LLM_TIMEOUT_PER_FRAME_S * _n_imgs
+            with urllib.request.urlopen(req, timeout=_timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             used_config = body["generationConfig"]
             break
@@ -1592,6 +1673,25 @@ def api_llm_feedback():
                 )
         except Exception:
             logger.exception("Frame annotation failed — stats-only feedback")
+
+    # Every fixation in the recording, so the number the model SAW can
+    # be compared against the number that exist. The gap is what makes
+    # the tail of a long recording unexplainable.
+    _all_fix_times = []
+    try:
+        from fixations import detect_fixations_df
+
+        _all_fix_times = [round(f.t_mid, 1) for f in detect_fixations_df(df)]
+    except Exception:  # noqa: BLE001
+        _all_fix_times = []
+    if _all_fix_times and frames and len(_all_fix_times) > len(frames):
+        logger.warning(
+            "LLM saw %d of %d fixations (LLM_MAX_FRAMES=%d). "
+            "sample_gaze_frames keeps the LONGEST fixations, so the "
+            "%d dropped are the SHORTEST — any claim about them is "
+            "unfounded, and the coding tool must not present them.",
+            len(frames), len(_all_fix_times), LLM_MAX_FRAMES,
+            len(_all_fix_times) - len(frames))
 
     log_ctx = {"participant": participant, "stimulus": stimulus,
                "session": session, "rubric": rubric, "n_runs": n_runs,
@@ -1886,6 +1986,23 @@ def api_llm_feedback():
             "n_runs": n_runs,
             "keyframe_method": frames[0]["method"] if frames else None,
             "frames_used": len(frames),
+            # WHICH fixations the model actually saw.
+            # sample_gaze_frames caps at LLM_MAX_FRAMES and, when there
+            # are more fixations than that, keeps the LONGEST ones. So a
+            # 71-fixation recording sends 60 frames and drops 11 — and
+            # nothing downstream knew which 11. The coding tool showed
+            # all 71 and invited a human to judge claims that were never
+            # made about fixations the model never saw.
+            #
+            # Recording the timestamps makes the sampled set explicit
+            # everywhere afterwards, and makes the gap visible instead
+            # of leaving it to be discovered by a coder wondering why
+            # the tail is nonsense.
+            "frame_times": [f.get("t") for f in frames],
+            "n_fixations_total": len(_all_fix_times) if _all_fix_times
+            else None,
+            "frames_dropped": (len(_all_fix_times) - len(frames))
+            if _all_fix_times else None,
             "chained": bool(scene_description),
             "measured_error_px": error_px,
             "structured": first["structured"],
@@ -2659,6 +2776,13 @@ def handle_validation_result(payload: dict):
         # to accuracy, as is standard in eye-tracking method sections)
         "mean_precision_px": payload.get("mean_precision_px"),
         "mean_precision_deg": payload.get("mean_precision_deg"),
+        # RATE-INDEPENDENT precision. mean_precision_px is a
+        # sample-to-sample RMS, so it depends on how far apart in time
+        # consecutive samples are: raising the poll rate from 7 to
+        # 30 Hz exposes high-frequency noise decimation was hiding and
+        # the figure rises even though the signal is unchanged. This
+        # one is dispersion about the target median and does not.
+        "mean_precision_sd_px": payload.get("mean_precision_sd_px"),
         # Whether a gain correction was active while this validation
         # was measured (pre before fit: raw; post: usually corrected)
         "correction_active": _correction_payload(state.get("correction")),
@@ -2734,6 +2858,8 @@ def handle_validation_result(payload: dict):
                 "iod_cm": pos.get("distance_cm_iod"),
                 "estimates_agree": pos.get("distance_estimates_agree"),
                 "warning": pos.get("distance_warning"),
+                # Why the better ruler was not used, if it was not.
+                "iris_error": pos.get("iris_error"),
                 "focal_measured": pos.get("focal_measured"),
                 "measured": True,
             }
@@ -3270,16 +3396,11 @@ def _persist_llm_result(session: str, stimulus: str, block: dict) -> None:
                     float(scr.get("diag_inches") or 15.6), float(dist))
                 rect = next(s["video_rect"] for s in manifest["stimuli"]
                             if s.get("stimulus") == stimulus)
-                import regions
-
                 vw = int(rect.get("w") or 1920)
                 vh = int(rect.get("h") or 1080)
-                grid = regions.admissible_grid(acc * ppd, vw, vh)
                 scored = claim_check.check_all(
-                    claims, samples, acc, ppd, vw, vh, grid)
-                scored["grid"] = {k: grid.get(k) for k in
-                                  ("cols", "rows", "cell_px",
-                                   "required_px", "admissible", "rule")}
+                    claims, samples, acc, ppd, vw, vh,
+                    frame_times=block.get("frame_times"))
                 scored["accuracy_source"] = acc_src
                 block["correspondence"] = scored
             else:

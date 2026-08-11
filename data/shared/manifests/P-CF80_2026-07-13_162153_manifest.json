@@ -1,0 +1,49 @@
+{
+  "participant_id": "P-CF80",
+  "finalized_at_utc": "2026-07-13T14:21:55.480542+00:00",
+  "session_csv": "P-CF80_2026-07-13_162153.csv",
+  "test_mode": true,
+  "sample_counts": {
+    "Stimuli_1.mp4": 116
+  },
+  "stimuli": [
+    {
+      "stimulus": "Stimuli_1.mp4",
+      "t_start_ns": 1783952508851392000,
+      "t_end_ns": 1783952513859761000,
+      "video_rect": {
+        "x": 0,
+        "y": 52.50439453125,
+        "w": 1679.984375,
+        "h": 944.9912109375,
+        "video_w": 1280,
+        "video_h": 720
+      }
+    }
+  ],
+  "renamed_from": "P-CF80__session_1783952513862574000.csv",
+  "data_quality": {
+    "Stimuli_1.mp4": {
+      "samples": 116,
+      "valid_samples": 116,
+      "valid_pct": 100.0,
+      "gaze_samples_pct": 77.2,
+      "nominal_sampling_hz": 30.0,
+      "relative_yield_pct": 80.1,
+      "sampling_hz": 28.6,
+      "sampling_hz_fastest": 29.9,
+      "rate_ratio": 1.04,
+      "rate_multimodal": false,
+      "low_sampling_rate": false,
+      "passes_gaze_samples_threshold": true
+    }
+  },
+  "legacy_data_quality": {},
+  "quality_thresholds": {
+    "nominal_sampling_hz": 30.0
+  },
+  "backfill": {
+    "version": "2026-07-31-nominal-rate",
+    "note": "gaze_samples_pct recomputed against a fixed nominal rate; the original self-referential values are kept in legacy_data_quality"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "step": "evaluation_run_2",
+  "model": "gemini-3.5-flash",
+  "generation_config": {
+    "maxOutputTokens": 3000,
+    "temperature": 0
+  },
+  "finish_reason": null,
+  "requested_at_utc": "2026-07-15T14:16:54.637120+00:00",
+  "context": {
+    "participant": "P-D332",
+    "stimulus": "Stimuli_2.mp4",
+    "session": "P-D332_2026-07-15_160219",
+    "rubric": "",
+    "n_runs": 3
+  },
+  "response_text": "### Gaze Analysis Summary\n\nBased on the eye-tracking data for participant **P-D332**, the gaze behavior shows a pattern of scanning different students in the classroom, interspersed with periods of looking at background elements such as posters on the wall and the window area on the right.\n\n#### Gaze Timeline by Phases\n\n*   **Phase 1 (t=1.0 s):** The participant began by looking at the student in the pink shirt seated in the middle of the front row.\n*   **Phase 2 (t=2.4 s \u2013 5.0 s):"
+}

@@ -47,9 +47,32 @@ GEMINI_API_KEY = _load_gemini_key()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash").strip()
 
 # Max annotated frames per AI-feedback request. All frames travel in ONE
-# API call. 60 ≈ one frame per 2 s on a 2-min video (~16k input tokens) —
-# dense but comfortably within Gemini's free-tier per-request limits.
-LLM_MAX_FRAMES = int(os.environ.get("LLM_MAX_FRAMES", "60"))
+# API call.
+#
+# RAISED 60 -> 200 on 2026-08-11, and this is a methods fact rather than
+# a tuning choice. A 30 s recording produced 71 fixations; the cap sent
+# 60 of them and sample_gaze_frames keeps the LONGEST, so the 11 dropped
+# were the SHORTEST. Human coding then scored fixations 0-61 at 88 %
+# correct and 62-70 at 0 % — a cliff that was the sampler, not the
+# model, because those frames were never sent.
+#
+# 200 covers a 30 s clip completely and a several-minute stimulus at a
+# realistic fixation rate. The cost is real: 200 images in one request
+# is a large payload, so LLM_REQUEST_TIMEOUT_S scales with the frame
+# count rather than sitting at a constant that was chosen for 60.
+#
+# If the cap ever binds again the run logs it and records
+# frames_dropped in the manifest, so the shortfall can never again be
+# discovered by a human coder wondering why the tail is nonsense.
+LLM_MAX_FRAMES = int(os.environ.get("LLM_MAX_FRAMES", "200"))
+
+# Seconds to wait for one Gemini call. A constant 120 s was already
+# marginal at 60 frames — one request timed out and succeeded on retry
+# — and 200 frames is a much larger upload. Scale with the payload:
+# a floor for the small stats-only calls, plus an allowance per frame.
+LLM_TIMEOUT_BASE_S = int(os.environ.get("LLM_TIMEOUT_BASE_S", "90"))
+LLM_TIMEOUT_PER_FRAME_S = float(os.environ.get("LLM_TIMEOUT_PER_FRAME_S",
+                                               "2.0"))
 
 # Every LLM request/response is logged here (audit trail for the thesis:
 # model, prompts, parameters, raw responses — images are logged as
@@ -70,8 +93,38 @@ LLM_WINDOW_SECONDS = float(os.environ.get("LLM_WINDOW_SECONDS", "5"))
 # Validation & preregistered data-quality thresholds
 # (report these in the methods section; decided BEFORE data collection)
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# THE PILOT BOUNDARY
+# ---------------------------------------------------------------------------
+# Every session recorded BEFORE this date is proof-of-concept: collected
+# while the protocol was being developed, on a pipeline that changed
+# between sessions. They are the data the method was built on.
+#
+# Using them to DEVELOP the protocol is legitimate. Using them to
+# EVALUATE it is not, and the difference is invisible in a folder of
+# manifests unless it is written down somewhere the tools can read.
+# Deciding the boundary afterwards, once the results are known, is the
+# thing this constant exists to make impossible.
+#
+# Concretely, the pilot sessions include: repeated pre-validations with
+# the gain refitted each time, 5-point calibrations, sessions recorded
+# before the sampling rate was fixed at ~31 Hz, and sessions whose
+# viewing distance was assumed rather than measured.
+#
+# EMPTY means collection has NOT started: every session recorded so far
+# is development data, used to build and debug the pipeline, and none of
+# it counts toward the study. That is the current state and it is the
+# honest one — the sessions to date were run against a pipeline that
+# changed between them, sometimes between validations.
+#
+# Set this to the first collection date when real recruitment begins.
+# Setting it ONCE, in advance, is what makes it a pre-registration; a
+# date chosen afterwards to include the sessions that happened to work
+# is not one.
+EVALUATION_FROM_DATE = os.environ.get("EVALUATION_FROM_DATE", "").strip()
+
 # Assumed viewing distance for px → degrees-of-visual-angle conversion.
-# Webcam setups cannot measure this; the assumption is logged per session.
+# Used only when the validation could not measure it; logged per session.
 VIEWING_DISTANCE_CM = float(os.environ.get("VIEWING_DISTANCE_CM", "60"))
 
 # Fallback screen diagonal (inches) when the participant does not enter

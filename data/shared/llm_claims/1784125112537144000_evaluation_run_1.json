@@ -1,0 +1,18 @@
+{
+  "step": "evaluation_run_1",
+  "model": "gemini-3.5-flash",
+  "generation_config": {
+    "maxOutputTokens": 3000,
+    "temperature": 0
+  },
+  "finish_reason": null,
+  "requested_at_utc": "2026-07-15T14:18:32.533826+00:00",
+  "context": {
+    "participant": "P-D332",
+    "stimulus": "Stimuli_2.mp4",
+    "session": "P-D332_2026-07-15_160219",
+    "rubric": "",
+    "n_runs": 1
+  },
+  "response_text": "### Gaze Analysis Summary\n\nThe participant's gaze behavior shows a transition from tracking active classroom interactions and individual students to a prolonged focus on the background wall and posters.\n\n### Chronological Gaze Phases\n\n* **Initial Student Scanning (t=1.0 s - 19.4 s)**: The participant initially scanned several students across the front and second rows. This included looking at the girl in the pink shirt (t=1.0 s), followed by a period of tracking the interaction between the student in the blue hoodie and the student in"
+}

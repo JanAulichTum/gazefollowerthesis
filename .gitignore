@@ -104,6 +104,17 @@ Thumbs.db
 data/autopush.log
 data/autopush.err
 
+# Human coding verdicts. Session IDs embed participant IDs, so these
+# are participant-linked. This repository is PUBLIC.
+data/coding/
+
+# The pseudonym map is the ONLY thing that can undo the anonymisation
+# in data/shared/, so it must never be published.
+data/share_pseudonyms.json
+
+# ...but data/shared/ IS published on purpose (share_results.py).
+!data/shared/
+
 # Vendored wheels. Install from PyPI / upstream instead. The GazeFollower
 # wheel bundles the CC BY-NC-SA model weights (res/model_weights/base.mnn),
 # which are not ours to publish -- same rule as models/*.mnn above.

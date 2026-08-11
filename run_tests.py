@@ -1578,8 +1578,11 @@ try:
           "FAILS the %.0f Hz inclusion criterion" in _vm)
     check("verifier grades sub-threshold data loss as DEGENERATE",
           "FAILS the %.0f %% inclusion criterion" in _vm)
+    # The criterion moved from pre_check alone to the MEAN of the two
+    # grid-B checks either side of the recording, so the message moved
+    # with it.
     check("verifier grades over-threshold accuracy as DEGENERATE",
-          "FAILS the %.1f deg inclusion criterion" in _vm)
+          "FAILS the %.1f deg criterion (pre_check %.2f, post" in _vm)
     check("verifier flags a missing post-validation as blocking",
           "NO POST-STIMULUS VALIDATION" in _vm)
     check("verifier warns that in-sample accuracy is not accuracy",
@@ -1796,7 +1799,44 @@ try:
                   _CG.estimate_distance(62.0, geometry=_cal)["sources"]))
     check("uncertainty sources combine in quadrature, not additively",
           abs(_CG.estimate_distance(62.0, geometry={})["relative_sd_pct"]
-              - 100 * math.hypot(0.10, 0.4 / 6.3)) < 0.2)
+              - 100 * math.hypot(0.10, 0.4 / 6.3)) < 0.2,
+          "%.1f %%" % _CG.estimate_distance(
+              62.0, geometry={})["relative_sd_pct"])
+
+    # THE BUG THIS BLOCK ONLY FOUND ON THE COLLECTION MACHINE.
+    # estimate_distance did `geometry = geometry or load()`, so an empty
+    # dict — meaning "model an uncalibrated camera" — fell through to
+    # whatever calibration happened to be saved on that machine. Every
+    # assertion above passed on a machine with no calibration file and
+    # failed on the one that had actually been calibrated, which is
+    # precisely backwards: the test broke when the setup was finished.
+    #
+    # Simulate a saved calibration and assert the two are now distinct.
+    import json as _json
+    import tempfile as _tf
+
+    _had = os.path.exists(_CG.GEOMETRY_FILE)
+    if not _had:
+        os.makedirs(os.path.dirname(_CG.GEOMETRY_FILE), exist_ok=True)
+        with open(_CG.GEOMETRY_FILE, "w", encoding="utf-8") as _fh:
+            _json.dump({"focal_px": 652.8, "image_w_px": 640,
+                        "known_distance_cm": 60.0, "distance_sd_cm": 1.0,
+                        "implied_hfov_deg": 52.2}, _fh)
+    try:
+        _empty = _CG.estimate_distance(62.0, geometry={})
+        _auto = _CG.estimate_distance(62.0)
+        check("an EMPTY geometry means uncalibrated, not 'go and load one'",
+              _empty["focal_measured"] is False,
+              "focal_measured=%s" % _empty["focal_measured"])
+        check("omitting geometry entirely DOES use the saved calibration",
+              _auto["focal_measured"] is True)
+        check("so the two give different uncertainty budgets",
+              abs(_empty["relative_sd_pct"] - _auto["relative_sd_pct"]) > 1.0,
+              "%.1f vs %.1f %%" % (_empty["relative_sd_pct"],
+                                   _auto["relative_sd_pct"]))
+    finally:
+        if not _had:
+            os.remove(_CG.GEOMETRY_FILE)
     # Degrees must carry the distance uncertainty through.
     _d = _CG.degrees_with_uncertainty(129.7, 58.5, 3.8)
     check("degrees are reported with a 95 % interval",
@@ -2338,10 +2378,9 @@ try:
           'record["attempt"] = len(prior) + 1' in _app3
           and "PROTOCOL:" in _app3)
 
-    check("verify_metrics treats pre_check as the canonical corrected "
-          "accuracy",
+    check("verify_metrics reports pre_check as an out-of-sample figure",
           'v.get("phase") == "pre_check"' in _vm
-          and "canonical corrected accuracy" in _vm)
+          and "the correction was never" in _vm)
     check("a legacy repeat at the FIT grid is graded DEGENERATE, not "
           "reported as corrected accuracy",
           "IN-SAMPLE, not a" in _vm)
@@ -2428,47 +2467,31 @@ try:
     #  Region vocabulary + calibration diagnosis
     # ══════════════════════════════════════════════════════════════
     print("\n[18] Region vocabulary and calibration diagnosis")
-    _reg = importlib.import_module("regions")
-    importlib.reload(_reg)
+    # regions.py DELETED. The 3x3 vocabulary is gone from the prompt,
+    # the scorer and the summaries — object-level claims graded by
+    # distance replaced it. The resolution argument survives as prose,
+    # not as a grid nobody wanted.
+    # The inclusion criterion applies to the MEAN of the two grid-B
+    # checks, one either side of the recording. Neither end alone
+    # answers the question: the stimulus data sits between them.
+    _vm2 = read("verify_metrics.py")
+    check("inclusion uses the mean of pre_check and post, not one end",
+          "accuracy_for_inclusion_deg" in _vm2
+          and "incl = (float(a) + float(b)) / 2.0" in _vm2)
+    check("both ends of that mean are out-of-sample grid B",
+          "needs BOTH a pre_check and a post on grid B" in _vm2)
+    check("collection has not started, so every session is DEVELOPMENT",
+          "EVALUATION_FROM_DATE" in read("config.py")
+          and "collection has not started" in _vm2)
+    check("an unset start date does not silently promote sessions",
+          _vmod.pilot_status("x_2026-08-11_manifest.json")[0] is True)
 
-    # The grid is DERIVED from accuracy, not chosen. min cell >= 2x
-    # accuracy is the same rule metrics_spec states for AOIs.
-    for _deg, _want in ((1.5, (3, 3)), (2.13, (3, 3)), (3.0, (3, 2))):
-        _g = _reg.admissible_grid(_deg * 58.2, 1680, 945)
-        check("%.2f deg admits a %dx%d grid" % (_deg, _want[0], _want[1]),
-              _g["admissible"] and (_g["cols"], _g["rows"]) == _want,
-              "%s, cells %s" % (
-                  "%dx%d" % (_g["cols"], _g["rows"]) if _g["admissible"]
-                  else "none", _g.get("cell_px")))
-    _bad = _reg.admissible_grid(5.0 * 58.2, 1680, 945)
-    check("an accuracy too poor for ANY grid is refused, not rounded down",
-          _bad["admissible"] is False and not _bad["regions"])
-    check("every admitted cell really is >= 2 x accuracy",
-          all(min(_reg.admissible_grid(d * 58.2, 1680, 945)["cell_px"])
-              >= 2 * d * 58.2
-              for d in (1.5, 2.13, 3.0)))
-    _g3 = _reg.admissible_grid(2.13 * 58.2, 1680, 945)
-    check("region rects tile the frame exactly once",
-          abs(sum(r["bbox"][2] * r["bbox"][3] for r in _g3["regions"]) - 1.0)
-          < 0.01)
-    check("region names are spatial words, not coordinates",
-          "upper-left" in {r["name"] for r in _g3["regions"]})
-    check("the prompt vocabulary lists every region",
-          all(r["name"] in _reg.vocabulary_text(_g3)
-              for r in _g3["regions"]))
-
-    # The grid derivation stays in regions.py — it is the argument for
-    # what the method can resolve, and the validity document cites it —
-    # but the PROMPT no longer imposes a vocabulary. Object-level claims
-    # graded by distance replaced it (section [19]).
-    check("the region grid is still derivable for the resolution "
-          "argument",
-          "def admissible_grid" in read("regions.py"))
-    check("a region claim is scored against the KNOWN rect, not the "
-          "model's box",
-          'claim.get("region") and grid' in _cc)
-    check("a region outside the vocabulary is rejected, not guessed at",
-          "named a region outside the vocabulary" in _cc)
+    check("the region grid is gone entirely",
+          not os.path.exists(os.path.join(BASE, "regions.py")))
+    check("nothing still imports it",
+          "import regions" not in _cc and "import regions" not in _app3)
+    check("the gaze summary reports position, not a grid",
+          "grid_pct" not in _cc and '"median"' in _cc)
 
     # calibration_diagnosis: does it tell the four causes apart?
     _cd = importlib.import_module("calibration_diagnosis")
@@ -2620,6 +2643,252 @@ try:
           "gazeRing" in _coder and "accuracy_deg" in _coder)
     check("the coder is pointed at a second rater for kappa",
           "second coder" in _coder and "agreement_kit" in _coder)
+
+    # Every fixation read "no model claim covers this fixation". The
+    # cause was not the coder and not the matching: the manifest
+    # write-back is recent, so a session whose feedback predates it has
+    # an empty llm block and the only record is data/llm_logs/.
+    check("the coder falls back to the log directory for claims",
+          "claim_check.load_claims(session)" in _app3
+          and "claims_source" in _app3)
+    check("it distinguishes 'no claims loaded' from 'none matched'",
+          "match_warning" in _app3
+          and "No LLM claims found for this session at all" in _app3
+          and "only %d of %d fixations matched" in _app3)
+    check("the page shows where the claims came from",
+          "claimSource" in _coder and "d.claims_source" in _coder)
+    check("claims are matched by time OVERLAP, not midpoint proximity",
+          "if ce >= lo and cs <= hi" in _app3)
+
+    # A long fixation puts its midpoint far from the claim naming its
+    # onset, which is why overlap is the safer rule even though both
+    # schemes happen to agree on the 2026-08-10 data.
+    _claims_t = [0.3, 0.7, 1.1, 2.1, 2.6, 3.0, 3.4, 3.9]
+
+    def _overlap_hits(start, dur, margin=0.35):
+        lo, hi = start - margin, start + dur + margin
+        return [t for t in _claims_t if lo <= t <= hi]
+
+    check("a long fixation still matches the claim naming its onset",
+          _overlap_hits(2.1, 0.9) and 2.1 in _overlap_hits(2.1, 0.9))
+    check("a fixation with no claim near it matches nothing",
+          not _overlap_hits(9.9, 0.2))
+
+    # The cap was raised after it silently truncated a real session.
+    _cfg2 = read("config.py")
+    _cap = int(re.search(r'LLM_MAX_FRAMES", "(\d+)"', _cfg2).group(1))
+    check("LLM_MAX_FRAMES covers a 30 s clip's fixation count",
+          _cap >= 100, "%d frames" % _cap)
+    check("the request timeout scales with the frame count",
+          "LLM_TIMEOUT_PER_FRAME_S" in _cfg2
+          and "LLM_TIMEOUT_PER_FRAME_S * _n_imgs" in _app3)
+    check("the raise is recorded as a methods fact, with the evidence",
+          "88 %" in _cfg2 and "0 %" in _cfg2)
+
+    # The findings log is the artefact the Methods chapter is written
+    # from, so a claim in it must be traceable and an unconfirmed one
+    # must be marked.
+    _find = read("METHODOLOGY_FINDINGS.md")
+    check("the findings log exists and is numbered for citation",
+          _find.count("## F") >= 12)
+    check("unconfirmed findings are marked OPEN, not stated as fact",
+          "OPEN" in _find and "suspected, not confirmed" in _find)
+    check("it lists what is still missing before evaluation collection",
+          "Open items before evaluation collection" in _find)
+
+    # ── Sharing results publicly ─────────────────────────────────────
+    _sr = read("share_results.py")
+    _srmod = importlib.import_module("share_results")
+    importlib.reload(_srmod)
+    check("secrets can never be shared, whatever else changes",
+          {"api_key", "secret_key", "b64"} <= _srmod.FORBIDDEN_KEYS)
+    _scrubbed = _srmod._scrub(
+        {"api_key": "AIzaSECRET", "nested": {"b64": "xxxx", "keep": 1},
+         "list": [{"secret_key": "deadbeef"}]}, {}, True)
+    check("...verified: forbidden keys are omitted at every depth",
+          _scrubbed["api_key"] == "<omitted>"
+          and _scrubbed["nested"]["b64"] == "<omitted>"
+          and _scrubbed["list"][0]["secret_key"] == "<omitted>"
+          and _scrubbed["nested"]["keep"] == 1)
+    check("pseudonyms are stable across runs (a hash, not a counter)",
+          _srmod._pseudonym("Marie", {}) == _srmod._pseudonym("Marie", {}))
+    check("adding a participant does not renumber the others",
+          _srmod._pseudonym("Anna", {"Marie": "P-XXXX"}) != "P-XXXX")
+    # The nested-label trap: with both "Test" and "Test1" in the map,
+    # replacing the shorter first leaves a digit glued to a pseudonym.
+    _mapx = {"Test": "P-AAAA", "Test1": "P-BBBB"}
+    check("longer labels are replaced first, so names cannot nest",
+          _srmod._replace_names("Test1_2026-07-10", _mapx)
+          == "P-BBBB_2026-07-10",
+          _srmod._replace_names("Test1_2026-07-10", _mapx))
+    _ign = read(".gitignore")
+    check("the pseudonym map is gitignored — it undoes the whole step",
+          any(l.strip() == "data/share_pseudonyms.json"
+              for l in _ign.splitlines()))
+    check("data/shared IS published (that is the point)",
+          any(l.strip() == "!data/shared/" for l in _ign.splitlines()))
+    check("raw CSVs and videos are not in the shared set",
+          "gazefollower_raw" in _sr and "*_manifest.json" in _sr
+          and ".csv" not in _sr)
+
+    # ── The report must not cry wolf ─────────────────────────────────
+    # The 2026-08-11 report listed 10 "missing" metrics. Three were
+    # DUPLICATES of metrics reported PRESENT in the same run (checked by
+    # two code paths), five were AOI metrics this study deliberately
+    # does not collect, and one was recorded in the manifest under a key
+    # the checker did not read. Exactly ONE was a real gap. A report
+    # that inflates its own gap count is one nobody reads.
+    check("a metric found PRESENT is never also reported MISSING",
+          "If it was found, it is not missing" in _vm
+          and 'str(n).split(" [")[0] == base' in _vm)
+    check("AOI metrics are N/A by design, not MISSING",
+          'NOT_APPLICABLE = "N/A"' in _vm
+          and "by design: no hand-drawn AOIs" in _vm)
+    check("the design reason for each is recorded in the spec",
+          read("metrics_spec.py").count("aoi_") >= 5
+          and "NOT_APPLICABLE_NAMES" in read("metrics_spec.py"))
+    check("the dispersion threshold is read from events, where it is "
+          "written",
+          'blk.get("idt_dispersion_deg")' in _vm)
+    check("the summary names what is still missing, not just a count",
+          "still missing: " in _vm)
+
+    # Behavioural: a duplicate MISSING must be suppressed.
+    _rr = _vmod.Result()
+    _rr.add("RQ2", "saccade_count [clip]", _vmod.PRESENT, "70")
+    _rr.add("RQ2", "saccade_count", _vmod.MISSING, "", "wire it in")
+    check("...verified: the duplicate is dropped, not printed",
+          len(_rr.rows) == 1 and _rr.rows[0][2] == _vmod.PRESENT,
+          "%d row(s)" % len(_rr.rows))
+    _rr2 = _vmod.Result()
+    _rr2.add("RQ2", "aoi_revisits", _vmod.MISSING, "")
+    check("...but a genuine MISSING is still reported",
+          len(_rr2.rows) == 1 and _rr2.rows[0][2] == _vmod.MISSING)
+
+    # ── The keyframe cap: what the model was never shown ─────────────
+    # 71 fixations, LLM_MAX_FRAMES=60, and sample_gaze_frames keeps the
+    # LONGEST. So 11 fixations were dropped and nothing recorded which,
+    # while the coding tool presented all 71 and invited a verdict on
+    # claims that were never made.
+    check("the frames the model saw are recorded with the result",
+          '"frame_times"' in _app3 and '"frames_dropped"' in _app3)
+    check("a cap that drops fixations is logged as a warning",
+          "LLM saw %d of %d fixations" in _app3)
+    check("the coder marks fixations the model never saw",
+          '"shown_to_model"' in _app3 and "def _was_shown" in _app3)
+    check("...and says so instead of showing an empty claim",
+          "NOT SHOWN TO THE MODEL" in _coder)
+    check("an unknown frame list assumes shown, rather than accusing",
+          "unknown: assume yes rather than accuse" in _app3)
+
+    # ── The off-by-one ───────────────────────────────────────────────
+    check("claim/frame alignment is checked, not eyeballed",
+          "def alignment_check" in _cc and "best_shift" in _cc)
+    _ft = sorted(round(0.37 * i + (i % 7) * 0.11, 1) for i in range(40))
+    _aligned = _ccmod.alignment_check(
+        [{"t_start": t, "t_end": t} for t in _ft], _ft)
+    _ahead = _ccmod.alignment_check(
+        [{"t_start": _ft[i + 1], "t_end": _ft[i + 1]}
+         for i in range(len(_ft) - 1)], _ft)
+    check("aligned claims report no shift",
+          _aligned["systematically_shifted"] is False)
+    check("claims describing the NEXT frame are caught",
+          _ahead["systematically_shifted"] is True
+          and _ahead["best_shift"] == 1,
+          "shift %+d" % _ahead["best_shift"])
+    check("a shift is only called when it fits much better than none",
+          "best_err < 0.5 * zero_err" in _cc)
+
+    # ── The Windows launcher ─────────────────────────────────────────
+    # A menu that offers a script which does not exist fails at the
+    # worst possible moment: with a participant sitting there. Batch
+    # has no import system to catch that, so check it here.
+    _start = read("windows/START.bat")
+    _referenced = set(re.findall(r'(?:call\s+)?(windows\\[\w.]+\.bat)',
+                                 _start))
+    for _bat in sorted(_referenced):
+        check("START.bat offers %s, and it exists" % _bat,
+              os.path.exists(os.path.join(BASE, _bat.replace("\\", "/"))))
+    _scripts = set(re.findall(r'python\s+([\w_]+\.py)', _start))
+    for _py in sorted(_scripts):
+        check("START.bat offers %s, and it exists" % _py,
+              os.path.exists(os.path.join(BASE, _py)))
+    # :eof is batch's built-in return target and is never declared.
+    check("every goto in START.bat has a label",
+          not (set(m.lower() for m in re.findall(r'goto\s+:(\w+)', _start))
+               - set(l.strip()[1:].lower() for l in _start.splitlines()
+                     if l.strip().startswith(":")
+                     and not l.strip().startswith("::"))
+               - {"eof"}))
+    check("START.bat is pure ASCII (cmd's codepage mangles the rest)",
+          all(ord(c) < 128 for c in _start))
+    check("it refuses to pull over uncommitted local changes",
+          "NOT pulling" in _start)
+    check("it leaves a usable prompt rather than closing",
+          "cmd /k" in _start)
+
+    # The update logic exists ONCE and is called from two places. Two
+    # copies would drift, and the copy that drifts is always the one
+    # guarding the collection machine.
+    check("update is a subroutine, defined once",
+          _start.count("\n:do_update") == 1)
+    check("...and called from both launch and the menu",
+          _start.count("call :do_update") == 2)
+    check("there is exactly one git pull and one dirty-tree guard",
+          _start.count("git pull --ff-only") == 1
+          and _start.count("NOT pulling") == 1)
+    check("the menu offers the update",
+          "u  Update from GitHub" in _start
+          and 'if /i "%OPT%"=="u"' in _start)
+    check("no orphaned label survives the refactor",
+          "skip_update" not in _start)
+    check("every goto target and call target exists",
+          not ({m.lower() for m in re.findall(r"goto\s+:(\w+)", _start)}
+               | {m.lower() for m in re.findall(r"call\s+:(\w+)", _start)}
+               ) - ({l.strip()[1:].lower() for l in _start.splitlines()
+                     if l.strip().startswith(":")
+                     and not l.strip().startswith("::")} | {"eof"}))
+    check("the subroutine returns rather than falling through the menu",
+          _start.count("goto :eof") >= 4)
+
+    # The API key. This repository is PUBLIC, so "it is in .gitignore"
+    # is a claim worth verifying rather than assuming — a key published
+    # to GitHub is revoked-and-rotated, not un-published.
+    _ignore = read(".gitignore")
+    check(".gemini_key is gitignored",
+          any(l.strip() == ".gemini_key" for l in _ignore.splitlines()))
+    check("so is anything else ending in .key, and .env",
+          "*.key" in _ignore and ".env" in _ignore)
+    check("the launcher VERIFIES the ignore before writing a key",
+          "git check-ignore -q .gemini_key" in _start
+          and "Do NOT save a key" in _start)
+    check("config reads the env var first, then the file",
+          'os.environ.get("GEMINI_API_KEY"' in read("config.py")
+          and '".gemini_key"' in read("config.py"))
+    # Coding verdicts are participant-LINKED (the session label embeds
+    # the participant id) and this repository is public.
+    check("data/coding/ is gitignored",
+          any(l.strip() == "data/coding/" for l in _ignore.splitlines()))
+
+    _cr = read("coding_report.py")
+    check("the coding report separates accuracy from reliability",
+          "ACCURACY" in _cr and "RELIABILITY" in _cr)
+    check("kappa uses only units BOTH coders judged",
+          "set(a) & set(b)" in _cr and "missing data, not" in _cr)
+    check("too few shared units refuses a kappa rather than printing one",
+          "too few for a" in _cr)
+    check("unclear is excluded from accuracy and reported separately",
+          "unclear_pct" in _cr and 'c["correct"] + c["wrong"]' in _cr)
+    check("a single coder is told the number rests on one opinion",
+          "ONE CODER ONLY" in _cr and "systematically generous" in _cr)
+    check("kappa is reported with a benchmark, not bare",
+          "KAPPA_BANDS" in _cr and "Landis" in _cr)
+    check("--paste omits file paths so it is safe to share",
+          '"--paste"' in _cr and "no file paths" in _cr)
+
+    check("no key is committed anywhere in the tree",
+          not os.path.exists(os.path.join(BASE, ".gemini_key"))
+          or "gemini_key" in _ignore)
     check("running with no arguments says how to score a real session",
           "showing the DEMO on synthetic data" in _cc)
     check("duty prefers total callback cost over model cost",
@@ -2719,6 +2988,300 @@ try:
 except Exception as exc:  # noqa: BLE001
     _blocked = environment_block(exc)
     check("bottleneck attribution", False, _blocked or repr(exc))
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  [20] END-TO-END on a synthetic session, and mathematical invariants
+# ══════════════════════════════════════════════════════════════════════
+# Most of the suite above greps source for strings. That catches a
+# deleted safeguard but proves nothing about behaviour: every one of
+# those checks would pass on code that computes the wrong number.
+#
+# This section BUILDS a complete synthetic session — CSV, manifest,
+# validations, LLM claims — and runs the real loaders and scorers over
+# it, then asserts properties that must hold for any correct
+# implementation rather than for this one.
+print("\n[20] End-to-end synthetic session, and invariants")
+try:
+    import csv as _csv
+    import json as _js
+    import math as _m
+    import shutil as _sh
+    import tempfile as _tf
+
+    _tmp = _tf.mkdtemp(prefix="e2e_")
+    try:
+        # ── Build a session ──────────────────────────────────────────
+        # 30 s, 31.2 Hz, gaze parked on four known locations in turn.
+        HZ, DUR = 31.2, 30.0
+        T0 = 1_700_000_000_000_000_000          # arbitrary ns epoch
+        RECT = {"x": 0, "y": 52.5, "w": 1680.0, "h": 945.0}
+        SPOTS = [(0.25, 0.30), (0.70, 0.35), (0.50, 0.65), (0.20, 0.75)]
+
+        _rows, _truth = [], []
+        _n = int(DUR * HZ)
+        for i in range(_n):
+            t = i / HZ
+            spot = SPOTS[int(t // 7.5) % len(SPOTS)]
+            _truth.append((t, spot))
+            # screen px = video-normalised mapped back through the rect
+            sx = spot[0] * RECT["w"] + RECT["x"]
+            sy = spot[1] * RECT["h"] + RECT["y"]
+            _rows.append({
+                "timestamp": T0 + int(t * 1e9),
+                "raw_gaze_position_x": sx, "raw_gaze_position_y": sy,
+                "calibrated_gaze_position_x": sx,
+                "calibrated_gaze_position_y": sy,
+                "filtered_gaze_position_x": sx,
+                "filtered_gaze_position_y": sy,
+                "left_eye_openness": 200, "right_eye_openness": 200,
+                "tracking_status": 1, "status": 1, "event": 0, "trigger": 0,
+            })
+
+        _csv_path = os.path.join(_tmp, "E2E_2026-08-11_120000.csv")
+        with open(_csv_path, "w", newline="", encoding="utf-8") as _fh:
+            _w = _csv.DictWriter(_fh, fieldnames=list(_rows[0]))
+            _w.writeheader()
+            _w.writerows(_rows)
+
+        _man = {
+            "session_csv": os.path.basename(_csv_path),
+            "screen": {"width_px": 1920, "height_px": 1080,
+                       "diag_inches": 15.6},
+            "distance": {"cm": 60.0, "measured": True, "source": "iris",
+                         "from_phase": "pre_check"},
+            "stimuli": [{"stimulus": "clip.mp4", "t_start_ns": T0,
+                         "t_end_ns": T0 + int(DUR * 1e9),
+                         "video_rect": dict(RECT, video_w=1280,
+                                            video_h=720)}],
+            "validations": [
+                {"phase": "pre_fit", "mean_err_deg": 2.20,
+                 "mean_err_deg_raw": 2.20, "mean_precision_px": 30.0,
+                 "targets": [{"err_px": 100 + 5 * i} for i in range(7)]},
+                {"phase": "pre_check", "mean_err_deg": 1.20,
+                 "mean_err_deg_raw": 2.10, "mean_precision_px": 30.0,
+                 "targets": [{"err_px": 60 + 5 * i} for i in range(7)]},
+                {"phase": "post", "mean_err_deg": 1.00,
+                 "mean_err_deg_raw": 2.00, "mean_precision_px": 30.0,
+                 "targets": [{"err_px": 55 + 5 * i} for i in range(7)]},
+            ],
+            "data_quality": {}, "events": {},
+        }
+        _man_path = _csv_path.replace(".csv", "_manifest.json")
+        with open(_man_path, "w", encoding="utf-8") as _fh:
+            _js.dump(_man, _fh)
+
+        # ── The loader must recover what was written ─────────────────
+        _samples, _err = _ccmod.load_gaze(_man, _man_path, "clip.mp4")
+        check("e2e: the gaze loader reads the session it was given",
+              not _err and len(_samples) == _n,
+              _err or "%d samples" % len(_samples))
+        _sx = [s[1] for s in _samples]
+        _sy = [s[2] for s in _samples]
+        check("e2e: screen px map back to the video coords they came from",
+              max(abs(min(_sx) - 0.20), abs(max(_sx) - 0.70),
+                  abs(min(_sy) - 0.30), abs(max(_sy) - 0.75)) < 0.002,
+              "x %.3f-%.3f  y %.3f-%.3f" % (min(_sx), max(_sx),
+                                            min(_sy), max(_sy)))
+        check("e2e: no sample lands outside the video frame",
+              all(0 <= s[1] <= 1 and 0 <= s[2] <= 1 for s in _samples))
+
+        # ── The accuracy the scorer picks up ─────────────────────────
+        _acc, _src = _ccmod._accuracy_deg(_man)
+        check("e2e: the tolerance comes from the POST validation",
+              abs(_acc - 1.00) < 1e-6 and "out-of-sample" in _src,
+              "%.2f deg from %s" % (_acc, _src))
+
+        # ── Scoring claims that are right, near and wrong ────────────
+        _ppd = _ccmod._px_per_degree(1920, 1080, 15.6, 60.0)
+        _tol_px = _acc * _ppd
+
+        def _claim(t, box, label):
+            return {"t_start": t, "t_end": t, "attended": label,
+                    "bbox": box}
+
+        # A box exactly on spot 0, one just outside it, one far away.
+        _on = _claim(3.0, [0.20, 0.25, 0.10, 0.10], "on it")
+        _near_off = (_tol_px * 0.5) / RECT["w"]
+        _near = _claim(3.0, [0.25 + _near_off, 0.25, 0.04, 0.10], "near")
+        _far = _claim(3.0, [0.80, 0.80, 0.10, 0.10], "far")
+        _res = _ccmod.check_all([_on, _near, _far], _samples, _acc, _ppd,
+                                int(RECT["w"]), int(RECT["h"]))
+        _v = [c["verdict"] for c in _res["claims"]]
+        check("e2e: gaze inside the box -> SUPPORTED", _v[0] == "SUPPORTED",
+              _v[0])
+        check("e2e: just outside, within the error -> CONSISTENT",
+              _v[1] == "CONSISTENT", "%s at %s px" % (
+                  _v[1], _res["claims"][1].get("distance_px")))
+        check("e2e: across the frame -> CONTRADICTED", _v[2] ==
+              "CONTRADICTED", _v[2])
+        check("e2e: the strict rate counts only SUPPORTED",
+              abs(_res["correspondence_pct"] - 100.0 * 1 / 3) < 0.1,
+              "%.1f %%" % _res["correspondence_pct"])
+        check("e2e: the lenient rate adds CONSISTENT",
+              abs(_res["correspondence_lenient_pct"] - 100.0 * 2 / 3) < 0.1,
+              "%.1f %%" % _res["correspondence_lenient_pct"])
+
+        # ── verify_metrics on the same manifest ──────────────────────
+        _r = _vmod.Result()
+        _vmod.check_session(_man, _r)
+        _got = {n: (s, v) for _rq, n, s, v, _ in _r.rows}
+        check("e2e: raw accuracy comes from grid A",
+              _got["accuracy_raw_deg"][1] == "2.2",
+              _got["accuracy_raw_deg"][1])
+        check("e2e: the inclusion figure is the mean of pre_check and post",
+              _got["accuracy_for_inclusion_deg"][1] == "1.10",
+              _got["accuracy_for_inclusion_deg"][1])
+        check("e2e: drift uses the uncorrected pair (2.00 - 2.10)",
+              _got["drift_deg"][1] == "-0.10", _got["drift_deg"][1])
+        check("e2e: a measured distance is reported as measured",
+              _got["head_distance_cm"][0] == _vmod.PRESENT)
+    finally:
+        _sh.rmtree(_tmp, ignore_errors=True)
+
+    # ── INVARIANTS: properties any correct implementation must have ──
+    # px -> deg -> px must round-trip, or every accuracy figure in the
+    # thesis is quietly scaled.
+    _dev = 0.0
+    for _d_cm in (45.0, 60.0, 76.0):
+        _p = _ccmod._px_per_degree(1920, 1080, 15.6, _d_cm)
+        for _px in (50.0, 129.7, 300.0):
+            _dev = max(_dev, abs((_px / _p) * _p - _px))
+    check("invariant: px -> deg -> px round-trips", _dev < 1e-9,
+          "max deviation %.2e px" % _dev)
+
+    # A nearer viewer must subtend a LARGER angle for the same pixels.
+    _near_deg = 129.7 / _ccmod._px_per_degree(1920, 1080, 15.6, 45.0)
+    _far_deg = 129.7 / _ccmod._px_per_degree(1920, 1080, 15.6, 80.0)
+    check("invariant: the same error is a bigger angle when nearer",
+          _near_deg > _far_deg,
+          "%.2f deg at 45 cm vs %.2f deg at 80 cm" % (_near_deg, _far_deg))
+
+    # Verdicts must be MONOTONIC in distance: moving a box further away
+    # can never improve its verdict.
+    _rank = {"SUPPORTED": 3, "CONSISTENT": 2, "CONTRADICTED": 1}
+    _sm = [(i / 31.2, 0.50, 0.60, True) for i in range(400)]
+    _seq = []
+    for _off in (0.0, 0.02, 0.05, 0.10, 0.20, 0.40):
+        _c = {"t_start": 5, "t_end": 5, "attended": "x",
+              "bbox": [0.45 + _off, 0.55, 0.10, 0.10]}
+        _seq.append(_rank[_ccmod.check_claim(_c, _sm, 2.13, 58.2,
+                                             1680, 945)["verdict"]])
+    check("invariant: a verdict never improves as the box moves away",
+          all(a >= b for a, b in zip(_seq, _seq[1:])),
+          " -> ".join(str(s) for s in _seq))
+
+    # Cohen's kappa: identical coders = 1, and a coder who agrees only
+    # by chance must land near 0.
+    import random as _rnd2
+
+    _crmod = importlib.import_module("coding_report")
+    importlib.reload(_crmod)
+    _rnd2.seed(19)
+    _cats = ["correct", "wrong", "unclear"]
+    _a = {str(i): _rnd2.choice(_cats) for i in range(300)}
+    _same = _crmod.cohens_kappa(_a, dict(_a))
+    check("invariant: identical coders give kappa 1.0",
+          abs(_same["kappa"] - 1.0) < 1e-9, str(_same["kappa"]))
+    _indep = {str(i): _rnd2.choice(_cats) for i in range(300)}
+    _k2 = _crmod.cohens_kappa(_a, _indep)
+    check("invariant: independent coders give kappa near 0",
+          abs(_k2["kappa"]) < 0.15, str(_k2["kappa"]))
+    check("invariant: kappa is never above 1",
+          _same["kappa"] <= 1.0 and _k2["kappa"] <= 1.0)
+
+    # Accuracy must ignore 'unclear' entirely.
+    _s1 = _crmod.summarise({"0": "correct", "1": "wrong"})
+    _s2 = _crmod.summarise({"0": "correct", "1": "wrong",
+                            "2": "unclear", "3": "unclear"})
+    check("invariant: adding 'unclear' does not move the accuracy rate",
+          _s1["accuracy_pct"] == _s2["accuracy_pct"] == 50.0,
+          "%s vs %s" % (_s1["accuracy_pct"], _s2["accuracy_pct"]))
+    check("invariant: ...but it does move the unclear share",
+          _s2["unclear_pct"] == 50.0 and _s1["unclear_pct"] == 0.0)
+
+    # Fixation detection must produce ordered, non-overlapping events.
+    import pandas as _pd
+
+    from fixations import detect_fixations_df as _detect
+
+    _fdf = _pd.DataFrame({
+        "video_time_s": [i / 31.2 for i in range(400)],
+        "gaze_video_nx": [0.3 if i < 200 else 0.7 for i in range(400)],
+        "gaze_video_ny": [0.4 if i < 200 else 0.6 for i in range(400)],
+    })
+    _fx = _detect(_fdf)
+    check("invariant: fixations are returned in time order",
+          all(a.t_start <= b.t_start for a, b in zip(_fx, _fx[1:])),
+          "%d fixations" % len(_fx))
+    check("invariant: fixations do not overlap",
+          all(a.t_end <= b.t_start + 1e-9 for a, b in zip(_fx, _fx[1:])))
+    check("invariant: two stable periods yield exactly two fixations",
+          len(_fx) == 2, "%d" % len(_fx))
+    check("invariant: every fixation meets the minimum duration",
+          all(f.duration >= 0.09 for f in _fx),
+          "shortest %.3f s" % min(f.duration for f in _fx))
+    # duration is DERIVED, so it must agree with the endpoints it is
+    # derived from. Checking only "is it long enough" cannot catch a
+    # duration that has drifted away from t_end - t_start — and every
+    # RQ2 figure (median duration, time-in-fixations, rate) is built on
+    # it.
+    check("invariant: duration equals t_end - t_start",
+          all(abs(f.duration - (f.t_end - f.t_start)) < 1e-9 for f in _fx),
+          "max drift %.3g s" % max(abs(f.duration - (f.t_end - f.t_start))
+                                   for f in _fx))
+    _span = float(_fdf["video_time_s"].max()) - float(
+        _fdf["video_time_s"].min())
+    check("invariant: fixations cannot occupy more time than the "
+          "recording lasted",
+          sum(f.duration for f in _fx) <= _span + 1e-9,
+          "%.2f s of fixation in %.2f s of recording"
+          % (sum(f.duration for f in _fx), _span))
+    check("invariant: no fixation starts before the data or ends after it",
+          all(f.t_start >= float(_fdf["video_time_s"].min()) - 1e-9
+              and f.t_end <= float(_fdf["video_time_s"].max()) + 1e-9
+              for f in _fx))
+
+    # The alignment check must be SIGNED, and the sign must mean
+    # something specific: shift = +k says "claim i describes frame i+k".
+    # A check that only ever reports a magnitude cannot distinguish a
+    # model running ahead from one running behind, and those are
+    # different faults.
+    _ft2 = [round(0.4 * i, 1) for i in range(30)]
+    _mk2 = lambda ts: [{"t_start": t, "t_end": t} for t in ts]
+    check("invariant: claims about the NEXT frame read as +1",
+          _ccmod.alignment_check(_mk2(_ft2[1:]), _ft2)["best_shift"] == 1)
+    check("invariant: an extra claim at the start reads as -1",
+          _ccmod.alignment_check(_mk2([_ft2[0]] + _ft2),
+                                 _ft2)["best_shift"] == -1)
+    check("invariant: aligned lists read as 0",
+          _ccmod.alignment_check(_mk2(_ft2), _ft2)["best_shift"] == 0)
+    check("invariant: too few claims to judge returns nothing rather "
+          "than a shift",
+          _ccmod.alignment_check(_mk2(_ft2[:4]), _ft2) is None)
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("end-to-end and invariants", False, _blocked or repr(exc))
+
+
+
+# ── The summary must be LAST ──────────────────────────────────────────
+# Section [20] was appended AFTER this block, so its failures printed as
+# [FAIL] and were never counted: the suite reported ALL TESTS PASSED and
+# exited 0 with a broken invariant on screen. A check that cannot fail
+# the run is decoration, and the whole point of this file is that it
+# fails loudly.
+#
+# This asserts, from inside the file, that nothing calls check() after
+# the summary — so appending a section to the end can never again
+# silently disarm it.
+_self = open(os.path.abspath(__file__), encoding="utf-8").read()
+_marker = "# \u2500\u2500 Summary "
+_after = _self.split(_marker)[-1] if _marker in _self else ""
+check("no check() runs after the summary block",
+      "check(" not in _after,
+      "%d stray check() calls" % _after.count("check("))
 
 # ── Summary ────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)

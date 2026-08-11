@@ -93,8 +93,7 @@ def _expand(bbox, pad_x: float, pad_y: float):
 
 
 def check_claim(claim: dict, samples: list, accuracy_deg: float,
-                px_per_deg: float, video_w: int, video_h: int,
-                grid: "dict | None" = None) -> dict:
+                px_per_deg: float, video_w: int, video_h: int) -> dict:
     """Score one claim against the gaze samples in its time window.
 
     ``samples``: (t_seconds, nx, ny, valid) in normalised video coords.
@@ -105,25 +104,7 @@ def check_claim(claim: dict, samples: list, accuracy_deg: float,
         "attended": claim.get("attended"),
         "confidence": claim.get("confidence"),
     }
-    # A claim naming a REGION from the fixed vocabulary carries its own
-    # rectangle: the grid is known, so the model cannot misplace it and
-    # the claim is scoreable by construction. This is what removes the
-    # model's localisation error from the correspondence measure — the
-    # failure mode that made 46 of 60 claims unscoreable and sent the
-    # remaining misses 404 px in one direction.
     bbox = claim.get("bbox")
-    if claim.get("region") and grid:
-        import regions as _regions
-
-        reg = _regions.region_by_name(grid, claim["region"])
-        if reg:
-            bbox = reg["bbox"]
-            out["region"] = reg["name"]
-        else:
-            out["verdict"] = NO_BOX
-            out["note"] = ("named a region outside the vocabulary: %r"
-                           % claim["region"])
-            return out
     if not bbox or len(bbox) != 4 or any(b is None for b in bbox):
         out["verdict"] = NO_BOX
         out["note"] = "model did not localise this claim"
@@ -267,9 +248,9 @@ def check_claim(claim: dict, samples: list, accuracy_deg: float,
 
 def check_all(claims: list, samples: list, accuracy_deg: float,
               px_per_deg: float, video_w: int, video_h: int,
-              grid: "dict | None" = None) -> dict:
+              frame_times: "list | None" = None) -> dict:
     results = [check_claim(c, samples, accuracy_deg, px_per_deg,
-                           video_w, video_h, grid) for c in claims]
+                           video_w, video_h) for c in claims]
     counts = {k: sum(1 for r in results if r["verdict"] == k)
               for k in (SUPPORTED, CONSISTENT, CONTRADICTED, UNTESTABLE,
                         NO_BOX)}
@@ -310,48 +291,147 @@ def check_all(claims: list, samples: list, accuracy_deg: float,
         #             This is the one that matters: it is what a model
         #             that has learned nothing about THIS recording,
         #             only about where people usually look, would score.
-        "chance": _chance_baselines(results, samples, grid),
+        "box_reuse": box_reuse(claims),
+        "alignment": alignment_check(claims, frame_times),
+        "gaze_summary": gaze_summary(samples),
         "offset_analysis": offset_analysis(results, px_per_deg,
                                            video_w, video_h, accuracy_deg),
     }
 
 
-def _chance_baselines(results: list, samples: list,
-                      grid: "dict | None") -> "dict | None":
-    """What a model that learned nothing would score.
+def alignment_check(claims: list, frame_times: list) -> "dict | None":
+    """Is claim i about frame i, or about its neighbour?
 
-    ``majority`` is the demanding one. Gaze is not uniformly
-    distributed — people look at the middle of a frame — so a model that
-    always names the busiest region scores well above 1/n while
-    demonstrating no sensitivity to the recording at all. A
-    correspondence figure that does not beat it has not shown anything.
+    THE SYMPTOM THIS EXPLAINS
+    -------------------------
+    "Before the fixation it was saying it was the space on the left,
+    one screenshot before I looked left." That is a claim describing
+    the NEXT frame — an off-by-one, and it is invisible per claim
+    because each one is individually plausible.
+
+    Two causes produce it, and they need different fixes:
+
+      the model TRANSCRIBED the times wrong. Each frame is labelled
+        "t=X.Xs" and the model is asked to copy that into t_start. If
+        it instead counts frames and spaces them evenly, the times
+        drift wherever the real fixations are unevenly spaced — small
+        error early, large error late.
+
+      the model ANSWERED about the wrong frame, reading frame i+1 while
+        emitting frame i's timestamp.
+
+    Both show up as a systematic shift between the claim times and the
+    frame times that were actually sent. Trying every integer shift and
+    reporting which one minimises the mismatch distinguishes "the model
+    is one behind" from "the times are simply noisy", which eyeballing
+    a list of plausible sentences cannot.
     """
-    if not grid or not grid.get("admissible") or not samples:
+    ts = [float(c["t_start"]) for c in claims
+          if isinstance(c, dict) and c.get("t_start") is not None]
+    ft = [float(t) for t in (frame_times or []) if t is not None]
+    if len(ts) < 8 or len(ft) < 8:
         return None
-    regions = grid["regions"]
-    n = len(regions)
-    counts = {r["name"]: 0 for r in regions}
-    total = 0
-    for s in samples:
-        if len(s) >= 4 and not s[3]:
-            continue
-        for r in regions:
-            x, y, w, h = r["bbox"]
-            if x <= s[1] < x + w and y <= s[2] < y + h:
-                counts[r["name"]] += 1
-                total += 1
-                break
-    if not total:
-        return None
-    top = max(counts.items(), key=lambda kv: kv[1])
+
+    def _cost(shift: int) -> "tuple":
+        pairs = []
+        for i, t in enumerate(ts):
+            j = i + shift
+            if 0 <= j < len(ft):
+                pairs.append(abs(t - ft[j]))
+        if len(pairs) < 5:
+            return (1e9, 0)
+        pairs.sort()
+        return (pairs[len(pairs) // 2], len(pairs))
+
+    best = min(range(-3, 4), key=lambda s: _cost(s)[0])
+    best_err, n = _cost(best)
+    zero_err, _ = _cost(0)
+
+    # A shift only counts as real if it explains the mismatch much
+    # better than no shift at all. Otherwise the times are noisy and a
+    # shift is fitting that noise.
+    shifted = bool(best != 0 and best_err < 0.5 * zero_err)
     return {
-        "n_regions": n,
-        "uniform_pct": round(100.0 / n, 1),
-        "majority_region": top[0],
-        "majority_pct": round(100.0 * top[1] / total, 1),
-        "note": ("a model that always said %r would score %.1f %%; "
-                 "beating %.1f %% (uniform guessing) is not evidence of "
-                 "anything" % (top[0], 100.0 * top[1] / total, 100.0 / n)),
+        "n_claims": len(ts), "n_frames": len(ft),
+        "best_shift": best,
+        "median_error_s_at_best": round(best_err, 3),
+        "median_error_s_at_zero": round(zero_err, 3),
+        "systematically_shifted": shifted,
+        "count_mismatch": len(ts) - len(ft),
+        "reading": (
+            "OFF BY %+d — claim i lines up with frame i%+d (mismatch "
+            "%.2f s) far better than with frame i (%.2f s). The model "
+            "is answering about a neighbouring frame, or copying the "
+            "wrong label." % (best, best, best_err, zero_err)
+            if shifted else
+            "Claim times line up with the frames that were sent "
+            "(median mismatch %.2f s). No systematic shift."
+            % zero_err),
+    }
+
+
+def box_reuse(claims: list) -> dict:
+    """Does the model re-stamp one box per label, or look at each frame?
+
+    A model that localises from the FRAME gives slightly different
+    coordinates each time — objects shift, the camera moves, its own
+    estimate wobbles. A model that localises from a PRIOR decides where
+    a thing is once and reuses that box verbatim.
+
+    The two are indistinguishable in any single claim and obvious across
+    a session, so this counts distinct boxes per label. It is the
+    cheapest available evidence about whether the localisation step is
+    doing any work at all, and it needs no gaze data — which makes it
+    independent of every other check here.
+    """
+    by_label: dict = {}
+    for c in claims:
+        if not isinstance(c, dict) or not c.get("bbox"):
+            continue
+        lab = str(c.get("attended") or "?")
+        key = tuple(round(float(v), 4) for v in c["bbox"])
+        by_label.setdefault(lab, []).append(key)
+    rows = []
+    reused = total = 0
+    for lab, boxes in by_label.items():
+        n, d = len(boxes), len(set(boxes))
+        rows.append({"label": lab, "claims": n, "distinct_boxes": d})
+        total += n
+        if n > 1 and d == 1:
+            reused += n
+    rows.sort(key=lambda r: -r["claims"])
+    return {
+        "rows": rows,
+        "n_claims_with_box": total,
+        "n_in_reused_boxes": reused,
+        "reuse_pct": round(100.0 * reused / total, 1) if total else None,
+    }
+
+
+def gaze_summary(samples: list) -> dict:
+    """Where the gaze actually was, as a 3x3 distribution and a median.
+
+    A sanity check on MY arithmetic before anyone draws a conclusion
+    about the model. The gaze arrives in screen pixels and is mapped
+    into video coordinates through the manifest's video_rect; if that
+    mapping is wrong, every claim is scored against displaced gaze and
+    the result is a constant offset — which is exactly what a
+    systematically mis-localising model also produces.
+    """
+    valid = [s for s in samples if len(s) < 4 or s[3]]
+    if not valid:
+        return {}
+    xs = sorted(s[1] for s in valid)
+    ys = sorted(s[2] for s in valid)
+    outside = sum(1 for s in valid
+                  if not (0 <= s[1] <= 1 and 0 <= s[2] <= 1))
+    n = len(valid)
+    return {
+        "n": n,
+        "median": [round(xs[n // 2], 3), round(ys[n // 2], 3)],
+        "x_range": [round(xs[int(0.05 * n)], 3), round(xs[int(0.95 * n)], 3)],
+        "y_range": [round(ys[int(0.05 * n)], 3), round(ys[int(0.95 * n)], 3)],
+        "outside_frame_pct": round(100.0 * outside / n, 1),
     }
 
 
@@ -731,8 +811,10 @@ def main() -> int:
                          float(scr.get("diag_inches") or 15.6), float(dist))
     rect = next(s for s in manifest["stimuli"]
                 if s.get("stimulus") == stimulus)["video_rect"]
+    _blk = (manifest.get("llm") or {}).get(stimulus) or {}
     res = check_all(claims, samples, acc, ppd,
-                    int(rect.get("w") or 1920), int(rect.get("h") or 1080))
+                    int(rect.get("w") or 1920), int(rect.get("h") or 1080),
+                    frame_times=_blk.get("frame_times"))
     res.update(session=session, stimulus=stimulus, llm_log=src,
                accuracy_source=acc_src, n_gaze_samples=len(samples))
 
@@ -792,6 +874,56 @@ def main() -> int:
         print("  %.2f deg this pipeline can resolve REGIONS of the scene,"
               % res["accuracy_deg_used"])
         print("  not individual people.")
+
+    # ── Two checks that must come BEFORE any conclusion ──────────────
+    gs = gaze_summary(samples)
+    if gs:
+        print()
+        print("  " + "-" * 68)
+        print("  SANITY CHECK — where the gaze actually was")
+        print("  " + "-" * 68)
+        print("  median (%.2f, %.2f) of the video frame; middle 90 %% spans "
+              "x %.2f-%.2f, y %.2f-%.2f"
+              % (gs["median"][0], gs["median"][1], gs["x_range"][0],
+                 gs["x_range"][1], gs["y_range"][0], gs["y_range"][1]))
+        print("  %.1f %% of samples fell outside the frame entirely"
+              % gs["outside_frame_pct"])
+        print()
+        print("  Open the review tool and check this against the video. If")
+        print("  the marker on screen does NOT sit where this says, the")
+        print("  fault is the screen-to-video mapping in THIS script, not")
+        print("  the model — and every verdict above is void.")
+
+    al = res.get("alignment")
+    if al:
+        print()
+        print("  " + "-" * 68)
+        print("  ARE THE CLAIMS ALIGNED WITH THE FRAMES?")
+        print("  " + "-" * 68)
+        print("  %d claims against %d frames actually sent%s"
+              % (al["n_claims"], al["n_frames"],
+                 ("  (%+d)" % al["count_mismatch"])
+                 if al["count_mismatch"] else ""))
+        for line in _wrap(al["reading"], 68):
+            print("  " + line)
+
+    br = res.get("box_reuse") or {}
+    if br.get("rows"):
+        print()
+        print("  " + "-" * 68)
+        print("  IS THE MODEL LOOKING? — distinct boxes per label")
+        print("  " + "-" * 68)
+        for row in br["rows"][:8]:
+            flag = "  <- one box reused for all"  \
+                if row["claims"] > 1 and row["distinct_boxes"] == 1 else ""
+            print("    %-34s %2d claims, %2d distinct box(es)%s"
+                  % (str(row["label"])[:34], row["claims"],
+                     row["distinct_boxes"], flag))
+        print()
+        print("  %.0f %% of localised claims reuse a box verbatim. A model"
+              % (br["reuse_pct"] or 0))
+        print("  reading each FRAME gives slightly different coordinates")
+        print("  every time; one reciting a PRIOR stamps the same box.")
 
     oa = res.get("offset_analysis")
     if oa:

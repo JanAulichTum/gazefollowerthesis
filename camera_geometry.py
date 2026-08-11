@@ -159,7 +159,20 @@ def estimate_distance(iod_px: float, geometry: dict = None,
     assumptions remain so the manifest records what was measured versus
     inferred.
     """
-    geometry = geometry or load()
+    # `None` means "I did not specify one — go and find the saved
+    # calibration". An EMPTY DICT means "there is no calibration",
+    # deliberately. `geometry or load()` conflated the two, so passing
+    # {} to model an uncalibrated camera silently loaded whatever
+    # calibration happened to be on that machine.
+    #
+    # That is how run_tests passed everywhere except the one machine
+    # that mattered: the test for the uncalibrated uncertainty budget
+    # was correct until the collection laptop was actually calibrated,
+    # at which point {} started returning the MEASURED figure and the
+    # assertion failed. A test that only breaks once the setup is
+    # complete is worse than no test.
+    if geometry is None:
+        geometry = load()
     sources = []
 
     if geometry.get("focal_px"):

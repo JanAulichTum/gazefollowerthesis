@@ -174,6 +174,106 @@ def analyse_axis(targets: list, axis: int) -> dict:
     }
 
 
+def _polyval(coeffs, x: float) -> float:
+    out = 0.0
+    for c in coeffs:
+        out = out * x + float(c)
+    return out
+
+
+def residual_after_correction(targets: list, corr: dict) -> "dict | None":
+    """Apply the fitted correction to the raw gaze and see what is left.
+
+    THE QUESTION THIS ANSWERS
+    ------------------------
+    "The marker sits above where I am actually looking." A gain fitted
+    to reduce the MEAN error can still make particular parts of the
+    screen worse, and it reliably does so when the error is ONE-SIDED:
+    a symmetric expansion about the centre pulls both ends outward, so
+    correcting an end that was short necessarily pushes the end that
+    was already fine past the target.
+
+    Reporting the mean residual hides this — the overshoot at one end
+    cancels the undershoot at the other and the average looks fine. So
+    this splits by screen half and reports each end separately, in the
+    direction words a person actually experiences: ABOVE or BELOW.
+    """
+    if not corr or not corr.get("active"):
+        return None
+    py = corr.get("py")
+    px = corr.get("px")
+    if not py:
+        return None
+
+    rows = []
+    for t in targets:
+        try:
+            ty, my = float(t["ty"]), float(t["my"])
+            tx, mx = float(t["tx"]), float(t["mx"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows.append({
+            "ty": ty,
+            "raw_dy": my - ty,
+            "corr_dy": _polyval(py, my) - ty,
+            "raw_dx": mx - tx,
+            "corr_dx": (_polyval(px, mx) - tx) if px else (mx - tx),
+        })
+    if len(rows) < 4:
+        return None
+
+    centre = (max(r["ty"] for r in rows) + min(r["ty"] for r in rows)) / 2.0
+    upper = [r for r in rows if r["ty"] < centre]     # small y = up the screen
+    lower = [r for r in rows if r["ty"] >= centre]
+
+    def _mean(rs, key):
+        return sum(r[key] for r in rs) / len(rs) if rs else 0.0
+
+    def _word(dy):
+        # Screen y grows DOWNWARD, so a negative residual means the
+        # recorded point sits higher on the screen than the target.
+        return "ABOVE" if dy < 0 else "BELOW"
+
+    up_raw, up_cor = _mean(upper, "raw_dy"), _mean(upper, "corr_dy")
+    lo_raw, lo_cor = _mean(lower, "raw_dy"), _mean(lower, "corr_dy")
+    all_raw = _mean(rows, "raw_dy")
+    all_cor = _mean(rows, "corr_dy")
+
+    # An overshoot is the correction making an end WORSE. Two ways it
+    # happens, and the second is the one that matters most:
+    #
+    #   sign flip   the end was short, is now long
+    #   made worse  the end was already fine and got pushed off
+    #
+    # Only checking for a sign flip misses the second entirely: an end
+    # sitting at 0 px error that the correction moves to 61 px never
+    # changes sign, because it had no sign to change. That is precisely
+    # the case a symmetric gain creates on a ONE-SIDED error, and it is
+    # what "the marker is above where I am looking" feels like.
+    flipped = []
+    for name, raw, cor in (("upper half", up_raw, up_cor),
+                           ("lower half", lo_raw, lo_cor)):
+        worse_by = abs(cor) - abs(raw)
+        if abs(cor) > 20 and (raw * cor < 0 or worse_by > 20):
+            flipped.append(
+                "%s: %.0f px %s -> %.0f px %s (%s by %.0f px)"
+                % (name, abs(raw), _word(raw) if abs(raw) > 5 else "off",
+                   abs(cor), _word(cor),
+                   "WORSE" if worse_by > 0 else "better", abs(worse_by)))
+
+    return {
+        "upper_raw_px": round(up_raw), "upper_corrected_px": round(up_cor),
+        "lower_raw_px": round(lo_raw), "lower_corrected_px": round(lo_cor),
+        "mean_raw_px": round(all_raw), "mean_corrected_px": round(all_cor),
+        "mean_abs_raw_px": round(sum(abs(r["raw_dy"]) for r in rows)
+                                 / len(rows)),
+        "mean_abs_corrected_px": round(sum(abs(r["corr_dy"]) for r in rows)
+                                       / len(rows)),
+        "overshoots": flipped,
+        "upper_word": _word(up_cor), "lower_word": _word(lo_cor),
+    }
+
+
 def analyse(manifest: dict) -> dict:
     vals = manifest.get("validations") or []
     # The UNCORRECTED check: the fit set, before any gain is applied.
@@ -195,6 +295,8 @@ def analyse(manifest: dict) -> dict:
         "x": analyse_axis(targets, 0),
         "y": analyse_axis(targets, 1),
         "applied_correction": manifest.get("gain_correction"),
+        "residual": residual_after_correction(
+            targets, manifest.get("gain_correction") or {}),
     }
 
 
@@ -229,6 +331,29 @@ def report(path: str) -> int:
         print("    mean error   : %+.0f px" % a["mean_error_px"])
         for line in _wrap(a["detail"], 64):
             print("    %s" % line)
+        print()
+
+    # ── What the correction actually did, per screen half ──────────
+    res_r = res.get("residual")
+    if res_r:
+        print("  AFTER THE CORRECTION (vertical, per screen half)")
+        print("    upper half : %+4d px raw  ->  %+4d px  (%s the target)"
+              % (res_r["upper_raw_px"], res_r["upper_corrected_px"],
+                 res_r["upper_word"]))
+        print("    lower half : %+4d px raw  ->  %+4d px  (%s the target)"
+              % (res_r["lower_raw_px"], res_r["lower_corrected_px"],
+                 res_r["lower_word"]))
+        print("    mean |error| : %d px -> %d px"
+              % (res_r["mean_abs_raw_px"], res_r["mean_abs_corrected_px"]))
+        if res_r["overshoots"]:
+            print()
+            print("    *** THE CORRECTION OVERSHOOTS ***")
+            for line in res_r["overshoots"]:
+                print("      %s" % line)
+            print("    A residual that changed SIGN is the correction's")
+            print("    doing, not the tracker's: a symmetric gain about")
+            print("    the centre pulls both ends outward, so fixing the")
+            print("    short end pushes the good end past the target.")
         print()
 
     # The one that changes what you DO next.

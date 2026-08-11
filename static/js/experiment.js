@@ -829,9 +829,25 @@ class ValidationTest {
                 const med = (arr) => arr.sort((a, b) => a - b)[Math.floor(arr.length / 2)];
                 const mx = med(this.samples.map((s) => s[0]));
                 const my = med(this.samples.map((s) => s[1]));
-                // PRECISION: RMS of sample-to-sample distances (the
-                // standard eye-tracking precision metric) — reported
-                // alongside ACCURACY (offset from the target).
+                // PRECISION, two ways, because one of them is not
+                // comparable across sampling rates and this project
+                // changed its rate.
+                //
+                // S2S — RMS of sample-to-sample distances. The common
+                // reported metric, but it measures how far the signal
+                // moves between CONSECUTIVE samples, so it depends on
+                // how far apart in time those samples are. Raising the
+                // poll rate from 7 Hz to 30 Hz exposes high-frequency
+                // noise that decimation was hiding, and s2s goes UP
+                // even though the underlying signal is unchanged. A
+                // tracker that looks worse after you sample it better
+                // has not got worse.
+                //
+                // SD — RMS distance from the target's own median
+                // position. This is dispersion, not step size: it does
+                // not care how many samples the cloud contains, so it
+                // IS comparable across rates. Use it whenever comparing
+                // sessions recorded at different rates.
                 let s2s = 0;
                 for (let k = 1; k < this.samples.length; k++) {
                     const d = Math.hypot(
@@ -840,10 +856,16 @@ class ValidationTest {
                     s2s += d * d;
                 }
                 const prec = Math.sqrt(s2s / (this.samples.length - 1));
+                let sq = 0;
+                for (const s of this.samples) {
+                    sq += Math.pow(s[0] - mx, 2) + Math.pow(s[1] - my, 2);
+                }
+                const sd = Math.sqrt(sq / this.samples.length);
                 out = {
                     tx, ty, mx, my, ok: true,
                     err: Math.hypot(mx - tx, my - ty),
                     prec: prec,
+                    prec_sd: sd,
                     n: this.samples.length,
                 };
             }
@@ -901,6 +923,8 @@ class ValidationTest {
                 err_px: o.ok ? Math.round(o.err * 10) / 10 : null,
                 precision_px: o.ok ? Math.round(o.prec * 10) / 10 : null,
                 n_samples: o.n || 0,
+                precision_sd_px: o.prec_sd === undefined
+                    ? null : Math.round(o.prec_sd * 10) / 10,
             })),
             targets_measured: measured.length,
             mean_err_px: meanPx === null ? null : Math.round(meanPx * 10) / 10,
@@ -910,6 +934,17 @@ class ValidationTest {
                 ? null : Math.round(meanPrec * 10) / 10,
             mean_precision_deg: meanPrec === null
                 ? null : Math.round(pxToDegrees(meanPrec) * 100) / 100,
+            // Rate-INDEPENDENT precision: dispersion about each target's
+            // own median, averaged. Compare this across sessions, not
+            // the sample-to-sample figure above.
+            mean_precision_sd_px: (function () {
+                const v = measured.map((o) => o.prec_sd)
+                    .filter((x) => x !== undefined && x !== null);
+                return v.length
+                    ? Math.round((v.reduce((a, b) => a + b, 0) / v.length)
+                                 * 10) / 10
+                    : null;
+            })(),
             screen: {
                 width_px: window.screen.width,
                 height_px: window.screen.height,
