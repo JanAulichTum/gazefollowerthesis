@@ -102,7 +102,7 @@ def _grade(value, *, lo=None, hi=None, zero_ok=False):
 def pilot_status(path: str) -> "tuple":
     """Is this session pilot data or evaluation data?
 
-    Read from the session date against config.PILOT_BEFORE_DATE. The
+    Read from the session date against config.EVALUATION_FROM_DATE. The
     boundary lives in config precisely so it cannot be decided per
     session, after the numbers are in — which is the difference between
     a pre-registration and a rationalisation.
@@ -110,18 +110,23 @@ def pilot_status(path: str) -> "tuple":
     try:
         import config
 
-        cutoff = getattr(config, "PILOT_BEFORE_DATE", None)
+        start = (getattr(config, "EVALUATION_FROM_DATE", "") or "").strip()
     except Exception:  # noqa: BLE001
-        cutoff = None
+        start = ""
     date = _session_date(path)
-    if not cutoff or not date:
+    if not start:
+        return True, ("DEVELOPMENT — collection has not started. Every "
+                      "session so far exists to build and debug the "
+                      "pipeline and counts toward nothing. Set "
+                      "EVALUATION_FROM_DATE in config.py on the first "
+                      "real collection day.")
+    if not date:
         return None, ""
-    if date < cutoff:
-        return True, ("PILOT — recorded %s, before the %s boundary. "
-                      "Proof of concept: the protocol was still changing. "
-                      "Do not pool with evaluation sessions."
-                      % (date, cutoff))
-    return False, "evaluation session (recorded %s)" % date
+    if date < start:
+        return True, ("DEVELOPMENT — recorded %s, before collection "
+                      "started on %s. Do not pool with evaluation "
+                      "sessions." % (date, start))
+    return False, "EVALUATION session (recorded %s)" % date
 
 
 def check_session(manifest: dict, res: Result) -> None:
@@ -155,18 +160,12 @@ def check_session(manifest: dict, res: Result) -> None:
                     "best.")
 
     if chk:
-        # Out of sample in BOTH space and time. This is the defensible
-        # corrected accuracy.
+        # Out of sample in BOTH space and time. Reported, but NOT the
+        # figure the inclusion criterion is applied to — see below.
         s, v = _grade(chk[0].get("mean_err_deg"), lo=0.1, hi=20)
-        max_deg = SPEC.INCLUSION["max_validation_error_deg"]
-        err = chk[0].get("mean_err_deg") or 0
-        if s == PRESENT and err > max_deg:
-            s = DEGENERATE
         res.add("RQ1", "accuracy_corrected_out_of_sample_deg", s, v,
-                "FAILS the %.1f deg inclusion criterion" % max_deg
-                if err > max_deg
-                else "grid B — canonical corrected accuracy (the "
-                     "correction was never fitted to these positions)")
+                "grid B before the stimuli — the correction was never "
+                "fitted to these positions")
     elif len(fit) > 1:
         # Legacy sessions: a repeated pre at the SAME grid. The samples
         # are new but the positions are the fit's own, so this is not a
@@ -190,8 +189,40 @@ def check_session(manifest: dict, res: Result) -> None:
     else:
         s, v = _grade(post[-1].get("mean_err_deg"), lo=0.1, hi=20)
         res.add("RQ1", "accuracy_post_stimulus_deg", s, v,
-                "grid B after the stimuli — the accuracy during "
-                "recording lies between this and the pre_check")
+                "grid B after the stimuli")
+
+    # ── THE INCLUSION FIGURE ─────────────────────────────────────────
+    # The mean of the two grid-B checks, one either side of the
+    # recording.
+    #
+    # The accuracy the STIMULUS data was recorded at is not measured
+    # directly — it is bracketed by a check before and a check after.
+    # Taking either end alone answers a question nobody asked: pre_check
+    # is the accuracy at the moment recording started, post is the
+    # accuracy once it finished, and the data sits between them. Their
+    # mean is the best single estimate of the thing the criterion is
+    # about.
+    #
+    # Both ends are out of sample on grid B, so neither flatters the
+    # correction, and the mean cannot be gamed by choosing the kinder
+    # end — which is the reason to fix the rule in advance rather than
+    # per session.
+    if chk and post:
+        a = chk[0].get("mean_err_deg")
+        b = post[-1].get("mean_err_deg")
+        if a is not None and b is not None:
+            incl = (float(a) + float(b)) / 2.0
+            max_deg = SPEC.INCLUSION["max_validation_error_deg"]
+            res.add("RQ1", "accuracy_for_inclusion_deg",
+                    DEGENERATE if incl > max_deg else PRESENT,
+                    "%.2f" % incl,
+                    ("FAILS the %.1f deg criterion (pre_check %.2f, post "
+                     "%.2f)" % (max_deg, a, b)) if incl > max_deg else
+                    ("mean of pre_check %.2f and post %.2f — the "
+                     "recording sits between them" % (a, b)))
+    else:
+        res.add("RQ1", "accuracy_for_inclusion_deg", MISSING, "",
+                "needs BOTH a pre_check and a post on grid B")
 
     src = post or pre
     if src:

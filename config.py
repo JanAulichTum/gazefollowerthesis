@@ -87,7 +87,18 @@ LLM_WINDOW_SECONDS = float(os.environ.get("LLM_WINDOW_SECONDS", "5"))
 # the gain refitted each time, 5-point calibrations, sessions recorded
 # before the sampling rate was fixed at ~31 Hz, and sessions whose
 # viewing distance was assumed rather than measured.
-PILOT_BEFORE_DATE = os.environ.get("PILOT_BEFORE_DATE", "2026-08-11")
+#
+# EMPTY means collection has NOT started: every session recorded so far
+# is development data, used to build and debug the pipeline, and none of
+# it counts toward the study. That is the current state and it is the
+# honest one — the sessions to date were run against a pipeline that
+# changed between them, sometimes between validations.
+#
+# Set this to the first collection date when real recruitment begins.
+# Setting it ONCE, in advance, is what makes it a pre-registration; a
+# date chosen afterwards to include the sessions that happened to work
+# is not one.
+EVALUATION_FROM_DATE = os.environ.get("EVALUATION_FROM_DATE", "").strip()
 
 # Assumed viewing distance for px → degrees-of-visual-angle conversion.
 # Used only when the validation could not measure it; logged per session.

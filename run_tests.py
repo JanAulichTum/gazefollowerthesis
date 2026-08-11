@@ -1578,8 +1578,11 @@ try:
           "FAILS the %.0f Hz inclusion criterion" in _vm)
     check("verifier grades sub-threshold data loss as DEGENERATE",
           "FAILS the %.0f %% inclusion criterion" in _vm)
+    # The criterion moved from pre_check alone to the MEAN of the two
+    # grid-B checks either side of the recording, so the message moved
+    # with it.
     check("verifier grades over-threshold accuracy as DEGENERATE",
-          "FAILS the %.1f deg inclusion criterion" in _vm)
+          "FAILS the %.1f deg criterion (pre_check %.2f, post" in _vm)
     check("verifier flags a missing post-validation as blocking",
           "NO POST-STIMULUS VALIDATION" in _vm)
     check("verifier warns that in-sample accuracy is not accuracy",
@@ -2375,10 +2378,9 @@ try:
           'record["attempt"] = len(prior) + 1' in _app3
           and "PROTOCOL:" in _app3)
 
-    check("verify_metrics treats pre_check as the canonical corrected "
-          "accuracy",
+    check("verify_metrics reports pre_check as an out-of-sample figure",
           'v.get("phase") == "pre_check"' in _vm
-          and "canonical corrected accuracy" in _vm)
+          and "the correction was never" in _vm)
     check("a legacy repeat at the FIT grid is graded DEGENERATE, not "
           "reported as corrected accuracy",
           "IN-SAMPLE, not a" in _vm)
@@ -2469,6 +2471,21 @@ try:
     # the scorer and the summaries — object-level claims graded by
     # distance replaced it. The resolution argument survives as prose,
     # not as a grid nobody wanted.
+    # The inclusion criterion applies to the MEAN of the two grid-B
+    # checks, one either side of the recording. Neither end alone
+    # answers the question: the stimulus data sits between them.
+    _vm2 = read("verify_metrics.py")
+    check("inclusion uses the mean of pre_check and post, not one end",
+          "accuracy_for_inclusion_deg" in _vm2
+          and "incl = (float(a) + float(b)) / 2.0" in _vm2)
+    check("both ends of that mean are out-of-sample grid B",
+          "needs BOTH a pre_check and a post on grid B" in _vm2)
+    check("collection has not started, so every session is DEVELOPMENT",
+          "EVALUATION_FROM_DATE" in read("config.py")
+          and "collection has not started" in _vm2)
+    check("an unset start date does not silently promote sessions",
+          _vmod.pilot_status("x_2026-08-11_manifest.json")[0] is True)
+
     check("the region grid is gone entirely",
           not os.path.exists(os.path.join(BASE, "regions.py")))
     check("nothing still imports it",
