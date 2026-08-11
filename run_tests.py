@@ -2379,6 +2379,18 @@ try:
           'record["attempt"] = len(prior) + 1' in _app3
           and "PROTOCOL:" in _app3)
 
+    # ── The written rule and the applied rule must be the same rule ──
+    # metrics_spec.INCLUSION is the pre-declared criterion; verify_metrics
+    # is what actually decides. If the spec names the post-stimulus check
+    # and the code averages two checks, the thesis states a rule it did
+    # not apply — and nobody would notice, because both are defensible.
+    _incl = importlib.import_module("metrics_spec").INCLUSION
+    check("the inclusion rule names the figure the code computes",
+          "mean of pre_check and post" in _incl["canonical_accuracy"]
+          and "mean of pre_check %.2f and post %.2f" in _vm,
+          _incl["canonical_accuracy"])
+    check("the inclusion rule carries the date it was decided",
+          bool(_incl.get("decided_on")) and bool(_incl.get("revised_on")))
     check("verify_metrics reports pre_check as an out-of-sample figure",
           'v.get("phase") == "pre_check"' in _vm
           and "the correction was never" in _vm)

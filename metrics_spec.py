@@ -210,13 +210,33 @@ NOT_APPLICABLE_NAMES = {n for n, _ in NOT_APPLICABLE}
 
 ALL = {"RQ1": RQ1_QUALITY, "RQ2": RQ2_EVENTS, "RQ3": RQ3_FEEDBACK}
 
-# Inclusion criteria — fix these in writing BEFORE further collection.
+# Inclusion criteria — the rule that decides which sessions enter the
+# analysis. It lives HERE, in code, with a date, because that is what
+# makes it checkable: a threshold chosen after seeing which participants
+# fail it is not a criterion, it is a result being selected.
+#
+# The thresholds are in DEGREES, which already contain the viewing
+# distance, so the switch from the inter-ocular ruler to the iris ruler
+# does not change what 3.0 means. What it changes is the measured
+# values: the same recording now reports a LARGER angle, because the
+# angle was previously divided by a distance that was too big. Sessions
+# measured before that fix are not comparable with these thresholds.
 INCLUSION = {
     "max_validation_error_deg": 3.0,
     "min_gaze_samples_pct": 60.0,
     "min_sampling_hz": 20.0,
-    "canonical_accuracy": "post-stimulus, corrected (out-of-sample)",
+    # MUST name the same figure verify_metrics computes, or the written
+    # rule and the applied rule are two different rules. F6: the
+    # recording sits between the two out-of-sample checks, and neither
+    # end alone answers what the stimulus data was recorded at.
+    "canonical_accuracy": "mean of pre_check and post, both grid B "
+                          "(out-of-sample)",
     "decided_on": "2026-08-06",
+    "revised_on": "2026-08-11 — canonical figure changed from the "
+                  "post-stimulus check alone to the mean of the two "
+                  "grid-B checks when the two-grid protocol was "
+                  "introduced (F6). Thresholds unchanged.",
+    "applies_from": "sessions recorded after EVALUATION_FROM_DATE",
 }
 
 
