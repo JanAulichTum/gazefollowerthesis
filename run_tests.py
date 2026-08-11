@@ -2744,17 +2744,43 @@ try:
     for _py in sorted(_scripts):
         check("START.bat offers %s, and it exists" % _py,
               os.path.exists(os.path.join(BASE, _py)))
+    # :eof is batch's built-in return target and is never declared.
     check("every goto in START.bat has a label",
           not (set(m.lower() for m in re.findall(r'goto\s+:(\w+)', _start))
                - set(l.strip()[1:].lower() for l in _start.splitlines()
                      if l.strip().startswith(":")
-                     and not l.strip().startswith("::"))))
+                     and not l.strip().startswith("::"))
+               - {"eof"}))
     check("START.bat is pure ASCII (cmd's codepage mangles the rest)",
           all(ord(c) < 128 for c in _start))
     check("it refuses to pull over uncommitted local changes",
           "NOT pulling" in _start)
     check("it leaves a usable prompt rather than closing",
           "cmd /k" in _start)
+
+    # The update logic exists ONCE and is called from two places. Two
+    # copies would drift, and the copy that drifts is always the one
+    # guarding the collection machine.
+    check("update is a subroutine, defined once",
+          _start.count("\n:do_update") == 1)
+    check("...and called from both launch and the menu",
+          _start.count("call :do_update") == 2)
+    check("there is exactly one git pull and one dirty-tree guard",
+          _start.count("git pull --ff-only") == 1
+          and _start.count("NOT pulling") == 1)
+    check("the menu offers the update",
+          "u  Update from GitHub" in _start
+          and 'if /i "%OPT%"=="u"' in _start)
+    check("no orphaned label survives the refactor",
+          "skip_update" not in _start)
+    check("every goto target and call target exists",
+          not ({m.lower() for m in re.findall(r"goto\s+:(\w+)", _start)}
+               | {m.lower() for m in re.findall(r"call\s+:(\w+)", _start)}
+               ) - ({l.strip()[1:].lower() for l in _start.splitlines()
+                     if l.strip().startswith(":")
+                     and not l.strip().startswith("::")} | {"eof"}))
+    check("the subroutine returns rather than falling through the menu",
+          _start.count("goto :eof") >= 4)
 
     # The API key. This repository is PUBLIC, so "it is in .gitignore"
     # is a claim worth verifying rather than assuming — a key published

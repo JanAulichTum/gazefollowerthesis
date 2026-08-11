@@ -56,57 +56,11 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 REM ---- 2. Update ------------------------------------------------------
-git rev-parse --git-dir >nul 2>&1
-if errorlevel 1 goto :skip_update
-
-for /f %%i in ('git status --porcelain 2^>nul ^| find /c /v ""') do set DIRTY=%%i
-if not "%DIRTY%"=="0" (
-    echo    %DIRTY% uncommitted change^(s^) on this machine - NOT pulling.
-    echo    Overwriting an edit made here, unrecorded, is worse than
-    echo    running slightly behind. Run:  git status
-    echo.
-    goto :skip_update
-)
-
-echo    Checking for updates...
-git fetch --quiet origin 2>nul
-for /f %%i in ('git rev-list --count HEAD..@{u} 2^>nul') do set BEHIND=%%i
-if "%BEHIND%"=="" set BEHIND=0
-if "%BEHIND%"=="0" (
-    echo    Already up to date.
-    echo.
-    goto :skip_update
-)
-
-echo    %BEHIND% new commit^(s^). Pulling...
-git pull --ff-only
-if errorlevel 1 (
-    echo    Pull failed - the branches have diverged. Run: git status
-    pause
-    goto :skip_update
-)
-
-git diff --name-only HEAD@{1} HEAD 2>nul | findstr /i "requirements.txt" >nul
-if not errorlevel 1 (
-    echo    requirements.txt changed - reinstalling...
-    pip install -r requirements.txt
-)
-
-echo.
-echo    Verifying the update...
-python run_tests.py >nul 2>&1
-if errorlevel 1 (
-    echo    *** TESTS FAILED after the update. ***
-    echo    Do not record participants until this is resolved.
-    echo    See the detail with:  python run_tests.py
-    echo.
-    pause
-) else (
-    echo    Tests pass.
-    echo.
-)
-
-:skip_update
+REM  Factored into a subroutine so the SAME logic runs at launch and
+REM  from menu option u. A second copy would drift from the first, and
+REM  the one that drifts is always the one guarding the collection
+REM  machine.
+call :do_update
 
 REM ====================================================================
 REM  MENU
@@ -123,6 +77,7 @@ echo.
 echo    6  Open the fixation CODER         (server + browser)
 echo    7  Camera / rate diagnostics
 echo.
+echo    u  Update from GitHub  (pull + verify)
 echo    c  Coding summary + kappa
 echo    8  Run the test suite
 echo    k  Set the Gemini API key
@@ -140,6 +95,7 @@ if "%OPT%"=="4" ( python calibration_diagnosis.py --all & pause & goto :menu )
 if "%OPT%"=="5" ( python claim_check.py --latest & pause & goto :menu )
 if "%OPT%"=="6" goto :coder
 if "%OPT%"=="7" goto :diag
+if /i "%OPT%"=="u" ( call :do_update & pause & goto :menu )
 if /i "%OPT%"=="c" ( python coding_report.py --paste & pause & goto :menu )
 if "%OPT%"=="8" ( python run_tests.py & pause & goto :menu )
 if /i "%OPT%"=="k" goto :setkey
@@ -148,6 +104,63 @@ if "%OPT%"=="0" exit /b 0
 echo    Not an option.
 echo.
 goto :menu
+
+REM ====================================================================
+REM  UPDATE  (called at launch and from the menu)
+REM ====================================================================
+:do_update
+git rev-parse --git-dir >nul 2>&1
+if errorlevel 1 goto :eof
+
+for /f %%i in ('git status --porcelain 2^>nul ^| find /c /v ""') do set DIRTY=%%i
+if not "%DIRTY%"=="0" (
+    echo    %DIRTY% uncommitted change^(s^) on this machine - NOT pulling.
+    echo    Overwriting an edit made here, unrecorded, is worse than
+    echo    running slightly behind. Run:  git status
+    echo.
+    goto :eof
+)
+
+echo    Checking for updates...
+git fetch --quiet origin 2>nul
+for /f %%i in ('git rev-list --count HEAD..@{u} 2^>nul') do set BEHIND=%%i
+if "%BEHIND%"=="" set BEHIND=0
+if "%BEHIND%"=="0" (
+    echo    Already up to date.
+    echo.
+    goto :eof
+)
+
+echo    %BEHIND% new commit^(s^). Pulling...
+git pull --ff-only
+if errorlevel 1 (
+    echo    Pull failed - the branches have diverged. Run: git status
+    pause
+    goto :eof
+)
+echo.
+git log --oneline -5
+echo.
+
+git diff --name-only HEAD@{1} HEAD 2>nul | findstr /i "requirements.txt" >nul
+if not errorlevel 1 (
+    echo    requirements.txt changed - reinstalling...
+    pip install -r requirements.txt
+)
+
+echo    Verifying the update...
+python run_tests.py >nul 2>&1
+if errorlevel 1 (
+    echo    *** TESTS FAILED after the update. ***
+    echo    Do not record participants until this is resolved.
+    echo    See the detail with:  python run_tests.py
+    echo.
+    pause
+) else (
+    echo    Tests pass.
+    echo.
+)
+goto :eof
 
 :coder
 REM The coder needs the server, and the server owns the webcam - so it
