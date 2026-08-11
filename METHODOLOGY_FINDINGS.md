@@ -261,6 +261,49 @@ being read — and the real gap was buried among nine phantoms.
 
 ---
 
+## F16 · Stimulus design: two 30 s clips, differing in crowding
+**2026-08-11 · Methods (materials) — DECISION**
+
+This is a pipeline validation, not a study of teacher attention, so the
+stimulus set is chosen to test the METHOD rather than to sample a
+domain. Two 30 s clips, identical for every participant.
+
+**Why two rather than one.** One clip cannot separate "the pipeline
+works" from "the pipeline works on this clip", and F9 makes that a live
+concern: attribution depends on how far apart the candidate objects
+are, so a crowded scene and a sparse one should behave differently. Two
+clips chosen to DIFFER on crowding turn a redundancy into a
+manipulation with a testable prediction — correspondence should be
+higher, and the ambiguous share lower, on the sparse clip.
+
+**Why not more.** The precision gain is small and falls off fast:
+
+| clips | fixations/participant | claims at N=10 | 95 % CI (worst case) |
+|---|---|---|---|
+| 1 | 70 | 699 | ±3.7 pp |
+| 2 | 140 | 1398 | ±2.6 pp |
+| 3 | 210 | 2097 | ±2.1 pp |
+
+The second clip costs 30 s of participant time and buys both a scene
+contrast and a third off the confidence interval. The third buys 0.5 pp
+and no new contrast.
+
+**Why 30 s specifically.** At the measured 2.33 fixations/s, the
+200-frame cap binds above **86 s** of video (F10). A 30 s clip sends
+~70 frames — comfortably inside, with no silent truncation.
+
+**Order** is already counterbalanced: `_stimuli_for()` shuffles
+deterministically per participant from a hash of the participant ID, so
+roughly half see each clip first and the order is reproducible. The
+actual presentation order is recorded per session in the manifest's
+`stimuli` list, so it is auditable rather than assumed.
+
+**Analysis note:** report correspondence PER CLIP as well as pooled.
+Pooling a crowded and a sparse scene averages two different ambiguity
+rates into a number that describes neither.
+
+---
+
 ## Open items before evaluation collection
 
 - `EVALUATION_FROM_DATE` is empty: **every session so far is development
