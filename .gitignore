@@ -117,3 +117,29 @@ data/share_pseudonyms.json
 
 # Evaluation sessions: raw participant data, same as gazefollower_raw.
 data/study/
+
+# THE REPLAY PAYLOADS. These are not metadata — app.py writes the LLM
+# request "images included" so model_comparison.py can send a
+# byte-identical prompt to another model. That means base64 JPEG frames
+# of the classroom stimulus: real people, in a school, who did not
+# agree to appear on a public repository. Of everything in this tree
+# these are the files that must never be pushed.
+data/llm_replay/
+data/model_comparison/
+
+# Per-machine camera calibration. Not secret — WRONG to share. The
+# focal length is measured on one webcam, and every distance, and
+# therefore every degree of accuracy, is derived from it. Committing it
+# means a pull can silently replace the machine's own measurement with
+# another laptop's and rescale results with no visible change.
+data/camera_geometry.json
+
+# Inverse-check output: filenames embed the session label, which embeds
+# the participant. Same rule as data/coding/.
+data/inverse_check/
+
+# Rating sheets for the second coder. data/*.xlsx already catches the
+# workbooks, but the directory also collects filled-in returns in
+# whatever format a rater sends back, and every filename carries a
+# session label.
+data/agreement/

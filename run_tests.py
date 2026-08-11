@@ -14,6 +14,7 @@ Checks (no server or camera needed):
   6. Tracker subprocess protocol: spawn → ping → check → shutdown.
 """
 
+import glob
 import json
 import logging
 import math
@@ -2997,6 +2998,75 @@ try:
     # the participant id) and this repository is public.
     check("data/coding/ is gitignored",
           any(l.strip() == "data/coding/" for l in _ignore.splitlines()))
+
+    # ── EVERY output path under data/, not just the ones I remembered ─
+    # Naming the sensitive directories one by one fails the day a new
+    # one is added: data/llm_replay/ was written for months, holds the
+    # base64 stimulus frames, and was one commit away from a public
+    # push because nobody thought to add a line for it.
+    #
+    # So: find the data/ paths the code actually writes, and require
+    # each to be either explicitly PUBLISHED or actually ignored —
+    # asked of git itself, which knows the pattern semantics, rather
+    # than by matching strings against .gitignore.
+    _PUBLISHED = {"shared", "manifests_anonymised", "models.json"}
+    _data_paths = set()
+    for _f in sorted(glob.glob(os.path.join(BASE, "*.py"))):
+        _src = read(os.path.basename(_f))
+        for _m in re.finditer(
+                r'os\.path\.join\(\s*(?:BASE\s*,\s*)?(?:DATA_DIR|"data")\s*,'
+                r'\s*"([A-Za-z0-9_.\-]+)"', _src):
+            _data_paths.add(_m.group(1))
+    check("the scan found the known data/ output paths",
+          {"llm_replay", "coding", "shared"} <= _data_paths,
+          "%d paths: %s" % (len(_data_paths), ", ".join(sorted(_data_paths))))
+
+    _leaks, _git_ok = [], True
+    for _p in sorted(_data_paths):
+        if _p in _PUBLISHED:
+            continue
+        # A representative path inside it. check-ignore matches on the
+        # string, so the file need not exist.
+        _probe = "data/%s" % _p if "." in _p else "data/%s/probe.json" % _p
+        try:
+            _rc = subprocess.call(["git", "check-ignore", "-q", _probe],
+                                  cwd=BASE,
+                                  stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL)
+        except OSError:
+            _git_ok = False
+            break
+        if _rc != 0:
+            _leaks.append(_probe)
+    if _git_ok:
+        check("every data/ output path is ignored or deliberately published",
+              not _leaks,
+              "NOT IGNORED: %s" % ", ".join(_leaks) if _leaks else "")
+
+        # And the specific ones, by name, because these are the two that
+        # actually went wrong: participant faces, and a per-machine
+        # calibration that would rescale every accuracy figure.
+        for _probe, _why in (
+                ("data/llm_replay/x.json", "base64 stimulus frames"),
+                ("data/camera_geometry.json", "per-machine calibration"),
+                ("data/study/x_manifest.json", "raw participant sessions"),
+                ("data/coding/x.json", "participant-linked verdicts")):
+            check("git ignores %s (%s)" % (_probe, _why),
+                  subprocess.call(["git", "check-ignore", "-q", _probe],
+                                  cwd=BASE, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL) == 0)
+
+        # Nothing sensitive may be TRACKED either. check-ignore says what
+        # git would do with a new file; this says what it is already
+        # carrying — a file added before the rule was written stays
+        # tracked and .gitignore does not touch it.
+        _tracked = subprocess.run(
+            ["git", "ls-files", "data/llm_replay", "data/study",
+             "data/coding", "data/camera_geometry.json",
+             "data/gazefollower_raw"],
+            cwd=BASE, capture_output=True, text=True).stdout.split()
+        check("none of them is already tracked in git",
+              not _tracked, "TRACKED: %s" % ", ".join(_tracked[:5]))
 
     _cr = read("coding_report.py")
     check("the coding report separates accuracy from reliability",

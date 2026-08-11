@@ -345,6 +345,39 @@ which `"2026-08-11" < "2026-08-11T14:00"` is true and a session
 recorded at 14:30 would have been filed as development while sitting in
 the study folder.
 
+## F18 · The replay payload is the file that must never be published
+**2026-08-11 · Ethics / data management**
+
+`app.py` writes the LLM request to `data/llm_replay/` **with the images
+included**, so `model_comparison.py` can send a byte-identical prompt to
+a second model. That is the right design for a fair model comparison —
+rebuilding the prompt per model would confound model identity with
+prompt drift — but it means those files hold base64 JPEG frames of the
+classroom stimulus: identifiable people, in a school, on a public
+repository if committed.
+
+Three of these were staged for commit before anything caught it. What
+caught it in the end was the *update guard* refusing to pull with a
+dirty index, not a rule about the files themselves.
+
+Fixed structurally rather than by name: the test suite now enumerates
+every `data/` path the code writes to, and asks **git** — not a string
+match against `.gitignore` — whether each is ignored. Anything neither
+ignored nor on the short published allowlist (`data/shared/`,
+`data/manifests_anonymised/`) fails the suite. It immediately found a
+sixth directory nobody had listed, `data/agreement/`.
+
+Related, and a different kind of hazard: `data/camera_geometry.json` is
+a **per-machine** measurement. Sharing it is not a privacy problem, it
+is a correctness one — a pull could replace the recording laptop's own
+focal length with another machine's, and every distance, and therefore
+every accuracy figure in degrees, would rescale with nothing visible in
+the output to show it. Also excluded.
+
+For the thesis: state that the audit log stores images as SHA-256
+references and only the local replay file holds pixels, and that the
+published artefact set is JSON metrics with pseudonymised labels.
+
 ---
 
 ## Open items before evaluation collection
