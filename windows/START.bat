@@ -123,6 +123,7 @@ echo.
 echo    6  Open the fixation CODER         (server + browser)
 echo    7  Camera / rate diagnostics
 echo.
+echo    c  Coding summary + kappa
 echo    8  Run the test suite
 echo    k  Set the Gemini API key
 echo    9  Just give me a prompt
@@ -139,6 +140,7 @@ if "%OPT%"=="4" ( python calibration_diagnosis.py --all & pause & goto :menu )
 if "%OPT%"=="5" ( python claim_check.py --latest & pause & goto :menu )
 if "%OPT%"=="6" goto :coder
 if "%OPT%"=="7" goto :diag
+if /i "%OPT%"=="c" ( python coding_report.py --paste & pause & goto :menu )
 if "%OPT%"=="8" ( python run_tests.py & pause & goto :menu )
 if /i "%OPT%"=="k" goto :setkey
 if "%OPT%"=="9" goto :shell

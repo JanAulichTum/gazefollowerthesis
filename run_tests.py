@@ -2714,6 +2714,27 @@ try:
     check("config reads the env var first, then the file",
           'os.environ.get("GEMINI_API_KEY"' in read("config.py")
           and '".gemini_key"' in read("config.py"))
+    # Coding verdicts are participant-LINKED (the session label embeds
+    # the participant id) and this repository is public.
+    check("data/coding/ is gitignored",
+          any(l.strip() == "data/coding/" for l in _ignore.splitlines()))
+
+    _cr = read("coding_report.py")
+    check("the coding report separates accuracy from reliability",
+          "ACCURACY" in _cr and "RELIABILITY" in _cr)
+    check("kappa uses only units BOTH coders judged",
+          "set(a) & set(b)" in _cr and "missing data, not" in _cr)
+    check("too few shared units refuses a kappa rather than printing one",
+          "too few for a" in _cr)
+    check("unclear is excluded from accuracy and reported separately",
+          "unclear_pct" in _cr and 'c["correct"] + c["wrong"]' in _cr)
+    check("a single coder is told the number rests on one opinion",
+          "ONE CODER ONLY" in _cr and "systematically generous" in _cr)
+    check("kappa is reported with a benchmark, not bare",
+          "KAPPA_BANDS" in _cr and "Landis" in _cr)
+    check("--paste omits file paths so it is safe to share",
+          '"--paste"' in _cr and "no file paths" in _cr)
+
     check("no key is committed anywhere in the tree",
           not os.path.exists(os.path.join(BASE, ".gemini_key"))
           or "gemini_key" in _ignore)

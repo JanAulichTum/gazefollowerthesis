@@ -103,3 +103,7 @@ Thumbs.db
 # autopush runtime artefacts
 data/autopush.log
 data/autopush.err
+
+# Human coding verdicts. Session IDs embed participant IDs, so these
+# are participant-linked. This repository is PUBLIC.
+data/coding/
