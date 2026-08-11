@@ -2696,6 +2696,24 @@ try:
     check("it lists what is still missing before evaluation collection",
           "Open items before evaluation collection" in _find)
 
+    # ── The stimulus set actually presented ──────────────────────────
+    _rs = read("windows/run_session.bat")
+    check("collection presents the real stimulus set, not the pilot clip",
+          "set SESSION_STIMULUS_MODE=all" in _rs)
+    check("...set in the frozen launcher, not left to a default",
+          'SESSION_STIMULUS_MODE", "clip30"' in read("config.py"))
+    check("an empty stimulus folder stops the run before the participant "
+          "sits down",
+          "NO STIMULI FOUND" in _rs and "exit /b 1" in _rs)
+    check("a set that is not the protocol's 2 clips is called out",
+          "not the 2 the protocol specifies" in _rs)
+    check("the mode and the ACTUAL order are recorded per session",
+          '"stimulus_mode": SESSION_STIMULUS_MODE' in _app3
+          and '"stimulus_order"' in _app3)
+    check("helper clips can never be presented",
+          "TESTCLIP_PREFIX" in read("config.py")
+          and "not f.startswith(TESTCLIP_PREFIX)" in read("config.py"))
+
     # ── The iris ruler, finally available ────────────────────────────
     # GazeFollower's FaceInfo carries the COARSE 468-point mesh, so the
     # iris landmarks (468-477) never existed and every session silently

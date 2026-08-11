@@ -2334,6 +2334,17 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
             "assumed_viewing_distance_cm": VIEWING_DISTANCE_CM,
         },
         "stimuli": state["stimulus_log"],
+        # WHAT WAS PRESENTED, and in what order.
+        # "all" vs "clip30" changes the entire dataset, and the order is
+        # randomised per participant — so a reader cannot reconstruct
+        # either from the code. Both belong in the record: the order is
+        # how you check the counterbalancing actually balanced, and the
+        # mode is how you tell a pilot run from a collection run months
+        # later.
+        "stimulus_mode": SESSION_STIMULUS_MODE,
+        "stimulus_order": [s.get("stimulus")
+                           for s in (state["stimulus_log"] or [])
+                           if s.get("stimulus")],
     }
     try:
         with open(csv_path.replace(".csv", "_manifest.json"), "w",
