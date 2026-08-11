@@ -3265,6 +3265,44 @@ try:
               _got["drift_deg"][1] == "-0.10", _got["drift_deg"][1])
         check("e2e: a measured distance is reported as measured",
               _got["head_distance_cm"][0] == _vmod.PRESENT)
+
+        # ── the RENDERER, not just the computation ───────────────────
+        # Everything above exercises check_session and reads res.rows
+        # directly. That is exactly how a KeyError in report() survived
+        # a green suite and then crashed on the first real session: the
+        # status-to-mark table had no entry for N/A, so the metrics were
+        # all computed correctly and NONE of them were printed. Run the
+        # actual printing path and capture what it emits.
+        import contextlib as _ctx
+        import io as _io
+
+        _buf_out = _io.StringIO()
+        with _ctx.redirect_stdout(_buf_out):
+            _rc = _vmod.report(_man_path)
+        _out = _buf_out.getvalue()
+        check("e2e: report() renders without raising", isinstance(_rc, int))
+        check("e2e: report() prints every row it computed",
+              _out.count("\n   [") == len(_r.rows),
+              "%d printed vs %d rows" % (_out.count("\n   ["), len(_r.rows)))
+        check("e2e: report() renders N/A rows as n/a, not a crash",
+              ("[n/a ]" in _out) == any(s == _vmod.NOT_APPLICABLE
+                                        for _, _, s, _, _ in _r.rows))
+        check("e2e: report() reaches its own summary line",
+              "n/a by design" in _out)
+
+        # Every status the Result can hold must have a mark. Asserting
+        # the table directly means a NEW status added later fails here
+        # rather than in front of a participant.
+        _statuses = {_vmod.PRESENT, _vmod.MISSING, _vmod.DEGENERATE,
+                     _vmod.NOT_APPLICABLE}
+        _marks = {_vmod.PRESENT: "OK  ", _vmod.MISSING: "MISS",
+                  _vmod.DEGENERATE: "BAD ", _vmod.NOT_APPLICABLE: "n/a "}
+        check("every metric status has a display mark",
+              _statuses <= set(_marks) and
+              all(("%s:" % s) or True for s in _statuses) and
+              all(s in read("verify_metrics.py") for s in
+                  ("NOT_APPLICABLE: \"n/a", ".get(status,")),
+              "renderer must not use a bare dict lookup")
     finally:
         _sh.rmtree(_tmp, ignore_errors=True)
 

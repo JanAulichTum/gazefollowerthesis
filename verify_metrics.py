@@ -553,7 +553,13 @@ def report(path: str) -> int:
         if rq != cur:
             print("\n  ── %s ──" % rq)
             cur = rq
-        mark = {PRESENT: "OK  ", MISSING: "MISS", DEGENERATE: "BAD "}[status]
+        # .get, not [], and every status listed. A bare lookup here
+        # crashed the whole report the first time an N/A row reached it:
+        # the metrics were all computed correctly and none of them were
+        # printed, because one renderer did not know about a status the
+        # rest of the file had used for days.
+        mark = {PRESENT: "OK  ", MISSING: "MISS", DEGENERATE: "BAD ",
+                NOT_APPLICABLE: "n/a "}.get(status, "????")
         line = "   [%s] %-42s %s" % (mark, name[:42], value)
         print(line)
         if note:
