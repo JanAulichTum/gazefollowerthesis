@@ -114,3 +114,6 @@ data/share_pseudonyms.json
 
 # ...but data/shared/ IS published on purpose (share_results.py).
 !data/shared/
+
+# Evaluation sessions: raw participant data, same as gazefollower_raw.
+data/study/

@@ -854,8 +854,11 @@ def main() -> int:
     # Nobody should have to read it off a log line to check their own
     # most recent session.
     if args.latest and not args.manifest:
-        found = sorted(glob.glob(os.path.join(
-            DATA_DIR, "gazefollower_raw", "*_manifest.json")),
+        # Both directories: evaluation sessions live in data/study/.
+        found = sorted(
+            glob.glob(os.path.join(DATA_DIR, "study", "*_manifest.json"))
+            + glob.glob(os.path.join(DATA_DIR, "gazefollower_raw",
+                                     "*_manifest.json")),
             key=os.path.getmtime)
         if not found:
             print("No session manifests in data/gazefollower_raw/.")

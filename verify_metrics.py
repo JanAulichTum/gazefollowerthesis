@@ -50,6 +50,23 @@ except Exception:  # noqa: BLE001
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 RAW_DIR = os.path.join(BASE, "data", "gazefollower_raw")
+STUDY_DIR = os.path.join(BASE, "data", "study")
+
+
+def _session_glob(pattern: str = "*_manifest.json") -> list:
+    """Sessions from BOTH directories.
+
+    Evaluation sessions are written to data/study/ and development ones
+    to data/gazefollower_raw/. A tool that globs only one of them goes
+    quietly blind to half the study the day collection starts, which is
+    the worst possible moment for a silent failure.
+    """
+    import glob as _g
+
+    out = []
+    for d in (STUDY_DIR, RAW_DIR):
+        out.extend(_g.glob(os.path.join(d, pattern)))
+    return sorted(out, key=lambda p: os.path.basename(p))
 
 import metrics_spec as SPEC  # noqa: E402
 
@@ -124,24 +141,31 @@ def pilot_status(path: str) -> "tuple":
     """
     try:
         import config
-
-        start = (getattr(config, "EVALUATION_FROM_DATE", "") or "").strip()
     except Exception:  # noqa: BLE001
-        start = ""
-    date = _session_date(path)
+        return None, ""
+
+    start = (getattr(config, "EVALUATION_FROM_DATE", "") or "").strip()
     if not start:
         return True, ("DEVELOPMENT — collection has not started. Every "
                       "session so far exists to build and debug the "
                       "pipeline and counts toward nothing. Set "
                       "EVALUATION_FROM_DATE in config.py on the first "
                       "real collection day.")
-    if not date:
-        return None, ""
-    if date < start:
-        return True, ("DEVELOPMENT — recorded %s, before collection "
-                      "started on %s. Do not pool with evaluation "
-                      "sessions." % (date, start))
-    return False, "EVALUATION session (recorded %s)" % date
+
+    # Ask config, do NOT compare date strings.
+    # The boundary carries a TIME on the first day, and "2026-08-11" <
+    # "2026-08-11T14:00" is true as a string — so a session recorded at
+    # 14:30 that day would have been filed as development. The routing
+    # that decides which FOLDER a session is written to already uses
+    # the real comparison; the label must use the same one or the two
+    # disagree.
+    session_id = os.path.basename(path).replace("_manifest.json", "")
+    date = _session_date(path) or "?"
+    if config.is_evaluation_session(session_id):
+        return False, "EVALUATION session (recorded %s)" % date
+    return True, ("DEVELOPMENT — recorded %s, before collection started "
+                  "at %s. Do not pool with evaluation sessions."
+                  % (date, start))
 
 
 def check_session(manifest: dict, res: Result) -> None:
@@ -600,7 +624,7 @@ def main() -> int:
         print(SPEC.summary())
         return 0
 
-    files = sorted(glob.glob(os.path.join(RAW_DIR, "*_manifest.json")))
+    files = _session_glob()
     if args.path:
         files = [args.path]
     else:

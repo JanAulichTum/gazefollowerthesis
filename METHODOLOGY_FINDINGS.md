@@ -320,10 +320,36 @@ rates into a number that describes neither.
 
 ---
 
+## F17 · Collection boundary and data separation
+**2026-08-11 · Methods (procedure) — DECISION**
+
+`EVALUATION_FROM_DATE = 2026-08-11T14:00`. Everything before it is
+development data; everything after counts toward the study.
+
+**Why it carries a TIME, not just a date.** Collection starting "today"
+must not sweep in the debugging sessions recorded that same morning —
+and two were (`HFP 9:40` and `13:47 11.08`). A date-only boundary would
+have promoted both into the evaluation set, which is precisely what the
+constant exists to prevent.
+
+**Physical separation.** Evaluation sessions are written to
+`data/study/`, development ones stay in `data/gazefollower_raw/`, and
+the routing is automatic from the session's own timestamp. Two folders
+distinguished only by a date inside a filename is an analysis waiting
+to pool them by accident, silently. Every analysis tool reads both
+directories, so nothing goes half-blind the day collection starts.
+
+The label a report prints and the folder a session is written to use
+the SAME comparison — an earlier version compared date strings, under
+which `"2026-08-11" < "2026-08-11T14:00"` is true and a session
+recorded at 14:30 would have been filed as development while sitting in
+the study folder.
+
+---
+
 ## Open items before evaluation collection
 
-- `EVALUATION_FROM_DATE` is empty: **every session so far is development
-  data.** Set it on the first real collection day.
+- ~~`EVALUATION_FROM_DATE`~~ **SET to 2026-08-11T14:00** (F17).
 - No rubric has been supplied, so `criteria_met` is null throughout and
   the **evaluative half of RQ3 has no data at all**. Write it once and
   freeze it.

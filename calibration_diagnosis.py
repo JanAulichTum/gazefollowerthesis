@@ -76,6 +76,23 @@ except Exception:  # noqa: BLE001
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 RAW_DIR = os.path.join(BASE, "data", "gazefollower_raw")
+STUDY_DIR = os.path.join(BASE, "data", "study")
+
+
+def _session_glob(pattern: str = "*_manifest.json") -> list:
+    """Sessions from BOTH directories.
+
+    Evaluation sessions are written to data/study/ and development ones
+    to data/gazefollower_raw/. A tool that globs only one of them goes
+    quietly blind to half the study the day collection starts, which is
+    the worst possible moment for a silent failure.
+    """
+    import glob as _g
+
+    out = []
+    for d in (STUDY_DIR, RAW_DIR):
+        out.extend(_g.glob(os.path.join(d, pattern)))
+    return sorted(out, key=lambda p: os.path.basename(p))
 
 #: A slope this far below 1 means the gaze spans less of the screen than
 #: the targets do — the definition of range compression. 0.9 allows for
@@ -406,8 +423,7 @@ def main() -> int:
     ap.add_argument("--all", action="store_true")
     args = ap.parse_args()
 
-    paths = sorted(glob.glob(os.path.join(RAW_DIR, "*_manifest.json")),
-                   key=os.path.getmtime)
+    paths = sorted(_session_glob(), key=os.path.getmtime)
     if args.all:
         if not paths:
             print("No manifests found.")

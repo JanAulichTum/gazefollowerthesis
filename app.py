@@ -59,6 +59,9 @@ from config import (
     DEFAULT_SCREEN_DIAG_INCHES,
     TEST_CLIP_30S,
     GAZEFOLLOWER_CSV_DIR,
+    STUDY_CSV_DIR,
+    find_manifest,
+    session_dir_for,
     GAZEFOLLOWER_DATA_FILE,
     GEMINI_API_KEY,
     GEMINI_MODEL,
@@ -755,7 +758,8 @@ def api_coding_units():
     claims = []
     claims_source = None
     frame_times = []
-    mpath = os.path.join(GAZEFOLLOWER_CSV_DIR, session + "_manifest.json")
+    mpath = find_manifest(session) or os.path.join(
+        GAZEFOLLOWER_CSV_DIR, session + "_manifest.json")
     accuracy_deg = None
     if os.path.isfile(mpath):
         try:
@@ -989,7 +993,8 @@ def api_session_quality():
     out: dict[str, Any] = {"session": session_id, "stimulus": stimulus}
 
     # ── Manifest-based: validations, drift, correction, thresholds ──
-    mpath = os.path.join(GAZEFOLLOWER_CSV_DIR, session_id + "_manifest.json")
+    mpath = find_manifest(session_id) or os.path.join(
+        GAZEFOLLOWER_CSV_DIR, session_id + "_manifest.json")
     if session_id and os.path.isfile(mpath):
         try:
             with open(mpath, encoding="utf-8") as fh:
@@ -1483,7 +1488,8 @@ def _session_validation_error(session_id: str) -> "dict | None":
     """
     if not session_id:
         return None
-    path = os.path.join(GAZEFOLLOWER_CSV_DIR, session_id + "_manifest.json")
+    path = find_manifest(session_id) or os.path.join(
+        GAZEFOLLOWER_CSV_DIR, session_id + "_manifest.json")
     if not os.path.isfile(path):
         return None
     try:
@@ -2225,7 +2231,6 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
     state["telemetry_summary"] = tel_summary
 
     participant_id = state.get("participant_id") or "unknown"
-    os.makedirs(GAZEFOLLOWER_CSV_DIR, exist_ok=True)
     # Human-readable session name: <participant>_<date>_<time>. The
     # basename (without .csv) doubles as the session_id in the Excel
     # workbook, the manifest name, and the review tool.
@@ -2233,11 +2238,20 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
         _safe_filename(participant_id),
         datetime.now().strftime("%Y-%m-%d_%H%M%S"),
     )
-    csv_path = os.path.join(GAZEFOLLOWER_CSV_DIR, base + ".csv")
+    # WHERE it lands is decided by the session's own timestamp against
+    # EVALUATION_FROM_DATE, not by anyone remembering. Development and
+    # evaluation data in one folder are distinguished only by a date
+    # inside a filename, and the analysis that pools them by accident
+    # is silent.
+    out_dir = session_dir_for(base)
+    os.makedirs(out_dir, exist_ok=True)
+    logger.info("Session %s -> %s (%s data)", base,
+                os.path.basename(out_dir),
+                "EVALUATION" if out_dir == STUDY_CSV_DIR else "development")
+    csv_path = os.path.join(out_dir, base + ".csv")
     n = 2
     while os.path.exists(csv_path):   # same participant, same second
-        csv_path = os.path.join(GAZEFOLLOWER_CSV_DIR,
-                                "%s_run%d.csv" % (base, n))
+        csv_path = os.path.join(out_dir, "%s_run%d.csv" % (base, n))
         n += 1
     counts = finalize_gazefollower_session(
         participant_id, csv_path, state["stimulus_log"],
@@ -3383,7 +3397,8 @@ def _persist_llm_result(session: str, stimulus: str, block: dict) -> None:
     """
     if not session:
         return
-    path = os.path.join(GAZEFOLLOWER_CSV_DIR, "%s_manifest.json" % session)
+    path = find_manifest(session) or os.path.join(
+        GAZEFOLLOWER_CSV_DIR, "%s_manifest.json" % session)
     if not os.path.isfile(path):
         logger.warning("No manifest at %s — LLM result not persisted", path)
         return

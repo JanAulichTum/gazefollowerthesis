@@ -2720,6 +2720,42 @@ try:
           and _ccmod.check_all(_c24, _s24, 2.13, 58.2, 1680,
                                945)["crowding"] is not None)
 
+    # ── Evaluation data lands in its own folder ──────────────────────
+    _cfgmod = importlib.import_module("config")
+    importlib.reload(_cfgmod)
+    check("collection has a start boundary, with a TIME on the first day",
+          bool(_cfgmod._eval_boundary()),
+          _cfgmod.EVALUATION_FROM_DATE)
+    check("the boundary excludes the same day's earlier debug runs",
+          _cfgmod.is_evaluation_session(
+              "13_47_11.08_2026-08-11_135021") is False)
+    check("...and includes a session recorded after it that same day",
+          _cfgmod.is_evaluation_session("P01_2026-08-11_143000") is True)
+    check("evaluation sessions route to data/study",
+          _cfgmod.session_dir_for("P01_2026-08-11_143000")
+          .endswith("study"))
+    check("development sessions stay in gazefollower_raw",
+          _cfgmod.session_dir_for("x_2026-07-16_163647")
+          .endswith("gazefollower_raw"))
+    check("a date-only boundary still works",
+          _cfgmod._eval_boundary() is not None)
+    check("the label and the folder use the SAME comparison",
+          "config.is_evaluation_session(session_id)" in _vm
+          and "do NOT compare date strings" in _vm)
+    check("the app routes by timestamp, not by memory",
+          "session_dir_for(base)" in _app3
+          and "not by anyone remembering" in _app3)
+    check("every analysis tool reads BOTH directories",
+          all("_session_glob" in read(f) for f in
+              ("verify_metrics.py", "calibration_diagnosis.py",
+               "inverse_check.py", "share_results.py",
+               "quality_report.py")))
+    check("claim_check --latest searches both too",
+          'DATA_DIR, "study"' in _cc)
+    check("raw participant data in data/study is NOT published",
+          any(l.strip() == "data/study/" for l in read(".gitignore")
+              .splitlines()))
+
     # ── The stimulus set actually presented ──────────────────────────
     _rs = read("windows/run_session.bat")
     check("collection presents the real stimulus set, not the pilot clip",

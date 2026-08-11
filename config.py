@@ -121,7 +121,15 @@ LLM_WINDOW_SECONDS = float(os.environ.get("LLM_WINDOW_SECONDS", "5"))
 # Setting it ONCE, in advance, is what makes it a pre-registration; a
 # date chosen afterwards to include the sessions that happened to work
 # is not one.
-EVALUATION_FROM_DATE = os.environ.get("EVALUATION_FROM_DATE", "").strip()
+# Accepts "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM".
+#
+# The time matters on the FIRST day. Collection starting "today" cannot
+# sweep in the debugging sessions recorded that same morning, and a
+# date-only boundary would do exactly that — quietly promoting
+# development runs into the evaluation set, which is the one thing this
+# constant exists to prevent.
+EVALUATION_FROM_DATE = os.environ.get(
+    "EVALUATION_FROM_DATE", "2026-08-11T14:00").strip()
 
 # Assumed viewing distance for px → degrees-of-visual-angle conversion.
 # Used only when the validation could not measure it; logged per session.
@@ -249,6 +257,94 @@ PARTICIPANTS_FILE = os.path.join(DATA_DIR, "participants.xlsx")
 # Excel workbook for analysis.
 GAZEFOLLOWER_DATA_FILE = os.path.join(DATA_DIR, "gazefollower_data.xlsx")
 GAZEFOLLOWER_CSV_DIR = os.path.join(DATA_DIR, "gazefollower_raw")
+
+# ── Where EVALUATION sessions are written ─────────────────────────────
+# Development and evaluation data in one folder is a mistake waiting to
+# happen: the two are distinguished only by a date in a filename, and
+# the analysis that pools them by accident is silent. Separate
+# directories make the distinction physical — you can see it in a file
+# browser, back it up on its own, and hand it to a supervisor without
+# a filter.
+#
+# The routing is automatic (session date vs EVALUATION_FROM_DATE), so
+# nobody has to remember which folder a run belongs in.
+STUDY_CSV_DIR = os.path.join(DATA_DIR, "study")
+
+
+def session_dirs() -> list:
+    """Both session directories, newest convention first.
+
+    Every analysis tool reads through this rather than hard-coding a
+    path, so adding the study folder cannot leave a tool silently
+    looking at only half the data.
+    """
+    return [STUDY_CSV_DIR, GAZEFOLLOWER_CSV_DIR]
+
+
+def _eval_boundary():
+    """EVALUATION_FROM_DATE as a datetime, or None if collection has
+    not started."""
+    import datetime as _dt
+
+    raw = (EVALUATION_FROM_DATE or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return _dt.datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def is_evaluation_session(session_id: str) -> bool:
+    """Does this session belong to the evaluation set?
+
+    Parsed from the session label, which ends
+    "<name>_YYYY-MM-DD_HHMMSS" — so the comparison uses the recording's
+    own timestamp rather than when a file was last touched.
+    """
+    import datetime as _dt
+    import re as _re
+
+    boundary = _eval_boundary()
+    if boundary is None:
+        return False
+    m = _re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})(\d{2})",
+                   str(session_id or ""))
+    if not m:
+        return False
+    try:
+        when = _dt.datetime.strptime(m.group(1), "%Y-%m-%d").replace(
+            hour=int(m.group(2)), minute=int(m.group(3)))
+    except ValueError:
+        return False
+    return when >= boundary
+
+
+def session_dir_for(session_id: str) -> str:
+    """Where a session's CSV and manifest belong."""
+    return (STUDY_CSV_DIR if is_evaluation_session(session_id)
+            else GAZEFOLLOWER_CSV_DIR)
+
+
+def find_manifest(session_id: str) -> "str | None":
+    """A session's manifest, in whichever directory holds it."""
+    for d in session_dirs():
+        p = os.path.join(d, "%s_manifest.json" % session_id)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def all_manifests() -> list:
+    """Every session manifest, both directories, oldest first."""
+    import glob as _glob
+
+    out = []
+    for d in session_dirs():
+        out.extend(_glob.glob(os.path.join(d, "*_manifest.json")))
+    return sorted(out, key=lambda p: os.path.basename(p))
 
 # ---------------------------------------------------------------------------
 # Stimulus discovery
