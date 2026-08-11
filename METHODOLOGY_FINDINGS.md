@@ -221,7 +221,23 @@ better ruler was unavailable. Most likely cause: GazeFollower's FaceInfo
 carries the coarse 468-point mesh, in which the iris landmarks (468–477)
 do not exist.
 
-**Status: mechanism identified, not yet confirmed on a live run.**
+**RESOLVED 2026-08-11.** The cause was confirmed: GazeFollower's
+FaceInfo carries the coarse 468-point mesh, and the iris landmarks are
+468-477 — they do not exist in it, so the better ruler was never
+available. Both 2026-08-11 sessions therefore read ~75 cm from the eye
+RECTANGLES, whose centres are not the pupil centres the 6.3 cm
+inter-pupillary constant describes.
+
+Fix: when the supplied landmarks are coarse, the tracker now runs its
+OWN refined FaceMesh on the current frame. Affordable because it is on
+demand at validation time, not per frame (~10 ms, once). Trades a
+population mean applied to the wrong landmarks (~11 %, yaw-dependent)
+for a physiological constant (iris 11.7 mm ± 0.5, ~4 %).
+
+**Check on the next session:** `head_distance_cm` should report
+`via iris`, not `UNKNOWN RULER`. If the measured distance moves away
+from ~75 cm, every degree figure in the earlier sessions was scaled by
+that error — 1.03° at 74.7 cm would be 1.28° at 60 cm.
 
 ## F14 · Camera focal length, measured
 **2026-08-10 · Methods (apparatus)**

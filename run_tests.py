@@ -2696,6 +2696,46 @@ try:
     check("it lists what is still missing before evaluation collection",
           "Open items before evaluation collection" in _find)
 
+    # ── The iris ruler, finally available ────────────────────────────
+    # GazeFollower's FaceInfo carries the COARSE 468-point mesh, so the
+    # iris landmarks (468-477) never existed and every session silently
+    # used the eye RECTANGLES with an inter-pupillary constant. Both
+    # 2026-08-11 sessions reported "UNKNOWN RULER" at ~75 cm, and every
+    # degree divides by that distance.
+    _ts = read("tracker_service.py")
+    check("a coarse mesh triggers our OWN refined pass",
+          "if not lm or len(lm) < 478:" in _ts
+          and "def _refined_landmarks" in _ts)
+    check("the refined mesh is actually requested",
+          "refine_landmarks=True" in _ts)
+    check("it is built lazily and reused, not per frame",
+          '_iris_mesh' in _ts and "Built lazily and reused" in _ts)
+    check("an unavailable iris degrades instead of stopping a validation",
+          "falling back to the" in _ts)
+    check("the source is recorded when the fallback mesh is used",
+          '"iris_landmarks_from"' in _ts)
+    # The switch must CHANGE the outcome, or it is decoration.
+    class _P:
+        __slots__ = ("x", "y", "z")
+
+        def __init__(self, x, y):
+            self.x, self.y, self.z = x, y, 0.0
+
+    def _mesh_n(n):
+        lm = [_P(0.5, 0.5) for _ in range(n)]
+        if n >= 478:
+            for i, (px, py) in {469: (306, 240), 471: (294, 240),
+                                474: (406, 240), 476: (394, 240)}.items():
+                lm[i] = _P(px / 640, py / 480)
+        return lm
+
+    check("...verified: a 468-point mesh cannot measure the iris",
+          bool(_iris_mod.iris_diameter_px(_mesh_n(468), 640, 480)
+               .get("error")))
+    check("...and a 478-point mesh can",
+          _iris_mod.iris_diameter_px(_mesh_n(478), 640, 480)
+          .get("mean_px") == 12.0)
+
     # ── Sharing results publicly ─────────────────────────────────────
     _sr = read("share_results.py")
     _srmod = importlib.import_module("share_results")

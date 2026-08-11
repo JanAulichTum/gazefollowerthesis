@@ -1651,6 +1651,44 @@ class Service:
     # positioning guidance (which is relative).
     _ASSUMED_HFOV_DEG = 60.0
 
+    def _refined_landmarks(self):
+        """478-point landmarks for the CURRENT frame, or None.
+
+        The refined mesh is the only one that contains the iris points,
+        and GazeFollower does not use it. Built lazily and reused: the
+        FaceMesh constructor is expensive, the inference is not, and
+        this runs on demand rather than per frame.
+
+        Never raises — an unavailable iris must degrade to the
+        inter-ocular estimate, not stop a validation.
+        """
+        try:
+            import cv2
+
+            frame = self._grab_frame()
+            if frame is None:
+                return None
+            mesh = getattr(self, "_iris_mesh", None)
+            if mesh is None:
+                import mediapipe as mp
+
+                mesh = mp.solutions.face_mesh.FaceMesh(
+                    static_image_mode=False, max_num_faces=1,
+                    refine_landmarks=True,     # <- the whole point
+                    min_detection_confidence=0.5,
+                    min_tracking_confidence=0.5)
+                self._iris_mesh = mesh
+                log("Refined FaceMesh created for iris measurement "
+                    "(GazeFollower's own mesh has no iris landmarks).")
+            res = mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            if not res.multi_face_landmarks:
+                return None
+            return res.multi_face_landmarks[0].landmark
+        except Exception as exc:  # noqa: BLE001
+            log("Refined mesh unavailable (%s) — falling back to the "
+                "inter-ocular distance." % exc)
+            return None
+
     def _grab_frame(self):
         """Best-effort read of GazeFollower's latest camera frame.
 
@@ -1837,6 +1875,25 @@ class Service:
 
             lm = self._attr(fi, ("landmarks", "face_landmarks",
                                  "landmark", "points", "mesh"))
+            # GazeFollower's FaceInfo carries the COARSE 468-point mesh.
+            # The iris landmarks are 468-477 and simply do not exist
+            # there, so the better ruler was never available and every
+            # session silently fell back to the eye rectangles — whose
+            # centres are not the pupil centres that the 6.3 cm
+            # inter-pupillary constant describes.
+            #
+            # Run our OWN refined mesh on the current frame instead.
+            # This is affordable because it happens on demand, at
+            # validation time, not on the per-frame path: one extra
+            # FaceMesh pass costs ~10 ms and buys the physiological
+            # constant (iris 11.7 mm +- 0.5, ~4 %) in place of a
+            # population mean applied to the wrong landmarks (~11 %,
+            # and yaw-dependent).
+            if not lm or len(lm) < 478:
+                own = self._refined_landmarks()
+                if own is not None:
+                    lm = own
+                    m["iris_landmarks_from"] = "own refined FaceMesh"
             focal_px, _meas = self._focal_px(w)
             iris = iris_distance.estimate(
                 lm, m.get("inter_ocular_px") or 0.0, focal_px, w, h)
