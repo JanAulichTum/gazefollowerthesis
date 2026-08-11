@@ -2699,6 +2699,24 @@ try:
           "NOT pulling" in _start)
     check("it leaves a usable prompt rather than closing",
           "cmd /k" in _start)
+
+    # The API key. This repository is PUBLIC, so "it is in .gitignore"
+    # is a claim worth verifying rather than assuming — a key published
+    # to GitHub is revoked-and-rotated, not un-published.
+    _ignore = read(".gitignore")
+    check(".gemini_key is gitignored",
+          any(l.strip() == ".gemini_key" for l in _ignore.splitlines()))
+    check("so is anything else ending in .key, and .env",
+          "*.key" in _ignore and ".env" in _ignore)
+    check("the launcher VERIFIES the ignore before writing a key",
+          "git check-ignore -q .gemini_key" in _start
+          and "Do NOT save a key" in _start)
+    check("config reads the env var first, then the file",
+          'os.environ.get("GEMINI_API_KEY"' in read("config.py")
+          and '".gemini_key"' in read("config.py"))
+    check("no key is committed anywhere in the tree",
+          not os.path.exists(os.path.join(BASE, ".gemini_key"))
+          or "gemini_key" in _ignore)
     check("running with no arguments says how to score a real session",
           "showing the DEMO on synthetic data" in _cc)
     check("duty prefers total callback cost over model cost",

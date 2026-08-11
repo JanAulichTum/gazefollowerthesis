@@ -124,6 +124,7 @@ echo    6  Open the fixation CODER         (server + browser)
 echo    7  Camera / rate diagnostics
 echo.
 echo    8  Run the test suite
+echo    k  Set the Gemini API key
 echo    9  Just give me a prompt
 echo    0  Quit
 echo   ----------------------------------------------------------------
@@ -139,6 +140,7 @@ if "%OPT%"=="5" ( python claim_check.py --latest & pause & goto :menu )
 if "%OPT%"=="6" goto :coder
 if "%OPT%"=="7" goto :diag
 if "%OPT%"=="8" ( python run_tests.py & pause & goto :menu )
+if /i "%OPT%"=="k" goto :setkey
 if "%OPT%"=="9" goto :shell
 if "%OPT%"=="0" exit /b 0
 echo    Not an option.
@@ -179,6 +181,52 @@ if /i "%D%"=="c" (
     python camera_geometry.py --calibrate !CM! --measure
     pause & goto :diag
 )
+goto :menu
+
+:setkey
+REM The key lives in .gemini_key next to config.py. A dot-leading file
+REM is awkward to create in Explorer, and it must NOT end up in git -
+REM this repository is public. .gitignore already covers it; the check
+REM below verifies that rather than trusting it.
+echo   ----------------------------------------------------------------
+echo    The key is stored in .gemini_key in the project folder.
+echo    It is gitignored, so it will not be pushed - but this repo is
+echo    PUBLIC, so that matters. Verifying...
+echo.
+git check-ignore -q .gemini_key
+if errorlevel 1 (
+    echo    *** WARNING: .gemini_key is NOT ignored by git. ***
+    echo    Do NOT save a key until that is fixed, or it will be
+    echo    published on the next push.
+    echo.
+    pause
+    goto :menu
+)
+echo    Confirmed: git will ignore it.
+echo.
+if exist ".gemini_key" (
+    for %%A in (.gemini_key) do set KEYSIZE=%%~zA
+    echo    A key file already exists ^(!KEYSIZE! bytes^). Entering a new
+    echo    key replaces it; press Enter alone to keep the current one.
+    echo.
+)
+set "GKEY="
+set /p GKEY=   Paste your Gemini API key:
+if "!GKEY!"=="" (
+    echo    Unchanged.
+    echo.
+    pause
+    goto :menu
+)
+REM No trailing space before the redirect: "echo x> f" writes exactly x.
+>.gemini_key echo !GKEY!
+echo.
+python -c "import config; k=config.GEMINI_API_KEY; print('   Key loaded: %s...%s (%d chars)' % (k[:6], k[-4:], len(k)) if k else '   NOT LOADED - check the file')"
+echo.
+echo    Nothing else to do - app.py reads it at startup. Restart the
+echo    server if it is already running.
+echo.
+pause
 goto :menu
 
 :shell
