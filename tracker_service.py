@@ -1798,6 +1798,18 @@ class Service:
             if iod > 1:
                 focal, measured = self._focal_px(w)
                 m["est_distance_cm"] = round(self._REAL_IOD_CM * focal / iod, 1)
+                # Name the ruler HERE, so the field is never blank. The
+                # iris block below overwrites it when it succeeds; if it
+                # does not, a reader still learns which measurement
+                # produced the distance every degree divides by.
+                #
+                # A blank source is what the 2026-08-11 session showed
+                # ("measured at the pre_check check via ?"), and it hid
+                # the fact that the iris estimate had failed and the
+                # figure came from GazeFollower's EYE RECTANGLES — whose
+                # centres are not guaranteed to be pupil centres, which
+                # is the thing POPULATION_IOD_CM describes.
+                m["distance_source"] = "inter-ocular (GazeFollower eye rects)"
                 m["focal_px"] = round(focal, 1)
                 # Whether the distance rests on a MEASURED focal length or
                 # on the assumed field of view. Every degree figure in the
@@ -1828,6 +1840,21 @@ class Service:
             focal_px, _meas = self._focal_px(w)
             iris = iris_distance.estimate(
                 lm, m.get("inter_ocular_px") or 0.0, focal_px, w, h)
+            # WHY the iris failed, when it does. The iris is the better
+            # ruler and the pipeline is built to prefer it, so a session
+            # that silently fell back to the inter-ocular distance
+            # should say so rather than leaving the reader to infer it
+            # from an empty field. The usual cause is that
+            # GazeFollower's FaceInfo carries the COARSE 468-point mesh:
+            # the iris points are 468-477 and simply do not exist there.
+            if not lm:
+                m["iris_error"] = ("no landmarks on FaceInfo — cannot "
+                                   "measure the iris")
+            elif iris and iris.get("error"):
+                m["iris_error"] = str(iris["error"])[:120]
+            elif not iris:
+                m["iris_error"] = "iris estimate returned nothing"
+
             if iris and not iris.get("error"):
                 chk = iris.get("check") or {}
                 if chk.get("distance_cm"):

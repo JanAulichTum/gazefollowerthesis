@@ -298,7 +298,13 @@ def check_session(manifest: dict, res: Result) -> None:
                 "the assumed %s cm" % (dist.get("assumed_cm") or 60))
     else:
         note = "measured at the %s check via %s" % (
-            dist.get("from_phase") or "?", dist.get("source") or "?")
+            dist.get("from_phase") or "?",
+            dist.get("source") or "UNKNOWN RULER")
+        if dist.get("iris_error"):
+            # Not fatal, but it means the fallback ruler was used and
+            # the reader should know which one produced the number
+            # every degree in the session divides by.
+            note += " [iris unavailable: %s]" % str(dist["iris_error"])[:60]
         if dist.get("estimates_agree") is False:
             s = DEGENERATE
             note += " — iris and pupil estimates DISAGREE"

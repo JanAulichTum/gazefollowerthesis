@@ -2795,6 +2795,8 @@ def handle_validation_result(payload: dict):
                 "iod_cm": pos.get("distance_cm_iod"),
                 "estimates_agree": pos.get("distance_estimates_agree"),
                 "warning": pos.get("distance_warning"),
+                # Why the better ruler was not used, if it was not.
+                "iris_error": pos.get("iris_error"),
                 "focal_measured": pos.get("focal_measured"),
                 "measured": True,
             }
