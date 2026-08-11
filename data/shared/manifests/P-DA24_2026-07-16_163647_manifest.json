@@ -1,0 +1,292 @@
+{
+  "participant_id": "P-DA24",
+  "finalized_at_utc": "2026-07-16T14:36:58.644655+00:00",
+  "session_csv": "P-DA24_2026-07-16_163647.csv",
+  "test_mode": true,
+  "sample_counts": {
+    "Stimuli_4.mp4": 1721
+  },
+  "data_quality": {
+    "Stimuli_4.mp4": {
+      "samples": 1721,
+      "valid_samples": 1721,
+      "valid_pct": 100.0,
+      "gaze_samples_pct": 50.0,
+      "passes_gaze_samples_threshold": false,
+      "nominal_sampling_hz": 30.0,
+      "relative_yield_pct": 100.0,
+      "sampling_hz": 14.6,
+      "sampling_hz_fastest": 16.2,
+      "rate_ratio": 1.11,
+      "rate_multimodal": false,
+      "low_sampling_rate": true
+    }
+  },
+  "validations": [
+    {
+      "phase": "pre",
+      "recorded_at_utc": "2026-07-16T14:34:00.049143+00:00",
+      "targets": [
+        {
+          "tx": 202,
+          "ty": 126,
+          "mx": 321,
+          "my": 313,
+          "err_px": 221.9,
+          "precision_px": 21,
+          "n_samples": 20
+        },
+        {
+          "tx": 1478,
+          "ty": 126,
+          "mx": 1595,
+          "my": 236,
+          "err_px": 160.4,
+          "precision_px": 2.8,
+          "n_samples": 20
+        },
+        {
+          "tx": 840,
+          "ty": 525,
+          "mx": 920,
+          "my": 559,
+          "err_px": 86.7,
+          "precision_px": 14.6,
+          "n_samples": 20
+        },
+        {
+          "tx": 202,
+          "ty": 924,
+          "mx": 139,
+          "my": 953,
+          "err_px": 69.6,
+          "precision_px": 18.2,
+          "n_samples": 19
+        },
+        {
+          "tx": 1478,
+          "ty": 924,
+          "mx": 1548,
+          "my": 958,
+          "err_px": 77.5,
+          "precision_px": 5.6,
+          "n_samples": 20
+        }
+      ],
+      "targets_measured": 5,
+      "mean_err_px": 123.2,
+      "mean_err_deg": 2.01,
+      "mean_precision_px": 12.5,
+      "mean_precision_deg": 0.2,
+      "correction_active": {
+        "active": false
+      },
+      "screen": {
+        "width_px": 1680,
+        "height_px": 1050,
+        "device_pixel_ratio": 2,
+        "diag_inches": 13.3,
+        "diag_assumed": false,
+        "viewing_distance_cm": 60
+      },
+      "passes_threshold": true
+    },
+    {
+      "phase": "pre",
+      "recorded_at_utc": "2026-07-16T14:34:32.779121+00:00",
+      "targets": [
+        {
+          "tx": 202,
+          "ty": 126,
+          "mx": 308,
+          "my": 207,
+          "err_px": 133.8,
+          "precision_px": 22.4,
+          "n_samples": 20
+        },
+        {
+          "tx": 1478,
+          "ty": 126,
+          "mx": 1470,
+          "my": 223,
+          "err_px": 97.4,
+          "precision_px": 12.8,
+          "n_samples": 20
+        },
+        {
+          "tx": 840,
+          "ty": 525,
+          "mx": 882,
+          "my": 582,
+          "err_px": 70.7,
+          "precision_px": 12.6,
+          "n_samples": 20
+        },
+        {
+          "tx": 202,
+          "ty": 924,
+          "mx": 168,
+          "my": 949,
+          "err_px": 41.5,
+          "precision_px": 17,
+          "n_samples": 20
+        },
+        {
+          "tx": 1478,
+          "ty": 924,
+          "mx": 1456,
+          "my": 1009,
+          "err_px": 87.6,
+          "precision_px": 110.5,
+          "n_samples": 20
+        }
+      ],
+      "targets_measured": 5,
+      "mean_err_px": 86.2,
+      "mean_err_deg": 1.4,
+      "mean_precision_px": 35.1,
+      "mean_precision_deg": 0.57,
+      "correction_active": {
+        "active": true,
+        "px": [
+          0.941774,
+          -11.928519
+        ],
+        "py": [
+          1.158107,
+          -174.265002
+        ],
+        "cy": 525.0,
+        "kind": "affine",
+        "gain_x": 0.942,
+        "gain_y": 1.158,
+        "gain_mean": 1.05,
+        "source": "auto-fit (affine)"
+      },
+      "screen": {
+        "width_px": 1680,
+        "height_px": 1050,
+        "device_pixel_ratio": 2,
+        "diag_inches": 13.3,
+        "diag_assumed": false,
+        "viewing_distance_cm": 60
+      },
+      "passes_threshold": true
+    },
+    {
+      "phase": "post",
+      "recorded_at_utc": "2026-07-16T14:36:44.424681+00:00",
+      "targets": [
+        {
+          "tx": 252,
+          "ty": 158,
+          "mx": 445,
+          "my": 157,
+          "err_px": 193.1,
+          "precision_px": 25.3,
+          "n_samples": 10
+        },
+        {
+          "tx": 1428,
+          "ty": 525,
+          "mx": 1489,
+          "my": 513,
+          "err_px": 62.1,
+          "precision_px": 11.7,
+          "n_samples": 10
+        },
+        {
+          "tx": 840,
+          "ty": 893,
+          "mx": 874,
+          "my": 675,
+          "err_px": 219.9,
+          "precision_px": 18.5,
+          "n_samples": 10
+        }
+      ],
+      "targets_measured": 3,
+      "mean_err_px": 158.4,
+      "mean_err_deg": 2.58,
+      "mean_precision_px": 18.5,
+      "mean_precision_deg": 0.3,
+      "correction_active": {
+        "active": true,
+        "px": [
+          0.974043,
+          -58.494312
+        ],
+        "py": [
+          1.205293,
+          -274.567194
+        ],
+        "cy": 525.0,
+        "kind": "affine",
+        "gain_x": 0.974,
+        "gain_y": 1.205,
+        "gain_mean": 1.09,
+        "source": "auto-fit (affine)"
+      },
+      "screen": {
+        "width_px": 1680,
+        "height_px": 1050,
+        "device_pixel_ratio": 2,
+        "diag_inches": 13.3,
+        "diag_assumed": false,
+        "viewing_distance_cm": 60
+      },
+      "passes_threshold": true
+    }
+  ],
+  "gain_correction": {
+    "active": true,
+    "px": [
+      0.974043,
+      -58.494312
+    ],
+    "py": [
+      1.205293,
+      -274.567194
+    ],
+    "cy": 525.0,
+    "kind": "affine",
+    "gain_x": 0.974,
+    "gain_y": 1.205,
+    "gain_mean": 1.09,
+    "source": "auto-fit (affine)"
+  },
+  "quality_thresholds": {
+    "max_validation_error_deg": 3.0,
+    "min_gaze_samples_pct": 60.0,
+    "assumed_viewing_distance_cm": 60.0,
+    "nominal_sampling_hz": 30.0
+  },
+  "stimuli": [
+    {
+      "stimulus": "Stimuli_4.mp4",
+      "t_start_ns": 1784212481882872000,
+      "t_end_ns": 1784212596615309000,
+      "video_rect": {
+        "x": 0,
+        "y": 52.50439453125,
+        "w": 1679.984375,
+        "h": 944.9912109375,
+        "video_w": 1280,
+        "video_h": 720
+      }
+    }
+  ],
+  "legacy_data_quality": {
+    "Stimuli_4.mp4": {
+      "samples": 1721,
+      "valid_samples": 1721,
+      "valid_pct": 100.0,
+      "gaze_samples_pct": 100.0,
+      "passes_gaze_samples_threshold": true
+    }
+  },
+  "backfill": {
+    "version": "2026-07-31-nominal-rate",
+    "note": "gaze_samples_pct recomputed against a fixed nominal rate; the original self-referential values are kept in legacy_data_quality"
+  }
+}

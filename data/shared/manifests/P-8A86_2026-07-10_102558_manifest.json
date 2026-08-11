@@ -1,0 +1,49 @@
+{
+  "participant_id": "P-8A86",
+  "finalized_at_utc": "2026-07-10T08:25:58.673405+00:00",
+  "session_csv": "P-8A86_2026-07-10_102558.csv",
+  "test_mode": true,
+  "sample_counts": {
+    "Stimuli_2.mp4": 73
+  },
+  "stimuli": [
+    {
+      "stimulus": "Stimuli_2.mp4",
+      "t_start_ns": 1783671953507586000,
+      "t_end_ns": 1783671958476884000,
+      "video_rect": {
+        "x": 0,
+        "y": 45,
+        "w": 1440,
+        "h": 810,
+        "video_w": 1280,
+        "video_h": 720
+      }
+    }
+  ],
+  "renamed_from": "P-8A86__session_1783671958484347000.csv",
+  "data_quality": {
+    "Stimuli_2.mp4": {
+      "samples": 73,
+      "valid_samples": 73,
+      "valid_pct": 100.0,
+      "gaze_samples_pct": 49.0,
+      "nominal_sampling_hz": 30.0,
+      "relative_yield_pct": 100.0,
+      "sampling_hz": 14.8,
+      "sampling_hz_fastest": 16.4,
+      "rate_ratio": 1.11,
+      "rate_multimodal": false,
+      "low_sampling_rate": true,
+      "passes_gaze_samples_threshold": false
+    }
+  },
+  "legacy_data_quality": {},
+  "quality_thresholds": {
+    "nominal_sampling_hz": 30.0
+  },
+  "backfill": {
+    "version": "2026-07-31-nominal-rate",
+    "note": "gaze_samples_pct recomputed against a fixed nominal rate; the original self-referential values are kept in legacy_data_quality"
+  }
+}

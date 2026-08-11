@@ -1,0 +1,234 @@
+{
+  "participant_id": "P-2D00",
+  "finalized_at_utc": "2026-07-17T13:33:07.564653+00:00",
+  "session_csv": "P-2D00_2026-07-17_153252.csv",
+  "test_mode": true,
+  "sample_counts": {
+    "_testclip_30s.mp4": 438
+  },
+  "data_quality": {
+    "_testclip_30s.mp4": {
+      "samples": 438,
+      "valid_samples": 438,
+      "valid_pct": 100.0,
+      "gaze_samples_pct": 48.6,
+      "sampling_hz": 14.5,
+      "low_sampling_rate": true,
+      "passes_gaze_samples_threshold": false,
+      "nominal_sampling_hz": 30.0,
+      "relative_yield_pct": 100.0,
+      "sampling_hz_fastest": 15.9,
+      "rate_ratio": 1.09,
+      "rate_multimodal": false
+    }
+  },
+  "validations": [
+    {
+      "phase": "pre",
+      "recorded_at_utc": "2026-07-17T13:32:01.064312+00:00",
+      "targets": [
+        {
+          "tx": 202,
+          "ty": 126,
+          "mx": 97,
+          "my": 84,
+          "err_px": 113.3,
+          "precision_px": 96.1,
+          "n_samples": 20
+        },
+        {
+          "tx": 1478,
+          "ty": 126,
+          "mx": 1330,
+          "my": 62,
+          "err_px": 161.4,
+          "precision_px": 5.5,
+          "n_samples": 20
+        },
+        {
+          "tx": 840,
+          "ty": 326,
+          "mx": 761,
+          "my": 220,
+          "err_px": 132,
+          "precision_px": 13.5,
+          "n_samples": 20
+        },
+        {
+          "tx": 252,
+          "ty": 525,
+          "mx": 130,
+          "my": 302,
+          "err_px": 254.6,
+          "precision_px": 6.2,
+          "n_samples": 20
+        },
+        {
+          "tx": 1428,
+          "ty": 525,
+          "mx": 1428,
+          "my": 271,
+          "err_px": 254,
+          "precision_px": 24.7,
+          "n_samples": 20
+        },
+        {
+          "tx": 840,
+          "ty": 725,
+          "mx": 746,
+          "my": 566,
+          "err_px": 184,
+          "precision_px": 11,
+          "n_samples": 21
+        },
+        {
+          "tx": 840,
+          "ty": 924,
+          "mx": 749,
+          "my": 773,
+          "err_px": 176.1,
+          "precision_px": 15,
+          "n_samples": 20
+        }
+      ],
+      "targets_measured": 7,
+      "mean_err_px": 182.2,
+      "mean_err_deg": 2.97,
+      "mean_precision_px": 24.6,
+      "mean_precision_deg": 0.4,
+      "correction_active": {
+        "active": false
+      },
+      "screen": {
+        "width_px": 1680,
+        "height_px": 1050,
+        "device_pixel_ratio": 2,
+        "diag_inches": 13.3,
+        "diag_assumed": false,
+        "viewing_distance_cm": 60,
+        "viewing_distance_measured": false
+      },
+      "passes_threshold": true
+    },
+    {
+      "phase": "post",
+      "recorded_at_utc": "2026-07-17T13:32:48.385136+00:00",
+      "targets": [
+        {
+          "tx": 252,
+          "ty": 158,
+          "mx": 803,
+          "my": 449,
+          "err_px": 622.8,
+          "precision_px": 202.8,
+          "n_samples": 10
+        },
+        {
+          "tx": 1428,
+          "ty": 525,
+          "mx": 1637,
+          "my": 821,
+          "err_px": 362.5,
+          "precision_px": 18.6,
+          "n_samples": 10
+        },
+        {
+          "tx": 840,
+          "ty": 893,
+          "mx": 1109,
+          "my": 1209,
+          "err_px": 414.8,
+          "precision_px": 25.7,
+          "n_samples": 10
+        }
+      ],
+      "targets_measured": 3,
+      "mean_err_px": 466.7,
+      "mean_err_deg": 7.59,
+      "mean_precision_px": 82.4,
+      "mean_precision_deg": 1.34,
+      "correction_active": {
+        "active": true,
+        "px": [
+          0.964443,
+          117.908046
+        ],
+        "py": [
+          1.121372,
+          103.216434
+        ],
+        "cy": 525.0,
+        "kind": "affine",
+        "gain_x": 0.964,
+        "gain_y": 1.121,
+        "gain_mean": 1.04,
+        "source": "auto-fit (affine)"
+      },
+      "screen": {
+        "width_px": 1680,
+        "height_px": 1050,
+        "device_pixel_ratio": 2,
+        "diag_inches": 13.3,
+        "diag_assumed": false,
+        "viewing_distance_cm": 60,
+        "viewing_distance_measured": false
+      },
+      "passes_threshold": false
+    }
+  ],
+  "gain_correction": {
+    "active": true,
+    "px": [
+      0.964443,
+      117.908046
+    ],
+    "py": [
+      1.121372,
+      103.216434
+    ],
+    "cy": 525.0,
+    "kind": "affine",
+    "gain_x": 0.964,
+    "gain_y": 1.121,
+    "gain_mean": 1.04,
+    "source": "auto-fit (affine)"
+  },
+  "head_position": null,
+  "quality_thresholds": {
+    "max_validation_error_deg": 3.0,
+    "min_gaze_samples_pct": 60.0,
+    "min_sampling_hz": 20.0,
+    "assumed_viewing_distance_cm": 60.0,
+    "nominal_sampling_hz": 30.0
+  },
+  "stimuli": [
+    {
+      "stimulus": "_testclip_30s.mp4",
+      "t_start_ns": 1784295130532174000,
+      "t_end_ns": 1784295160575194000,
+      "video_rect": {
+        "x": 0,
+        "y": 52.50439453125,
+        "w": 1679.984375,
+        "h": 944.9912109375,
+        "video_w": 1280,
+        "video_h": 720
+      }
+    }
+  ],
+  "legacy_data_quality": {
+    "_testclip_30s.mp4": {
+      "samples": 438,
+      "valid_samples": 438,
+      "valid_pct": 100.0,
+      "gaze_samples_pct": 100.0,
+      "sampling_hz": 14.5,
+      "low_sampling_rate": true,
+      "passes_gaze_samples_threshold": true
+    }
+  },
+  "backfill": {
+    "version": "2026-07-31-nominal-rate",
+    "note": "gaze_samples_pct recomputed against a fixed nominal rate; the original self-referential values are kept in legacy_data_quality"
+  }
+}

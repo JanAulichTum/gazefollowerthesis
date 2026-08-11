@@ -107,3 +107,10 @@ data/autopush.err
 # Human coding verdicts. Session IDs embed participant IDs, so these
 # are participant-linked. This repository is PUBLIC.
 data/coding/
+
+# The pseudonym map is the ONLY thing that can undo the anonymisation
+# in data/shared/, so it must never be published.
+data/share_pseudonyms.json
+
+# ...but data/shared/ IS published on purpose (share_results.py).
+!data/shared/

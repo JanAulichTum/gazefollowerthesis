@@ -1,0 +1,18 @@
+{
+  "step": "evaluation_run_1",
+  "model": "gemini-3.5-flash",
+  "generation_config": {
+    "maxOutputTokens": 3000,
+    "temperature": 0
+  },
+  "finish_reason": null,
+  "requested_at_utc": "2026-07-15T14:21:47.089199+00:00",
+  "context": {
+    "participant": "P-D332",
+    "stimulus": "Stimuli_2.mp4",
+    "session": "P-D332_2026-07-15_160219",
+    "rubric": "",
+    "n_runs": 1
+  },
+  "response_text": "3.3 s)**: The participant begins scanning the background, looking at a poster on the wall (t=29.6 s) and the far-left background corner (t=30.9 s - t=33.3 s).\n*   **Phase 6 (t=34.8 s - t=37.1 s)**: Gaze briefly visits the front-left student (t=34.8 s) before shifting to the top-right wall (t=37.1 s).\n*   **Phase"
+}

@@ -2696,6 +2696,41 @@ try:
     check("it lists what is still missing before evaluation collection",
           "Open items before evaluation collection" in _find)
 
+    # ── Sharing results publicly ─────────────────────────────────────
+    _sr = read("share_results.py")
+    _srmod = importlib.import_module("share_results")
+    importlib.reload(_srmod)
+    check("secrets can never be shared, whatever else changes",
+          {"api_key", "secret_key", "b64"} <= _srmod.FORBIDDEN_KEYS)
+    _scrubbed = _srmod._scrub(
+        {"api_key": "AIzaSECRET", "nested": {"b64": "xxxx", "keep": 1},
+         "list": [{"secret_key": "deadbeef"}]}, {}, True)
+    check("...verified: forbidden keys are omitted at every depth",
+          _scrubbed["api_key"] == "<omitted>"
+          and _scrubbed["nested"]["b64"] == "<omitted>"
+          and _scrubbed["list"][0]["secret_key"] == "<omitted>"
+          and _scrubbed["nested"]["keep"] == 1)
+    check("pseudonyms are stable across runs (a hash, not a counter)",
+          _srmod._pseudonym("Marie", {}) == _srmod._pseudonym("Marie", {}))
+    check("adding a participant does not renumber the others",
+          _srmod._pseudonym("Anna", {"Marie": "P-XXXX"}) != "P-XXXX")
+    # The nested-label trap: with both "Test" and "Test1" in the map,
+    # replacing the shorter first leaves a digit glued to a pseudonym.
+    _mapx = {"Test": "P-AAAA", "Test1": "P-BBBB"}
+    check("longer labels are replaced first, so names cannot nest",
+          _srmod._replace_names("Test1_2026-07-10", _mapx)
+          == "P-BBBB_2026-07-10",
+          _srmod._replace_names("Test1_2026-07-10", _mapx))
+    _ign = read(".gitignore")
+    check("the pseudonym map is gitignored — it undoes the whole step",
+          any(l.strip() == "data/share_pseudonyms.json"
+              for l in _ign.splitlines()))
+    check("data/shared IS published (that is the point)",
+          any(l.strip() == "!data/shared/" for l in _ign.splitlines()))
+    check("raw CSVs and videos are not in the shared set",
+          "gazefollower_raw" in _sr and "*_manifest.json" in _sr
+          and ".csv" not in _sr)
+
     # ── The report must not cry wolf ─────────────────────────────────
     # The 2026-08-11 report listed 10 "missing" metrics. Three were
     # DUPLICATES of metrics reported PRESENT in the same run (checked by

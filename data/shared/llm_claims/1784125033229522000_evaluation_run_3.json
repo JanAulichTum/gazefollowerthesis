@@ -1,0 +1,18 @@
+{
+  "step": "evaluation_run_3",
+  "model": "gemini-3.5-flash",
+  "generation_config": {
+    "maxOutputTokens": 3000,
+    "temperature": 0
+  },
+  "finish_reason": null,
+  "requested_at_utc": "2026-07-15T14:17:13.226059+00:00",
+  "context": {
+    "participant": "P-D332",
+    "stimulus": "Stimuli_2.mp4",
+    "session": "P-D332_2026-07-15_160219",
+    "rubric": "",
+    "n_runs": 3
+  },
+  "response_text": "**: Front-row students on the right and their desks.\n- **t=7.2 s to 8.7 s**: Middle-row student in white top and front-row student in black t-shirt.\n- **t=12.5 s to 19.4 s**: Middle-row students (black jacket, green hoodie) and front-row student in blue hoodie.\n- **t=25.1 s to 28.0 s**: Pointing student in the third row and front-row student"
+}

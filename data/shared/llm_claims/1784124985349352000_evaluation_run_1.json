@@ -1,0 +1,18 @@
+{
+  "step": "evaluation_run_1",
+  "model": "gemini-3.5-flash",
+  "generation_config": {
+    "maxOutputTokens": 3000,
+    "temperature": 0
+  },
+  "finish_reason": null,
+  "requested_at_utc": "2026-07-15T14:16:25.346123+00:00",
+  "context": {
+    "participant": "P-D332",
+    "stimulus": "Stimuli_2.mp4",
+    "session": "P-D332_2026-07-15_160219",
+    "rubric": "",
+    "n_runs": 3
+  },
+  "response_text": "### Gaze Analysis Summary\n\nBased on the eye-tracking data for participant **P-D332** watching 'Stimuli_2.mp4', the gaze behavior can be characterized by initial attention to the students and their interactions, followed by a strong, repetitive tendency to look at the background wall and posters above the students.\n\n### Chronological Gaze Phases\n\n*   **Phase 1 (t=1.0 s \u2013 5.0 s): Front-Row Students and Interaction**\n    The participant begins by looking at the female student in the pink shirt at t=1."
+}

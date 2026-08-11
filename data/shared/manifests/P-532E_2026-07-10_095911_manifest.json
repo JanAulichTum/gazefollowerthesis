@@ -1,0 +1,23 @@
+{
+  "participant_id": "P-532E",
+  "finalized_at_utc": "2026-07-10T07:59:11.363802+00:00",
+  "session_csv": "P-532E_2026-07-10_095911.csv",
+  "test_mode": true,
+  "sample_counts": {},
+  "stimuli": [
+    {
+      "stimulus": "Stimuli_2.mp4",
+      "t_start_ns": 1783670347112446000,
+      "t_end_ns": 1783670351286136000,
+      "video_rect": {
+        "x": 0,
+        "y": 47.8125,
+        "w": 1430,
+        "h": 804.375,
+        "video_w": 1280,
+        "video_h": 720
+      }
+    }
+  ],
+  "renamed_from": "P-532E__session_1783670351300351000.csv"
+}
