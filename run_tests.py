@@ -2853,6 +2853,39 @@ try:
     check("no .bat file contains non-ASCII", not _nonascii,
           ", ".join(_nonascii))
 
+    # cmd.exe mis-parses multi-line ( ... ) blocks, for /f loops and goto
+    # targets in a file with bare LF line endings. It does not report an
+    # error: the console closes. Every .bat here was authored on macOS,
+    # so this is the default state unless something enforces it.
+    import collections as _coll
+
+    _lf, _dupes, _missing = [], [], []
+    for _f in sorted(glob.glob(os.path.join(BASE, "windows", "*.bat"))):
+        _name = os.path.basename(_f)
+        with open(_f, "rb") as _fh:
+            _b = _fh.read()
+        if _b.count(b"\n") - _b.count(b"\r\n"):
+            _lf.append(_name)
+        _labels = [m.group(1) for m in re.finditer(rb"(?m)^:(\w+)", _b)]
+        if [k for k, v in _coll.Counter(_labels).items() if v > 1]:
+            _dupes.append(_name)
+        _targets = (set(re.findall(rb"goto :(\w+)", _b))
+                    | set(re.findall(rb"call :(\w+)", _b)))
+        if [t for t in _targets if t not in _labels and t != b"eof"]:
+            _missing.append(_name)
+    check("every .bat has CRLF line endings", not _lf, ", ".join(_lf))
+    check("no .bat has a duplicate label", not _dupes, ", ".join(_dupes))
+    check("every goto/call target exists", not _missing, ", ".join(_missing))
+    check("gitattributes pins .bat to CRLF on checkout",
+          "*.bat text eol=crlf" in read(".gitattributes"))
+    # Recording must not hang off a one-line parenthesised block: a
+    # failure inside the called script takes the console with it.
+    _start_bat = read("windows/START.bat")
+    check("option 1 runs as its own labelled block",
+          '=="1" goto :record' in _start_bat and "\n:record" in _start_bat)
+    check("...and holds the window open on a nonzero exit",
+          "run_session.bat exited with code" in _start_bat)
+
     check("the launcher offers verify separately from calibrate",
           "camera_geometry.py --verify" in read("windows/START.bat"))
 

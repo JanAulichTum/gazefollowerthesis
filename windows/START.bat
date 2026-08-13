@@ -88,7 +88,7 @@ set "OPT="
 set /p OPT=   Choose:
 echo.
 
-if "%OPT%"=="1" ( call windows\run_session.bat & goto :menu )
+if "%OPT%"=="1" goto :record
 if "%OPT%"=="2" ( call windows\check_before_participant.bat & goto :menu )
 if "%OPT%"=="3" ( python verify_metrics.py --today & pause & goto :menu )
 if "%OPT%"=="4" ( python calibration_diagnosis.py --all & pause & goto :menu )
@@ -161,6 +161,23 @@ if errorlevel 1 (
     echo.
 )
 goto :eof
+
+:record
+REM Its own label rather than a one-line ( call ... & goto ) block.
+REM Inside a parenthesised block, a failure in the called script can take
+REM the whole console down with it - which reads as "the window just
+REM closed" and hides the message that would have explained why. Here the
+REM exit code is captured and the window is held open.
+call windows\run_session.bat
+set RC=%ERRORLEVEL%
+echo.
+if not "%RC%"=="0" (
+    echo    run_session.bat exited with code %RC%.
+    echo    The message above says why. Nothing was recorded.
+    echo.
+)
+pause
+goto :menu
 
 :coder
 REM The coder needs the server, and the server owns the webcam - so it
