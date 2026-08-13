@@ -1,0 +1,10 @@
+# Windows batch files MUST have CRLF line endings. cmd.exe mis-parses
+# multi-line ( ... ) blocks, for /f loops and goto targets in an LF file,
+# which shows up as the console closing rather than as an error message.
+# Without this, a checkout on Windows from a repo authored on macOS
+# reintroduces the fault silently.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.py  text eol=lf
+*.sh  text eol=lf

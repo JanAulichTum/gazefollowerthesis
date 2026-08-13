@@ -50,13 +50,13 @@ echo.
 echo ================== 5. yesterday's sessions =============
 REM Deliberately NOT gated on errorlevel: a gap in an earlier session
 REM is worth seeing, but it is not a reason to stop today's recording.
-REM A TRACEBACK here is different from a MISSING metric — the first is
+REM A TRACEBACK here is different from a MISSING metric - the first is
 REM a bug in the reporting tool and should be reported, the second is
 REM data that was never produced.
 python verify_metrics.py --today
 if errorlevel 1 (
     echo.
-    echo   ^(gaps above are informational — they do not block today^)
+    echo   ^(gaps above are informational - they do not block today^)
 )
 
 echo.

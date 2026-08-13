@@ -138,6 +138,9 @@ the sampling rate alongside any precision figure.
 ## F9 · Attribution is governed by SEPARATION, not object size
 **2026-08-11 · Results (the method's ceiling)**
 
+**AMENDED 2026-08-12 — the worked example below does not
+reconcile; see F22. The principle stands, the derivation does not.**
+
 The rule *min AOI ≥ 2 × accuracy* governs an object in isolation. What
 actually governs whether a fixation can be attributed is the distance to
 the **next nearest candidate**.
@@ -486,6 +489,104 @@ between the probe and the sessions. The first session's manifest
 measures both rulers on the same frames and records
 `distance_agreement_pct`, which settles it.
 
+## F22 · The F9 worked example does not reconcile, and a mean error is not a bound
+**2026-08-12 · Methods (measures), Results — OPEN, blocks F9 as written**
+
+F9 states: *"two students 134 px apart at 124 px accuracy. A fixation
+squarely on one is 186 px closer to it than to the other and is
+attributable."* Four objections, none of which touch the underlying
+principle:
+
+1. **The arithmetic does not close.** Candidates 134 px apart, gaze
+   exactly on one → the difference in distance to the two is 134 px, not
+   186. The 186 figure is unexplained; plausibly a Euclidean separation
+   from a 2D geometry whose components were never written down, in which
+   case 134 px is not the quantity that should be compared to accuracy.
+   As written the two numbers cannot both describe the same geometry.
+2. **A mean is not a worst case.** 124 px is the mean of an error
+   distribution — roughly half the samples exceed it. The example
+   concludes attributability from `186 > 124`, which only follows if 124
+   bounds the error. With a 134 px separation the perpendicular bisector
+   sits ~67 px from each candidate, well inside the distribution.
+3. **Recorded ≠ true position.** "A fixation squarely on one" is not
+   observable; what is observed is a displaced estimate, and that
+   displacement is the entire content of an accuracy figure.
+4. **The error is not isotropic.** Vertical range compression (F5) and
+   heteroscedastic vertical error are both documented here, so the
+   scalar comparison behaves differently for horizontal than for
+   vertical separations.
+
+**The principle survives; the derivation must be rebuilt as signal
+detection, not comparison.** For each pair of candidate regions, compute
+the probability that the session's EMPIRICAL error distribution carries
+the recorded point across their separating boundary; declare a fixation
+ambiguous when that probability exceeds a threshold fixed in advance;
+report the ambiguous share per session. Computable from validation data
+already collected, handles anisotropy natively, and has a citation in
+Orquin, Ashby & Clarke (2016), who make exactly this signal-detection
+argument for AOI margins.
+
+**Until then the example appears in no chapter and in no defence.** F9
+is currently described as the study's central methodological
+contribution, so shipping it with a derivation that does not close is
+the single most examinable weakness in the project.
+
+## F22 · Focal length calibrated over the operating range, and verified
+**2026-08-13 · Methods (apparatus)**
+
+A single-point calibration solves the focal length so that its own tape
+reading comes out right; it cannot detect its own error. Five
+independent calibrations were therefore taken across 45-65 cm and
+pooled, since focal length is a property of the camera and must not
+depend on how far away the person sat.
+
+| tape distance | iris | focal if fitted alone |
+|---|---|---|
+| 45 cm | 16.38 px | 630.0 px |
+| 50 cm | 15.56 px | 665.0 px |
+| 55 cm | 13.91 px | 653.9 px |
+| 60 cm | 12.91 px | 662.1 px |
+| 65 cm | 11.66 px | 647.8 px |
+
+**Adopted: 656.1 px, fitted over 50-65 cm.** Residuals -0.67, +0.18,
+-0.54, +0.83 cm; RMS 0.61 cm; worst point 1.3 %. **Independently
+verified at 58 cm — the distance participants actually sit at — to
+0.9 %.**
+
+**The 45 cm point is excluded, and this is stated rather than buried.**
+It is the lowest individual focal in every subset and every fit
+containing it is worse: all five points give 652.4 px at RMS 0.94 cm and
+3.6 % worst, against 656.1 px at 0.61 cm and 1.3 % without it. The
+declared reason for exclusion is range coverage, not fit quality --- 45
+cm lies outside the range participants view from, and it is the closest
+point, where perspective effects on the iris are largest and a fixed
+tape error is proportionally biggest. Both fits are reported so a reader
+can check the decision either way.
+
+**A constant tape offset was hypothesised, tested, and rejected.** The
+likeliest systematic error in this procedure is the ruler rather than
+the optics --- measuring consistently to the screen surface rather than
+the lens shifts every reading equally --- and its signature is a focal
+length that grows with calibration distance, which the first two points
+appeared to show. Fitted as a second parameter, the offset came out at
++3.70 cm on two points (an exact fit, testing nothing), +1.58 cm on
+five, and **-4.36 cm** on four. A parameter whose sign depends on which
+subset is used is fitting noise, and the single-parameter model is
+retained.
+
+Camera field of view implied by the fit is ~52-54 deg, against the 60
+deg fallback the pipeline used before any calibration existed --- a
+10-13 % error in every distance, and therefore in every angle, that the
+calibration removes.
+
+Secondary consistency check: the iris-derived and inter-ocular-derived
+focal lengths disagree by 3.1 %, 4.4 % and 3.3 % at three of the
+distances. That the disagreement is *stable* across distance is the
+informative part --- both landmarks scale correctly, and a constant gap
+is consistent with this participant's inter-pupillary distance sitting a
+few per cent above the 6.3 cm population mean the inter-ocular path
+assumes.
+
 ---
 
 ## Open items before evaluation collection
@@ -499,3 +600,6 @@ measures both rulers on the same frames and records
   stimuli.
 - No concurrent-validity comparison against a research-grade tracker.
   State as a limitation.
+- F9's attribution derivation is broken (F22). Rebuild it as a
+  probability over the empirical error distribution before any chapter
+  or defence uses it.

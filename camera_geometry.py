@@ -181,8 +181,14 @@ def estimate_distance(iod_px: float, geometry: dict = None,
         cal_w = geometry.get("image_w_px") or image_w_px
         if cal_w and image_w_px and cal_w != image_w_px:
             focal *= image_w_px / float(cal_w)
-        focal_rel_sd = (geometry.get("distance_sd_cm", 1.0)
-                        / max(1e-6, geometry.get("known_distance_cm", 60.0)))
+        # `or` and not `get(..., default)`: a pooled fit has no single
+        # calibration distance and writes the key as null, so the
+        # default never fires and max() is handed a None. That raises
+        # TypeError on every distance estimate — i.e. on every session
+        # recorded after a pooled calibration was saved.
+        focal_rel_sd = (float(geometry.get("distance_sd_cm") or 1.0)
+                        / max(1e-6,
+                              float(geometry.get("known_distance_cm") or 60.0)))
         sources.append("focal length MEASURED (%.0f px, implied HFOV %.1f deg)"
                        % (focal, geometry.get("implied_hfov_deg", 0)))
     else:
@@ -450,6 +456,175 @@ def measure_live(seconds: float = 6.0, camera: int = 0,
     }
 
 
+def fit_multi(points: list, iris_mm: float = None) -> dict:
+    """Fit ONE focal length to SEVERAL measured distances.
+
+    WHY THIS EXISTS
+    ---------------
+    ``--calibrate`` solves the focal length from a single tape reading and
+    overwrites whatever was there. Calibrating twice therefore does not
+    accumulate evidence: the second run replaces the first, and the
+    information in the discarded fit is lost.
+
+    That is wasteful, because focal length is a property of the CAMERA
+    and must not depend on how far away the person sat. Several
+    observations at different distances are therefore not repetitions —
+    they are a test the single-point procedure cannot perform, and
+    fitting one focal length across all of them uses every point.
+
+    THE OFFSET TERM
+    ---------------
+    Two models are fitted and compared:
+
+      A. ``d = k*f / px``            focal only
+      B. ``d = k*f / px - delta``    focal plus a constant tape offset
+
+    Model B exists because the most likely systematic error in this
+    procedure is not the model but the ruler: measuring consistently to
+    the screen surface rather than the lens, or to the front of the face
+    rather than the nose bridge, shifts EVERY reading by the same
+    amount. That signature is a focal length that appears to grow with
+    the calibration distance — which is exactly what two points at 45
+    and 65 cm showed.
+
+    With two points, model B fits exactly and tests nothing (two
+    parameters, two observations). **Three or more points are needed
+    before the offset means anything**, and the function says so rather
+    than reporting a number that cannot be wrong.
+    """
+    import iris_distance as _id
+
+    k = (iris_mm if iris_mm is not None else _id.IRIS_DIAMETER_MM) / 10.0
+    pts = [(float(d), float(px)) for d, px in points if d > 0 and px > 0]
+    if len(pts) < 2:
+        return {"error": "need at least two (distance, iris_px) points"}
+
+    # Model A: minimise squared error in the DISTANCE the ruler would
+    # report, because that is the quantity the study consumes.
+    num = sum(d / px for d, px in pts)
+    den = k * sum(1.0 / (px * px) for _, px in pts)
+    f_a = num / den
+    res_a = [(k * f_a / px) - d for d, px in pts]
+
+    out = {
+        "n_points": len(pts),
+        "focal_px": round(f_a, 1),
+        "residuals_cm": [round(r, 2) for r in res_a],
+        "rms_cm": round((sum(r * r for r in res_a) / len(res_a)) ** 0.5, 2),
+        "worst_pct": round(max(abs(r) / d * 100 for r, (d, _) in
+                               zip(res_a, pts)), 1),
+        "points": [{"tape_cm": d, "iris_px": round(px, 2),
+                    "focal_if_alone_px": round(px * d / k, 1)} for d, px in pts],
+    }
+
+    # Model B: focal and a constant tape offset, by ordinary least
+    # squares on [k/px, -1].
+    n = len(pts)
+    x = [k / px for _, px in pts]
+    sxx = sum(v * v for v in x)
+    sx = sum(x)
+    sy = sum(d for d, _ in pts)
+    sxy = sum(v * d for v, (d, _) in zip(x, pts))
+    detm = sxx * n - sx * sx
+    if abs(detm) > 1e-12:
+        f_b = (sxy * n - sx * sy) / detm
+        delta = (sxx * sy - sx * sxy) / detm
+        delta = f_b * 0 + (f_b * sx - sy) / n  # d = f*x - delta
+        res_b = [(k * f_b / px) - delta - d for d, px in pts]
+        out["offset_model"] = {
+            "focal_px": round(f_b, 1),
+            "tape_offset_cm": round(-delta, 2),
+            "rms_cm": round((sum(r * r for r in res_b) / n) ** 0.5, 2),
+            "meaningful": n >= 3,
+            "note": ("two points fit two parameters exactly — this offset "
+                     "cannot be wrong and therefore tests nothing. Add a "
+                     "third distance." if n < 3 else
+                     "compare rms_cm against the focal-only model; a large "
+                     "reduction means the tape, not the model, is off"),
+        }
+    return out
+
+
+def _report_fit(points: list, do_save: bool = False) -> int:
+    res = fit_multi(points)
+    print("=" * 68)
+    print("  MULTI-POINT FOCAL FIT — one focal length, several distances")
+    print("=" * 68)
+    if res.get("error"):
+        print("  %s" % res["error"])
+        return 1
+    print("  points used        : %d" % res["n_points"])
+    for p in res["points"]:
+        print("    %5.1f cm  iris %5.2f px   (alone would give %.1f px)"
+              % (p["tape_cm"], p["iris_px"], p["focal_if_alone_px"]))
+    print()
+    print("  FOCAL ONLY")
+    print("    focal            : %.1f px" % res["focal_px"])
+    print("    residuals        : %s cm"
+          % ", ".join("%+.2f" % r for r in res["residuals_cm"]))
+    print("    rms              : %.2f cm   worst %.1f %%"
+          % (res["rms_cm"], res["worst_pct"]))
+    ob = res.get("offset_model")
+    if ob:
+        print()
+        print("  FOCAL + CONSTANT TAPE OFFSET")
+        print("    focal            : %.1f px" % ob["focal_px"])
+        # Sign spelled out in words. A bare "+4.4 cm" is ambiguous about
+        # which of the two distances it applies to, and getting it
+        # backwards inverts the remedy.
+        _off = ob["tape_offset_cm"]
+        print("    tape offset      : %.2f cm — the tape reads %s the true "
+              "distance" % (abs(_off), "SHORT of" if _off < 0 else "LONG of"))
+        print("                       (true distance = tape %s %.2f cm)"
+              % ("+" if _off < 0 else "-", abs(_off)))
+        print("    rms              : %.2f cm" % ob["rms_cm"])
+        print("    %s" % ob["note"])
+    print()
+    if res["worst_pct"] <= 5.0:
+        print("  One focal length fits every distance to within %.1f %%."
+              % res["worst_pct"])
+        print("  The ruler is consistent across the range measured.")
+        if do_save:
+            # The pooled estimate replaces whichever single fit happened
+            # to run last, and carries its own provenance so a reader can
+            # see how many points it rests on.
+            geom = load() or {}
+            geom.update({
+                "focal_px": res["focal_px"],
+                "focal_basis": "pooled fit over %d measured distances "
+                               "(iris)" % res["n_points"],
+                "fit_points": res["points"],
+                "fit_residuals_cm": res["residuals_cm"],
+                "fit_rms_cm": res["rms_cm"],
+                "fit_worst_pct": res["worst_pct"],
+                # The MEAN of the fitted distances, not null: downstream
+                # code divides by this to form a relative uncertainty,
+                # and the pooled rms is the honest numerator for it.
+                "known_distance_cm": round(
+                    sum(p["tape_cm"] for p in res["points"])
+                    / len(res["points"]), 1),
+                "distance_sd_cm": res["rms_cm"],
+                "calibrated_at": datetime.now().isoformat(timespec="seconds"),
+            })
+            if res.get("offset_model"):
+                geom["fit_offset_model"] = res["offset_model"]
+            save(geom)
+            print()
+            print("  SAVED — focal_px is now %.1f px, from %d points."
+                  % (res["focal_px"], res["n_points"]))
+            print("  Verify it at a distance you did NOT calibrate at:")
+            print("      python camera_geometry.py --verify <cm>")
+        else:
+            print()
+            print("  Nothing written. Add --save to adopt this focal length.")
+        return 0
+    print("  No single focal length fits all points (worst %.1f %%)."
+          % res["worst_pct"])
+    print("  Either a tape reading is wrong or the iris measurement failed")
+    print("  at one distance. Look at the residuals above before refitting.")
+    return 1
+
+
 def _verify(tape_cm: float, seconds: float = 6.0, width: int = 640) -> int:
     """Does the SAVED focal length reproduce a tape measurement?
 
@@ -477,8 +652,18 @@ def _verify(tape_cm: float, seconds: float = 6.0, width: int = 640) -> int:
         print("  No saved calibration to verify. Run:")
         print("      python camera_geometry.py --calibrate <cm> --measure")
         return 1
-    print("  saved focal        : %.1f px  (calibrated at %s cm)"
-          % (focal, geom.get("known_distance_cm", "?")))
+    # Provenance, not a single distance. After a pooled fit there is no
+    # one calibration distance, and printing "calibrated at None cm" is
+    # worse than useless in a figure someone may paste into a thesis.
+    if geom.get("fit_points"):
+        _ds = ", ".join("%.0f" % p["tape_cm"] for p in geom["fit_points"])
+        _prov = "pooled over %d distances: %s cm" % (len(geom["fit_points"]),
+                                                     _ds)
+    elif geom.get("known_distance_cm"):
+        _prov = "single fit at %.1f cm" % geom["known_distance_cm"]
+    else:
+        _prov = "provenance not recorded"
+    print("  saved focal        : %.1f px  (%s)" % (focal, _prov))
     print("  tape says          : %.1f cm" % tape_cm)
     print("  Sit at exactly that distance, camera lens to the bridge of")
     print("  your nose, and hold still for %.0f s…" % seconds)
@@ -508,10 +693,13 @@ def _verify(tape_cm: float, seconds: float = 6.0, width: int = 640) -> int:
         print("  the ruler, it is a measurement of your head. Re-run.")
         return 1
     if err_pct <= 5.0:
+        # These are plain print() calls, not format strings, so a
+        # doubled %% renders literally. Escape only where a % operator
+        # is actually applied.
         print("  PASS — the saved focal length reproduces an independent")
         print("  measurement to within %.1f %%, which is inside the iris"
               % err_pct)
-        print("  ruler's own ~4 %% biological spread. Distances, and so")
+        print("  ruler's own ~4 % biological spread. Distances, and so")
         print("  every accuracy figure in degrees, are trustworthy at")
         print("  this distance.")
         return 0
@@ -545,6 +733,11 @@ def main() -> int:
     ap.add_argument("--verify", type=float, metavar="CM",
                     help="check the SAVED focal length against a tape "
                          "measurement WITHOUT refitting it")
+    ap.add_argument("--fit", metavar="D:PX,D:PX,...",
+                    help="fit ONE focal length across several measured "
+                         "distances, e.g. --fit 45:16.38,65:11.66")
+    ap.add_argument("--save", action="store_true",
+                    help="with --fit: adopt the pooled focal length")
     args = ap.parse_args()
 
     if args.sensitivity:
@@ -552,6 +745,20 @@ def main() -> int:
 
     if args.verify:
         return _verify(args.verify, args.seconds, args.image_w)
+
+    if args.fit:
+        pts = []
+        for chunk in args.fit.replace(";", ",").split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            try:
+                d_s, px_s = chunk.split(":")
+                pts.append((float(d_s), float(px_s)))
+            except ValueError:
+                print("  cannot read %r — use  45:16.38,65:11.66" % chunk)
+                return 1
+        return _report_fit(pts, do_save=args.save)
 
     if args.show:
         g = load()

@@ -38,6 +38,25 @@ except Exception:  # noqa: BLE001 — older Python / exotic stream
 
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+
+def bat_code(name: str) -> str:
+    """A .bat file with its comments stripped.
+
+    Source-text assertions kept matching the REM lines that DOCUMENT the
+    thing being asserted — three separate false positives in one day,
+    each of them a test failing because the fix explained itself. The
+    comment is prose about the code, not the code, so checks that ask
+    "does this file still do X" must not see it.
+    """
+    out = []
+    for line in read(os.path.join("windows", name)).splitlines():
+        stripped = line.strip().lower()
+        if stripped.startswith("rem ") or stripped == "rem" \
+                or stripped.startswith("::"):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
 FAILURES: list[str] = []
 
 
@@ -2842,8 +2861,249 @@ try:
           < _ver.index("PASS —"))
     check("a failure states the consequence in degrees",
           "really %.2f deg" in _ver)
+    # cmd.exe reads .bat under the console codepage, not UTF-8, so a
+    # non-ASCII character in an ECHO line renders as mojibake in the
+    # pre-flight output - which is output a reader may screenshot.
+    _nonascii = []
+    for _f in sorted(glob.glob(os.path.join(BASE, "windows", "*.bat"))):
+        _txt = read(os.path.join("windows", os.path.basename(_f)))
+        if any(ord(c) > 127 for c in _txt):
+            _nonascii.append(os.path.basename(_f))
+    check("no .bat file contains non-ASCII", not _nonascii,
+          ", ".join(_nonascii))
+
+    # cmd.exe mis-parses multi-line ( ... ) blocks, for /f loops and goto
+    # targets in a file with bare LF line endings. It does not report an
+    # error: the console closes. Every .bat here was authored on macOS,
+    # so this is the default state unless something enforces it.
+    import collections as _coll
+
+    _lf, _dupes, _missing = [], [], []
+    for _f in sorted(glob.glob(os.path.join(BASE, "windows", "*.bat"))):
+        _name = os.path.basename(_f)
+        with open(_f, "rb") as _fh:
+            _b = _fh.read()
+        if _b.count(b"\n") - _b.count(b"\r\n"):
+            _lf.append(_name)
+        _labels = [m.group(1) for m in re.finditer(rb"(?m)^:(\w+)", _b)]
+        if [k for k, v in _coll.Counter(_labels).items() if v > 1]:
+            _dupes.append(_name)
+        _targets = (set(re.findall(rb"goto :(\w+)", _b))
+                    | set(re.findall(rb"call :(\w+)", _b)))
+        if [t for t in _targets if t not in _labels and t != b"eof"]:
+            _missing.append(_name)
+    check("every .bat has CRLF line endings", not _lf, ", ".join(_lf))
+    check("no .bat has a duplicate label", not _dupes, ", ".join(_dupes))
+    check("every goto/call target exists", not _missing, ", ".join(_missing))
+    check("gitattributes pins .bat to CRLF on checkout",
+          "*.bat text eol=crlf" in read(".gitattributes"))
+
+    # Inside for /f ('...') the command is re-parsed by a second shell,
+    # where ( ) are metacharacters. An inline `python -c` containing
+    # len(...) therefore dies with a syntax error naming only "." and
+    # takes the console with it — indistinguishable from a crash.
+    _inline = []
+    for _f in sorted(glob.glob(os.path.join(BASE, "windows", "*.bat"))):
+        for _ln in bat_code(os.path.basename(_f)).splitlines():
+            _low = _ln.strip().lower()
+            if "for /f" in _low and "python -c" in _low:
+                _inline.append(os.path.basename(_f))
+    check("no for /f wraps an inline python -c", not _inline,
+          ", ".join(_inline))
+    # for /f hands its command to a second shell. run_session.bat is the
+    # one script a participant is waiting through, so it does not use the
+    # construct at all: the count is written to a file and read with
+    # set /p, which has no subshell and no quoting exposure.
+    check("run_session.bat contains no for /f at all",
+          "for /f" not in bat_code("run_session.bat").lower())
+    check("the count is read with set /p from a file",
+          "set /p NSTIM=<" in bat_code("run_session.bat")
+          and "count_stimuli.py > " in bat_code("run_session.bat"))
+    check("a marker prints before the count, so a failure is locatable",
+          "Counting stimuli" in bat_code("run_session.bat"))
+
+    # THE bug that actually closed the console. An unescaped ) inside a
+    # parenthesised block ENDS the block at that character, so
+    #     echo    playable video (files ... do not count).
+    # closed the if-block at "count)" and left ".", which cmd reported as
+    #   "." kann syntaktisch an dieser Stelle nicht verarbeitet werden
+    # and then quit. The message names the stray character, never the
+    # line, and the block parses at read time — so it fires even when the
+    # branch is not taken. Neither line endings nor for /f caused it;
+    # both were real hazards found while looking for this one.
+    def _unescaped_parens_in_blocks(name):
+        depth, bad = 0, []
+        for n, line in enumerate(read(os.path.join("windows", name))
+                                 .splitlines(), 1):
+            s = line.strip()
+            low = s.lower()
+            if low.startswith("rem") or low.startswith("::"):
+                continue
+            if low.startswith("echo"):
+                if depth > 0:
+                    body = re.sub(r"\^[()]", "", s[4:])
+                    if "(" in body or ")" in body:
+                        bad.append("%s:%d" % (name, n))
+                continue          # echo text is never block structure
+            code = re.sub(r"\^[()]", "", s)
+            depth = max(0, depth + code.count("(") - code.count(")"))
+        return bad
+
+    _paren_bugs = []
+    for _f in sorted(glob.glob(os.path.join(BASE, "windows", "*.bat"))):
+        _paren_bugs += _unescaped_parens_in_blocks(os.path.basename(_f))
+    check("no echo inside a ( ) block has an unescaped parenthesis",
+          not _paren_bugs, ", ".join(_paren_bugs))
+
+    # ── Cutting the stimuli is a procedure, not a one-off ────────────
+    # The clips are not in the repo, so a cut made on one machine cannot
+    # travel to another; only the script can. Identical stimulus for
+    # every participant therefore depends on the cut being reproducible.
+    _cut = read("cut_stimuli.py")
+    check("the cut re-encodes rather than stream-copies",
+          "libx264" in _cut and '"-c", "copy"' not in _cut)
+    check("...and says why, since a copy cut lands on a keyframe",
+          "nearest keyframe" in _cut)
+    check("originals are moved aside, never overwritten",
+          "full_originals" in _cut and "shutil.move(path" in _cut)
+    check("the originals folder is invisible to the app",
+          "os.listdir(STIMULI_DIR)" in read("config.py"))
+    check("which seconds were taken is recorded",
+          "cut_provenance.json" in _cut and '"start_s"' in _cut)
+    check("the cut is reversible",
+          "--restore" in _cut and "def restore" in _cut)
+    check("running it twice is safe",
+          "already at length, left alone" in _cut)
+    check("it warns that the crowding contrast may not survive the cut",
+          "WATCH BOTH CUTS" in _cut)
+
+    check("the stimulus count comes from a script instead",
+          "count_stimuli.py" in read("windows/run_session.bat")
+          and os.path.isfile(os.path.join(BASE, "count_stimuli.py")))
+
+    _csmod = importlib.import_module("count_stimuli")
+    check("count_stimuli prints one integer and nothing else",
+          "print(len(config.discover_stimuli()))" in read("count_stimuli.py"))
+    # Recording must not hang off a one-line parenthesised block: a
+    # failure inside the called script takes the console with it.
+    _start_bat = read("windows/START.bat")
+    # A dirty tree used to short-circuit BEFORE the fetch, so the
+    # launcher could not say how far behind the machine was. It printed
+    # "NOT pulling" once and the collection machine then ran stale code
+    # for hours - which is how a fix that was shipped, tested and
+    # confirmed can still be absent from the machine recording data.
+    check("the update fetches BEFORE it inspects the working tree",
+          _start_bat.index("BEHIND=%%i") < _start_bat.index("DIRTY=%%i"))
+    check("being behind AND dirty is stated loudly, not in passing",
+          "RUNNING OLD CODE" in _start_bat)
+    check("...and holds the window so it cannot be scrolled past",
+          "RUNNING OLD CODE" in _start_bat
+          and "pause" in _start_bat.split("RUNNING OLD CODE")[1][:400])
+
+    check("option 1 runs as its own labelled block",
+          '=="1" goto :record' in _start_bat and "\n:record" in _start_bat)
+    check("...and holds the window open on a nonzero exit",
+          "run_session.bat exited with code" in _start_bat)
+
     check("the launcher offers verify separately from calibrate",
           "camera_geometry.py --verify" in read("windows/START.bat"))
+
+    # ── Several calibrations are evidence, not repetitions ───────────
+    # --calibrate overwrites, so calibrating twice DISCARDS the first
+    # fit. Focal length is a camera property and must not depend on how
+    # far away the person sat, so points at different distances are a
+    # test the single-point procedure cannot perform.
+    _cgmod = importlib.import_module("camera_geometry")
+    importlib.reload(_cgmod)
+    _K = _cgmod.__dict__.get("POPULATION_IOD_CM")  # touch, keeps import used
+
+    # Synthetic camera: focal 700 px exactly, no tape error.
+    _iris_cm = 1.17
+    _true_f = 700.0
+    _pts = [(d, _iris_cm * _true_f / d) for d in (40.0, 55.0, 70.0)]
+    _fit = _cgmod.fit_multi(_pts)
+    check("a perfect camera recovers its focal length exactly",
+          abs(_fit["focal_px"] - _true_f) < 0.5, str(_fit["focal_px"]))
+    check("...with residuals at zero", _fit["rms_cm"] < 0.01,
+          str(_fit["rms_cm"]))
+
+    # Now bias every tape reading by a constant. The focal-only model
+    # must fit worse, and the offset model must recover the bias.
+    _bias = 4.0
+    _pts_b = [(d - _bias, _iris_cm * _true_f / d) for d in (40.0, 55.0, 70.0)]
+    _fit_b = _cgmod.fit_multi(_pts_b)
+    check("a constant tape bias shows up as residuals in the focal-only fit",
+          _fit_b["rms_cm"] > 0.2, str(_fit_b["rms_cm"]))
+    _ob = _fit_b["offset_model"]
+    check("the offset model recovers the tape bias",
+          abs(abs(_ob["tape_offset_cm"]) - _bias) < 0.3,
+          str(_ob["tape_offset_cm"]))
+    check("...and the sign says the tape reads SHORT",
+          _ob["tape_offset_cm"] < 0, str(_ob["tape_offset_cm"]))
+    check("the offset model recovers the true focal too",
+          abs(_ob["focal_px"] - _true_f) < 5.0, str(_ob["focal_px"]))
+
+    # Two points fit two parameters exactly. Saying so is the point:
+    # an offset that cannot be wrong is not evidence.
+    _two = _cgmod.fit_multi(_pts_b[:2])
+    check("two points are declared insufficient for the offset test",
+          _two["offset_model"]["meaningful"] is False
+          and "tests nothing" in _two["offset_model"]["note"])
+    check("three points make the offset test meaningful",
+          _fit_b["offset_model"]["meaningful"] is True)
+    check("one point is refused outright",
+          "error" in _cgmod.fit_multi(_pts_b[:1]))
+    check("the fit is exposed on the command line",
+          '"--fit"' in read("camera_geometry.py")
+          and "def fit_multi" in read("camera_geometry.py"))
+
+    # A pooled fit has no single calibration distance. Writing that key
+    # as null and then dividing by it raised TypeError on EVERY distance
+    # estimate afterwards — i.e. on every session recorded after the
+    # calibration was saved, which is the worst possible moment.
+    import json as _js
+    import shutil as _sh2
+    import tempfile as _tf2
+
+    _tmpg = _tf2.mkdtemp(prefix="geom_")
+    _saved_file = _cgmod.GEOMETRY_FILE
+    try:
+        _cgmod.GEOMETRY_FILE = os.path.join(_tmpg, "camera_geometry.json")
+        _rc_fit = _cgmod._report_fit(_pts, do_save=True)
+        with open(_cgmod.GEOMETRY_FILE, encoding="utf-8") as _fh:
+            _geom = _js.load(_fh)
+        check("--fit --save writes the pooled focal length",
+              abs(_geom["focal_px"] - _true_f) < 0.5, str(_geom["focal_px"]))
+        check("...with its provenance, not just a number",
+              "fit_points" in _geom and "fit_rms_cm" in _geom
+              and "pooled" in _geom["focal_basis"])
+        check("...and a usable calibration distance, never null",
+              isinstance(_geom.get("known_distance_cm"), (int, float)),
+              repr(_geom.get("known_distance_cm")))
+        _est = _cgmod.estimate_distance(70.0, geometry=_geom)
+        check("a distance estimate still works after a pooled save",
+              isinstance(_est.get("distance_cm"), float)
+              and _est["distance_cm"] > 0, str(_est.get("distance_cm")))
+        # And with the key explicitly null, as an older file may hold.
+        _geom_null = dict(_geom)
+        _geom_null["known_distance_cm"] = None
+        _geom_null["distance_sd_cm"] = None
+        _est2 = _cgmod.estimate_distance(70.0, geometry=_geom_null)
+        check("...and survives a null calibration distance too",
+              isinstance(_est2.get("distance_cm"), float),
+              str(_est2.get("distance_cm")))
+    finally:
+        _cgmod.GEOMETRY_FILE = _saved_file
+        _sh2.rmtree(_tmpg, ignore_errors=True)
+
+    # Plain print() calls: a doubled %% renders literally on screen.
+    _cg_src = read("camera_geometry.py")
+    _bad = [ln for ln in _cg_src.splitlines()
+            if "%%" in ln and "print(" in ln and "% " not in ln.split("%%")[-1]
+            and not ln.rstrip().endswith("%")]
+    check("no literal %% leaks into a plain print",
+          "~4 %% biological" not in _cg_src
+          and "~11 %% and which uses" not in read("tracker_service.py"))
     check("the launcher offers the probe",
           "tracker_service.py --distance" in read("windows/START.bat"))
 
@@ -3132,9 +3392,10 @@ try:
           _start.count("\n:do_update") == 1)
     check("...and called from both launch and the menu",
           _start.count("call :do_update") == 2)
+    _start_code = bat_code("START.bat")
     check("there is exactly one git pull and one dirty-tree guard",
-          _start.count("git pull --ff-only") == 1
-          and _start.count("NOT pulling") == 1)
+          _start_code.count("git pull --ff-only") == 1
+          and _start_code.count("NOT pulling") == 1)
     check("the menu offers the update",
           "u  Update from GitHub" in _start
           and 'if /i "%OPT%"=="u"' in _start)
