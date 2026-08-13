@@ -2842,6 +2842,17 @@ try:
           < _ver.index("PASS —"))
     check("a failure states the consequence in degrees",
           "really %.2f deg" in _ver)
+    # cmd.exe reads .bat under the console codepage, not UTF-8, so a
+    # non-ASCII character in an ECHO line renders as mojibake in the
+    # pre-flight output - which is output a reader may screenshot.
+    _nonascii = []
+    for _f in sorted(glob.glob(os.path.join(BASE, "windows", "*.bat"))):
+        _txt = read(os.path.join("windows", os.path.basename(_f)))
+        if any(ord(c) > 127 for c in _txt):
+            _nonascii.append(os.path.basename(_f))
+    check("no .bat file contains non-ASCII", not _nonascii,
+          ", ".join(_nonascii))
+
     check("the launcher offers verify separately from calibrate",
           "camera_geometry.py --verify" in read("windows/START.bat"))
 
