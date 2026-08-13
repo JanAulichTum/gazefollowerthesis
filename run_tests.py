@@ -3045,6 +3045,57 @@ try:
     check("no echo inside a ( ) block has an unescaped parenthesis",
           not _paren_bugs, ", ".join(_paren_bugs))
 
+    # ── The manifest must be written, whatever is in it ──────────────
+    # The write caught OSError only. A numpy bool from the iris
+    # cross-check raises TypeError inside json.dump, finalisation aborts,
+    # and the session ends with a gaze CSV and no manifest - no
+    # validations, no distance, nothing analysable - discovered after the
+    # participant has gone home.
+    import ast as _ast
+
+    _app_src = read("app.py")
+    _ns = {"json": json}
+    for _node in _ast.parse(_app_src).body:
+        if isinstance(_node, _ast.FunctionDef) and _node.name in (
+                "_json_safe", "_strip_unserialisable"):
+            exec(compile(_ast.Module([_node], []), "app.py", "exec"), _ns)
+    check("the manifest write has a json fallback converter",
+          "_json_safe" in _ns and "default=_json_safe" in _app_src)
+    check("...and catches more than OSError",
+          "except Exception:  # noqa: BLE001" in
+          _app_src.split("Manifest write FAILED")[0][-400:])
+
+    import numpy as _np3
+
+    _agree = _np3.float32(3.2) <= 15.0        # exactly what the iris does
+    try:
+        json.dumps({"agree": _agree})
+        _plain_ok = True
+    except TypeError:
+        _plain_ok = False
+    check("a numpy bool is what plain json refuses", not _plain_ok,
+          type(_agree).__name__)
+    check("...and the converter takes it",
+          json.dumps({"agree": _agree}, default=_ns["_json_safe"])
+          == '{"agree": true}')
+    for _v in (_np3.float32(1.5), _np3.int64(3), _np3.array([1.0, 2.0])):
+        check("the converter handles %s" % type(_v).__name__,
+              bool(json.dumps({"v": _v}, default=_ns["_json_safe"])))
+
+    class _Unserialisable:
+        pass
+
+    _degraded = _ns["_strip_unserialisable"](
+        {"good": 1, "bad": _Unserialisable(),
+         "nested": {"deep": _Unserialisable(), "fine": 2}})
+    check("the degraded fallback always serialises",
+          json.dumps(_degraded)
+          == '{"good": 1, "bad": "<unserialisable>", '
+             '"nested": {"deep": "<unserialisable>", "fine": 2}}',
+          json.dumps(_degraded))
+    check("...and keeps every field it can",
+          _degraded["good"] == 1 and _degraded["nested"]["fine"] == 2)
+
     # ── Retiring a session, not deleting it ──────────────────────────
     # A session that disappears leaves a gap, and a gap cannot answer
     # whether the participant was dropped for a fault or for an
