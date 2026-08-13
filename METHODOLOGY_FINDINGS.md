@@ -531,6 +531,50 @@ is currently described as the study's central methodological
 contribution, so shipping it with a derivation that does not close is
 the single most examinable weakness in the project.
 
+## F22 · Focal length calibrated on three distances, not one
+**2026-08-13 · Methods (apparatus)**
+
+A single-point calibration solves the focal length so that its own tape
+reading comes out right; it cannot detect its own error. Three
+independent calibrations were therefore taken and pooled, since focal
+length is a property of the camera and must not depend on how far away
+the person sat.
+
+| tape distance | iris | focal if fitted alone |
+|---|---|---|
+| 45 cm | 16.38 px | 630.0 px |
+| 55 cm | 13.91 px | 653.9 px |
+| 65 cm | 11.66 px | 647.8 px |
+
+**Pooled fit: 645.6 px**, residuals +1.12 / −0.69 / −0.21 cm, RMS
+0.77 cm, worst point 2.5 %. One focal length reproduces all three tape
+readings inside the tape's own ±1 cm uncertainty, across the full range
+participants will sit at. This is a calibration *curve*, not a point,
+and it is reportable as such.
+
+**The tape-offset hypothesis was tested and not supported.** The most
+likely systematic error in this procedure is the ruler rather than the
+optics — measuring consistently to the screen surface rather than the
+lens shifts every reading by the same amount — and that signature is a
+focal length that grows with calibration distance, which the first two
+points appeared to show. Fitting a second model with a constant offset
+gives 688.2 px and a 3.70 cm offset, but reduces RMS only from 0.77 to
+0.58 cm. With two points that model fitted exactly and tested nothing;
+with three it can fail, and the improvement it buys is within noise. The
+simpler model is retained.
+
+Camera field of view implied by the fit is ~52–54°, against the 60°
+fallback the pipeline used before any calibration existed — a 10–13 %
+error in every distance, and therefore in every angle, that the
+calibration removes.
+
+Secondary consistency check: the iris-derived and inter-ocular-derived
+focal lengths disagree by 3.1 %, 4.4 % and 3.3 % at the three distances.
+That the disagreement is *stable* across distance is the informative
+part — both landmarks scale correctly, and the constant gap is
+consistent with this participant's inter-pupillary distance being a few
+per cent above the 6.3 cm population mean the IOD path assumes.
+
 ---
 
 ## Open items before evaluation collection

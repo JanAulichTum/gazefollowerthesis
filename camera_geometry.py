@@ -539,7 +539,7 @@ def fit_multi(points: list, iris_mm: float = None) -> dict:
     return out
 
 
-def _report_fit(points: list) -> int:
+def _report_fit(points: list, do_save: bool = False) -> int:
     res = fit_multi(points)
     print("=" * 68)
     print("  MULTI-POINT FOCAL FIT — one focal length, several distances")
@@ -578,6 +578,33 @@ def _report_fit(points: list) -> int:
         print("  One focal length fits every distance to within %.1f %%."
               % res["worst_pct"])
         print("  The ruler is consistent across the range measured.")
+        if do_save:
+            # The pooled estimate replaces whichever single fit happened
+            # to run last, and carries its own provenance so a reader can
+            # see how many points it rests on.
+            geom = load() or {}
+            geom.update({
+                "focal_px": res["focal_px"],
+                "focal_basis": "pooled fit over %d measured distances "
+                               "(iris)" % res["n_points"],
+                "fit_points": res["points"],
+                "fit_residuals_cm": res["residuals_cm"],
+                "fit_rms_cm": res["rms_cm"],
+                "fit_worst_pct": res["worst_pct"],
+                "known_distance_cm": None,
+                "calibrated_at": datetime.now().isoformat(timespec="seconds"),
+            })
+            if res.get("offset_model"):
+                geom["fit_offset_model"] = res["offset_model"]
+            save(geom)
+            print()
+            print("  SAVED — focal_px is now %.1f px, from %d points."
+                  % (res["focal_px"], res["n_points"]))
+            print("  Verify it at a distance you did NOT calibrate at:")
+            print("      python camera_geometry.py --verify <cm>")
+        else:
+            print()
+            print("  Nothing written. Add --save to adopt this focal length.")
         return 0
     print("  No single focal length fits all points (worst %.1f %%)."
           % res["worst_pct"])
@@ -684,6 +711,8 @@ def main() -> int:
     ap.add_argument("--fit", metavar="D:PX,D:PX,...",
                     help="fit ONE focal length across several measured "
                          "distances, e.g. --fit 45:16.38,65:11.66")
+    ap.add_argument("--save", action="store_true",
+                    help="with --fit: adopt the pooled focal length")
     args = ap.parse_args()
 
     if args.sensitivity:
@@ -704,7 +733,7 @@ def main() -> int:
             except ValueError:
                 print("  cannot read %r — use  45:16.38,65:11.66" % chunk)
                 return 1
-        return _report_fit(pts)
+        return _report_fit(pts, do_save=args.save)
 
     if args.show:
         g = load()
