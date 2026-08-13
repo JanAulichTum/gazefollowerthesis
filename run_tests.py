@@ -2844,6 +2844,55 @@ try:
           "really %.2f deg" in _ver)
     check("the launcher offers verify separately from calibrate",
           "camera_geometry.py --verify" in read("windows/START.bat"))
+
+    # ── Several calibrations are evidence, not repetitions ───────────
+    # --calibrate overwrites, so calibrating twice DISCARDS the first
+    # fit. Focal length is a camera property and must not depend on how
+    # far away the person sat, so points at different distances are a
+    # test the single-point procedure cannot perform.
+    _cgmod = importlib.import_module("camera_geometry")
+    importlib.reload(_cgmod)
+    _K = _cgmod.__dict__.get("POPULATION_IOD_CM")  # touch, keeps import used
+
+    # Synthetic camera: focal 700 px exactly, no tape error.
+    _iris_cm = 1.17
+    _true_f = 700.0
+    _pts = [(d, _iris_cm * _true_f / d) for d in (40.0, 55.0, 70.0)]
+    _fit = _cgmod.fit_multi(_pts)
+    check("a perfect camera recovers its focal length exactly",
+          abs(_fit["focal_px"] - _true_f) < 0.5, str(_fit["focal_px"]))
+    check("...with residuals at zero", _fit["rms_cm"] < 0.01,
+          str(_fit["rms_cm"]))
+
+    # Now bias every tape reading by a constant. The focal-only model
+    # must fit worse, and the offset model must recover the bias.
+    _bias = 4.0
+    _pts_b = [(d - _bias, _iris_cm * _true_f / d) for d in (40.0, 55.0, 70.0)]
+    _fit_b = _cgmod.fit_multi(_pts_b)
+    check("a constant tape bias shows up as residuals in the focal-only fit",
+          _fit_b["rms_cm"] > 0.2, str(_fit_b["rms_cm"]))
+    _ob = _fit_b["offset_model"]
+    check("the offset model recovers the tape bias",
+          abs(abs(_ob["tape_offset_cm"]) - _bias) < 0.3,
+          str(_ob["tape_offset_cm"]))
+    check("...and the sign says the tape reads SHORT",
+          _ob["tape_offset_cm"] < 0, str(_ob["tape_offset_cm"]))
+    check("the offset model recovers the true focal too",
+          abs(_ob["focal_px"] - _true_f) < 5.0, str(_ob["focal_px"]))
+
+    # Two points fit two parameters exactly. Saying so is the point:
+    # an offset that cannot be wrong is not evidence.
+    _two = _cgmod.fit_multi(_pts_b[:2])
+    check("two points are declared insufficient for the offset test",
+          _two["offset_model"]["meaningful"] is False
+          and "tests nothing" in _two["offset_model"]["note"])
+    check("three points make the offset test meaningful",
+          _fit_b["offset_model"]["meaningful"] is True)
+    check("one point is refused outright",
+          "error" in _cgmod.fit_multi(_pts_b[:1]))
+    check("the fit is exposed on the command line",
+          '"--fit"' in read("camera_geometry.py")
+          and "def fit_multi" in read("camera_geometry.py"))
     check("the launcher offers the probe",
           "tracker_service.py --distance" in read("windows/START.bat"))
 
