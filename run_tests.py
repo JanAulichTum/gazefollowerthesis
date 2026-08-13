@@ -3096,6 +3096,70 @@ try:
     check("...and keeps every field it can",
           _degraded["good"] == 1 and _degraded["nested"]["fine"] == 2)
 
+    # ── An interrupted finalisation must not lose the session ────────
+    # Finalisation takes ~60 s (it re-reads the CSV per stimulus) and
+    # wrote the manifest last, so closing the app after the participant
+    # finished lost the validations, the distance and the correction -
+    # everything that only existed in server memory.
+    _app_src2 = read("app.py")
+    check("a provisional manifest is written before segmentation",
+          "PROVISIONAL MANIFEST" in _app_src2
+          and _app_src2.index("_provisional")
+          < _app_src2.index("gaze_service.end_session(csv_path)"))
+    check("...and is marked incomplete so it cannot pass as a full one",
+          '"complete": False' in _app_src2)
+
+    # ── Rebuilding a manifest from the log ───────────────────────────
+    _rb = read("rebuild_manifest.py")
+    check("the rebuilt manifest is marked as reconstructed",
+          '"reconstructed"' in _rb and "must be reported as such" in _rb)
+    check("...and lists what could NOT be recovered",
+          '"absent"' in _rb and "per-target error breakdown" in _rb)
+    check("rebuilding refuses to overwrite a real manifest",
+          "Refusing to overwrite" in _rb)
+
+    _rbmod = importlib.import_module("rebuild_manifest")
+    importlib.reload(_rbmod)
+    _log = "\n".join([
+        "2026-08-13 16:03:58,747  INFO  __main__ - New participant "
+        "registered: T P1",
+        "2026-08-13 16:05:59,700  INFO  __main__ - Rate gate [pre-video #1]:"
+        " 30.0 Hz sustained (initial 30.1, peak 33.4) | 100.0% detected",
+        "2026-08-13 16:06:43,383  WARNING __main__ - Validation degrees "
+        "shift 14 % once the MEASURED distance (52.7 cm, via inter-ocular "
+        "(GazeFollower eye rects)) replaces the browser's assumption: "
+        "1.74 -> 1.98 deg",
+        "2026-08-13 16:06:43,384  INFO  __main__ - Validation (pre_fit): "
+        "mean error 101.4 px / 1.74 deg | targets measured 7/7, samples "
+        "per target [46, 46, 45, 45, 46, 45, 46] | fullscreen=True "
+        "inner=[1920, 1080] offsets=[0, -8] dpr=1 - sid=X",
+        "2026-08-13 16:07:15,181  INFO  __main__ - Recording started - "
+        "sid=X, participant=T P1, stimulus=A.mp4",
+        "2026-08-13 16:07:45,554  INFO  __main__ - Recording stopped - "
+        "sid=X, participant=T P1, stimulus=A.mp4, gazefollower=continues",
+        "2026-08-13 16:08:41,678  INFO  __main__ - Session "
+        "T_P1_2026-08-13_160841 -> study (EVALUATION data)",
+    ])
+    _p = _rbmod._parse(_log, "T_P1_2026-08-13_160841")
+    check("the log parser recovers the validation", len(_p["validations"]) == 1
+          and _p["validations"][0]["mean_err_px"] == 101.4)
+    check("...its per-target sample counts",
+          _p["validations"][0]["samples_per_target"] == [46, 46, 45, 45, 46,
+                                                         45, 46])
+    check("...the measured distance and its ruler",
+          _p["validations"][0]["distance"]["cm"] == 52.7
+          and "inter-ocular" in _p["validations"][0]["distance"]["source"])
+    check("...the browser geometry",
+          _p["validations"][0]["geometry"]["inner"] == [1920, 1080])
+    check("...the rate gate", len(_p["rate_gates"]) == 1
+          and _p["rate_gates"][0]["hz_sustained"] == 30.0)
+    _built = _rbmod.build("T_P1_2026-08-13_160841", _p)
+    check("the stimulus window is paired start->stop",
+          len(_built["stimulus_log"]) == 1
+          and _built["stimulus_log"][0]["stimulus"] == "A.mp4")
+    check("the built manifest carries the reconstruction warning",
+          "RECONSTRUCTED" in _built["reconstructed"]["warning"])
+
     # ── Retiring a session, not deleting it ──────────────────────────
     # A session that disappears leaves a gap, and a gap cannot answer
     # whether the participant was dropped for a fault or for an

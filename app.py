@@ -341,6 +341,45 @@ def finalize_gazefollower_session(
     # recordings of the same stimulus).
     session_id = os.path.splitext(os.path.basename(csv_path))[0]
 
+    # PROVISIONAL MANIFEST, written before any of the slow work.
+    #
+    # Finalisation re-reads the whole CSV once per stimulus and writes
+    # the manifest LAST, so it takes about a minute. Close the app inside
+    # that window - which looks entirely reasonable, the participant has
+    # finished and the screen says complete - and everything held in
+    # server memory is gone: the three validations, the distance, the
+    # correction, the rate gates. The gaze CSV survives and is useless
+    # without them.
+    #
+    # This writes those first. If finalisation completes, the full
+    # manifest replaces it a minute later. If it does not, the session is
+    # still analysable.
+    try:
+        _state = session_states.get(_sid_for_participant(participant_id)) \
+            if "_sid_for_participant" in globals() else None
+    except Exception:  # noqa: BLE001
+        _state = None
+    _provisional = {
+        "session_id": session_id,
+        "participant_id": participant_id,
+        "provisional": {
+            "written_at": datetime.now(timezone.utc).isoformat(),
+            "why": ("written before per-stimulus segmentation so that an "
+                    "interrupted finalisation still leaves the validations "
+                    "and the distance on disk"),
+            "complete": False,
+        },
+        "stimulus_log": stimulus_log,
+        "correction": correction,
+    }
+    try:
+        with open(csv_path.replace(".csv", "_manifest.json"), "w",
+                  encoding="utf-8") as _fh:
+            json.dump(_provisional, _fh, indent=2, default=_json_safe)
+        logger.info("Provisional manifest written for %s", session_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not write the provisional manifest")
+
     if gaze_service.end_session(csv_path) is None:
         logger.error("GazeFollower session save failed — no data written.")
         return {}
