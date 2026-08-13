@@ -2425,7 +2425,7 @@ def _distance_probe(seconds: float = 10.0) -> int:
     print("  FALLBACK IN USE — the iris measured only %.0f %% of frames"
           % share)
     print("  with a face. Distances would come from the inter-ocular")
-    print("  estimate, whose population spread is ~11 %% and which uses")
+    print("  estimate, whose population spread is ~11 % and which uses")
     print("  eye-rect centres that are not pupil centres. Every accuracy")
     print("  figure in degrees inherits that. Report it as a limitation,")
     print("  or fix the iris path before collecting.")

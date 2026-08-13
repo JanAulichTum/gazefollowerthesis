@@ -2893,6 +2893,54 @@ try:
     check("the fit is exposed on the command line",
           '"--fit"' in read("camera_geometry.py")
           and "def fit_multi" in read("camera_geometry.py"))
+
+    # A pooled fit has no single calibration distance. Writing that key
+    # as null and then dividing by it raised TypeError on EVERY distance
+    # estimate afterwards — i.e. on every session recorded after the
+    # calibration was saved, which is the worst possible moment.
+    import json as _js
+    import shutil as _sh2
+    import tempfile as _tf2
+
+    _tmpg = _tf2.mkdtemp(prefix="geom_")
+    _saved_file = _cgmod.GEOMETRY_FILE
+    try:
+        _cgmod.GEOMETRY_FILE = os.path.join(_tmpg, "camera_geometry.json")
+        _rc_fit = _cgmod._report_fit(_pts, do_save=True)
+        with open(_cgmod.GEOMETRY_FILE, encoding="utf-8") as _fh:
+            _geom = _js.load(_fh)
+        check("--fit --save writes the pooled focal length",
+              abs(_geom["focal_px"] - _true_f) < 0.5, str(_geom["focal_px"]))
+        check("...with its provenance, not just a number",
+              "fit_points" in _geom and "fit_rms_cm" in _geom
+              and "pooled" in _geom["focal_basis"])
+        check("...and a usable calibration distance, never null",
+              isinstance(_geom.get("known_distance_cm"), (int, float)),
+              repr(_geom.get("known_distance_cm")))
+        _est = _cgmod.estimate_distance(70.0, geometry=_geom)
+        check("a distance estimate still works after a pooled save",
+              isinstance(_est.get("distance_cm"), float)
+              and _est["distance_cm"] > 0, str(_est.get("distance_cm")))
+        # And with the key explicitly null, as an older file may hold.
+        _geom_null = dict(_geom)
+        _geom_null["known_distance_cm"] = None
+        _geom_null["distance_sd_cm"] = None
+        _est2 = _cgmod.estimate_distance(70.0, geometry=_geom_null)
+        check("...and survives a null calibration distance too",
+              isinstance(_est2.get("distance_cm"), float),
+              str(_est2.get("distance_cm")))
+    finally:
+        _cgmod.GEOMETRY_FILE = _saved_file
+        _sh2.rmtree(_tmpg, ignore_errors=True)
+
+    # Plain print() calls: a doubled %% renders literally on screen.
+    _cg_src = read("camera_geometry.py")
+    _bad = [ln for ln in _cg_src.splitlines()
+            if "%%" in ln and "print(" in ln and "% " not in ln.split("%%")[-1]
+            and not ln.rstrip().endswith("%")]
+    check("no literal %% leaks into a plain print",
+          "~4 %% biological" not in _cg_src
+          and "~11 %% and which uses" not in read("tracker_service.py"))
     check("the launcher offers the probe",
           "tracker_service.py --distance" in read("windows/START.bat"))
 

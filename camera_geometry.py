@@ -181,8 +181,14 @@ def estimate_distance(iod_px: float, geometry: dict = None,
         cal_w = geometry.get("image_w_px") or image_w_px
         if cal_w and image_w_px and cal_w != image_w_px:
             focal *= image_w_px / float(cal_w)
-        focal_rel_sd = (geometry.get("distance_sd_cm", 1.0)
-                        / max(1e-6, geometry.get("known_distance_cm", 60.0)))
+        # `or` and not `get(..., default)`: a pooled fit has no single
+        # calibration distance and writes the key as null, so the
+        # default never fires and max() is handed a None. That raises
+        # TypeError on every distance estimate — i.e. on every session
+        # recorded after a pooled calibration was saved.
+        focal_rel_sd = (float(geometry.get("distance_sd_cm") or 1.0)
+                        / max(1e-6,
+                              float(geometry.get("known_distance_cm") or 60.0)))
         sources.append("focal length MEASURED (%.0f px, implied HFOV %.1f deg)"
                        % (focal, geometry.get("implied_hfov_deg", 0)))
     else:
@@ -591,7 +597,13 @@ def _report_fit(points: list, do_save: bool = False) -> int:
                 "fit_residuals_cm": res["residuals_cm"],
                 "fit_rms_cm": res["rms_cm"],
                 "fit_worst_pct": res["worst_pct"],
-                "known_distance_cm": None,
+                # The MEAN of the fitted distances, not null: downstream
+                # code divides by this to form a relative uncertainty,
+                # and the pooled rms is the honest numerator for it.
+                "known_distance_cm": round(
+                    sum(p["tape_cm"] for p in res["points"])
+                    / len(res["points"]), 1),
+                "distance_sd_cm": res["rms_cm"],
                 "calibrated_at": datetime.now().isoformat(timespec="seconds"),
             })
             if res.get("offset_model"):
@@ -640,8 +652,18 @@ def _verify(tape_cm: float, seconds: float = 6.0, width: int = 640) -> int:
         print("  No saved calibration to verify. Run:")
         print("      python camera_geometry.py --calibrate <cm> --measure")
         return 1
-    print("  saved focal        : %.1f px  (calibrated at %s cm)"
-          % (focal, geom.get("known_distance_cm", "?")))
+    # Provenance, not a single distance. After a pooled fit there is no
+    # one calibration distance, and printing "calibrated at None cm" is
+    # worse than useless in a figure someone may paste into a thesis.
+    if geom.get("fit_points"):
+        _ds = ", ".join("%.0f" % p["tape_cm"] for p in geom["fit_points"])
+        _prov = "pooled over %d distances: %s cm" % (len(geom["fit_points"]),
+                                                     _ds)
+    elif geom.get("known_distance_cm"):
+        _prov = "single fit at %.1f cm" % geom["known_distance_cm"]
+    else:
+        _prov = "provenance not recorded"
+    print("  saved focal        : %.1f px  (%s)" % (focal, _prov))
     print("  tape says          : %.1f cm" % tape_cm)
     print("  Sit at exactly that distance, camera lens to the bridge of")
     print("  your nose, and hold still for %.0f s…" % seconds)
@@ -671,10 +693,13 @@ def _verify(tape_cm: float, seconds: float = 6.0, width: int = 640) -> int:
         print("  the ruler, it is a measurement of your head. Re-run.")
         return 1
     if err_pct <= 5.0:
+        # These are plain print() calls, not format strings, so a
+        # doubled %% renders literally. Escape only where a % operator
+        # is actually applied.
         print("  PASS — the saved focal length reproduces an independent")
         print("  measurement to within %.1f %%, which is inside the iris"
               % err_pct)
-        print("  ruler's own ~4 %% biological spread. Distances, and so")
+        print("  ruler's own ~4 % biological spread. Distances, and so")
         print("  every accuracy figure in degrees, are trustworthy at")
         print("  this distance.")
         return 0
