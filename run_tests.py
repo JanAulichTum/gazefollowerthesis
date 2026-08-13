@@ -1954,6 +1954,127 @@ try:
           "once the MEASURED" in _app2)
     check("an unmeasurable distance is recorded as such",
           '"measured": False' in _app2)
+    # The position payload is the ONLY route by which the tracker's
+    # distance reaches the session manifest. It carried the number and
+    # dropped the provenance, so a session recorded 68.3 cm with source,
+    # iris and iod all null — and the summary called it MEASURED.
+    _guid = read("tracker_service.py").split("POSITION_FIELDS = (")[1].split(")")[0]
+    for _field in ("distance_source", "distance_cm_iris", "distance_cm_iod",
+                   "distance_estimates_agree", "iris_error",
+                   "focal_measured"):
+        check("the position payload carries %s" % _field, _field in _guid)
+
+    # THE CONTRACT, not a list of field names. app.py reads keys out of
+    # the position payload; tracker_service decides which keys are in it.
+    # Nothing connected the two, so a field could be read forever and
+    # never sent — which is exactly what happened to distance_source.
+    # Asserting the relation catches the next one too.
+    _app_reads = set(re.findall(r'pos\.get\("([a-z_]+)"\)', read("app.py")))
+    _sent = set(re.findall(r'"([a-z_]+)"',
+                           read("tracker_service.py")
+                           .split("POSITION_FIELDS = (")[1].split(")")[0]))
+    _never_sent = sorted(_app_reads - _sent)
+    check("every position field app.py reads is one the tracker sends",
+          not _never_sent, "read but never sent: %s" % ", ".join(_never_sent))
+    check("...and the payload is not empty in the first place",
+          len(_sent) >= 15, "%d fields" % len(_sent))
+
+    # A bare `except: pass` around the iris block is why a session could
+    # fall back to the worse ruler with no evidence that anything went
+    # wrong. The exception is now the diagnostic.
+    _ts_src2 = read("tracker_service.py")
+    # ── The session path, reproduced without a camera ────────────────
+    # Three pilots were spent learning that sessions used the fallback
+    # ruler. The whole failure is reproducible from a fake FaceInfo, and
+    # should have been found here.
+    class _LM:
+        __slots__ = ("x", "y", "z")
+
+        def __init__(self, x, y):
+            self.x, self.y, self.z = x, y, 0.0
+
+    class _FaceInfo:
+        status = True
+        face_rect = [200, 150, 240, 240]
+        left_rect = [250, 230, 40, 24]
+        right_rect = [370, 230, 40, 24]
+        img_w, img_h = 640, 480
+        left_openness = right_openness = 0.3
+        # COARSE mesh, exactly what GazeFollower supplies: 468 points,
+        # no iris landmarks at 468-477.
+        landmarks = [_LM(0.3 + 0.0004 * i, 0.4 + 0.0003 * i)
+                     for i in range(468)]
+
+    _tsm = importlib.import_module("tracker_service")
+    # GazeFollower carries the landmarks as a NUMPY ARRAY. `not array`
+    # raises ValueError, a bare except swallowed it, and the iris ruler
+    # therefore never ran in ANY recorded session - the distance came
+    # from the inter-ocular fallback every time, silently.
+    class _FaceInfoNumpy:
+        status = True
+        face_rect = [200, 150, 240, 240]
+        left_rect = [250, 230, 40, 24]
+        right_rect = [370, 230, 40, 24]
+        img_w, img_h = 640, 480
+        left_openness = right_openness = 0.3
+        landmarks = None            # set below
+
+    import numpy as _np4
+
+    _FaceInfoNumpy.landmarks = _np4.random.rand(468, 3).astype(_np4.float32)
+    _svc_np = _tsm.Service.__new__(_tsm.Service)
+    _svc_np._latest_face_info = _FaceInfoNumpy()
+    _svc_np.gf = None
+    _svc_np._last_frame = None
+    _m_np = _svc_np._metrics_from_face_info() or {}
+    check("numpy landmarks do not raise on a truthiness test",
+          "ambiguous" not in str(_m_np.get("iris_error") or ""),
+          str(_m_np.get("iris_error"))[:70])
+    check("...and the coarse mesh is reported as the reason instead",
+          "468" in str(_m_np.get("iris_error") or ""),
+          str(_m_np.get("iris_error"))[:70])
+    check("the guard is an explicit None check, not truthiness",
+          "if lm is None or len(lm) < 478:" in read("tracker_service.py")
+          and "if not lm or len(lm)" not in read("tracker_service.py"))
+
+    _svc = _tsm.Service.__new__(_tsm.Service)
+    _svc._latest_face_info = _FaceInfo()
+    _svc.gf = None
+    _svc._last_frame = None
+    _m = _svc._metrics_from_face_info() or {}
+    check("a coarse mesh with no frame falls back to the inter-ocular ruler",
+          "inter-ocular" in str(_m.get("distance_source")),
+          str(_m.get("distance_source")))
+    check("...and SAYS SO, which is what three pilots could not tell us",
+          bool(_m.get("iris_error")), _m.get("iris_error") or "silent")
+    check("...naming the coarse mesh as the reason",
+          "468" in str(_m.get("iris_error")))
+
+    # The frame the callback already receives is what makes the refined
+    # mesh possible during a session.
+    _svc2 = _tsm.Service.__new__(_tsm.Service)
+    _svc2.gf = None
+    _svc2._last_frame = None
+    check("_grab_frame returns nothing when no frame was stashed",
+          _svc2._grab_frame() is None)
+    import numpy as _np2
+
+    _svc2._last_frame = _np2.zeros((480, 640, 3), dtype=_np2.uint8)
+    check("_grab_frame returns the frame the callback stashed",
+          _svc2._grab_frame() is _svc2._last_frame)
+    check("the callback stashes every frame it sees",
+          "self._last_frame = frame" in read("tracker_service.py"))
+
+    check("a failing iris records WHY, instead of passing silently",
+          "except Exception as exc:  # noqa: BLE001 — never block the guide"
+          in _ts_src2 and 'm["iris_error"] = "%s: %s"' in _ts_src2)
+    check("...with a traceback, since the message alone was not enough",
+          'm["iris_traceback"]' in _ts_src2
+          and "iris_traceback" in read("app.py"))
+    check("the reader shouts when the fallback ruler was used",
+          "The FALLBACK ruler produced this distance"
+          in read("show_validations.py"))
+
     check("the distance block records which ruler was used",
           '"iris_cm": pos.get("distance_cm_iris")' in _app2)
 except Exception as exc:  # noqa: BLE001
@@ -2955,6 +3076,145 @@ try:
     check("no echo inside a ( ) block has an unescaped parenthesis",
           not _paren_bugs, ", ".join(_paren_bugs))
 
+    # ── The manifest must be written, whatever is in it ──────────────
+    # The write caught OSError only. A numpy bool from the iris
+    # cross-check raises TypeError inside json.dump, finalisation aborts,
+    # and the session ends with a gaze CSV and no manifest - no
+    # validations, no distance, nothing analysable - discovered after the
+    # participant has gone home.
+    import ast as _ast
+
+    _app_src = read("app.py")
+    _ns = {"json": json}
+    for _node in _ast.parse(_app_src).body:
+        if isinstance(_node, _ast.FunctionDef) and _node.name in (
+                "_json_safe", "_strip_unserialisable"):
+            exec(compile(_ast.Module([_node], []), "app.py", "exec"), _ns)
+    check("the manifest write has a json fallback converter",
+          "_json_safe" in _ns and "default=_json_safe" in _app_src)
+    check("...and catches more than OSError",
+          "except Exception:  # noqa: BLE001" in
+          _app_src.split("Manifest write FAILED")[0][-400:])
+
+    import numpy as _np3
+
+    _agree = _np3.float32(3.2) <= 15.0        # exactly what the iris does
+    try:
+        json.dumps({"agree": _agree})
+        _plain_ok = True
+    except TypeError:
+        _plain_ok = False
+    check("a numpy bool is what plain json refuses", not _plain_ok,
+          type(_agree).__name__)
+    check("...and the converter takes it",
+          json.dumps({"agree": _agree}, default=_ns["_json_safe"])
+          == '{"agree": true}')
+    for _v in (_np3.float32(1.5), _np3.int64(3), _np3.array([1.0, 2.0])):
+        check("the converter handles %s" % type(_v).__name__,
+              bool(json.dumps({"v": _v}, default=_ns["_json_safe"])))
+
+    class _Unserialisable:
+        pass
+
+    _degraded = _ns["_strip_unserialisable"](
+        {"good": 1, "bad": _Unserialisable(),
+         "nested": {"deep": _Unserialisable(), "fine": 2}})
+    check("the degraded fallback always serialises",
+          json.dumps(_degraded)
+          == '{"good": 1, "bad": "<unserialisable>", '
+             '"nested": {"deep": "<unserialisable>", "fine": 2}}',
+          json.dumps(_degraded))
+    check("...and keeps every field it can",
+          _degraded["good"] == 1 and _degraded["nested"]["fine"] == 2)
+
+    # ── An interrupted finalisation must not lose the session ────────
+    # Finalisation takes ~60 s (it re-reads the CSV per stimulus) and
+    # wrote the manifest last, so closing the app after the participant
+    # finished lost the validations, the distance and the correction -
+    # everything that only existed in server memory.
+    _app_src2 = read("app.py")
+    check("a provisional manifest is written before segmentation",
+          "PROVISIONAL MANIFEST" in _app_src2
+          and _app_src2.index("_provisional")
+          < _app_src2.index("gaze_service.end_session(csv_path)"))
+    check("...and is marked incomplete so it cannot pass as a full one",
+          '"complete": False' in _app_src2)
+
+    # ── Rebuilding a manifest from the log ───────────────────────────
+    _rb = read("rebuild_manifest.py")
+    check("the rebuilt manifest is marked as reconstructed",
+          '"reconstructed"' in _rb and "must be reported as such" in _rb)
+    check("...and lists what could NOT be recovered",
+          '"absent"' in _rb and "per-target error breakdown" in _rb)
+    check("rebuilding refuses to overwrite a real manifest",
+          "Refusing to overwrite" in _rb)
+
+    _rbmod = importlib.import_module("rebuild_manifest")
+    importlib.reload(_rbmod)
+    _log = "\n".join([
+        "2026-08-13 16:03:58,747  INFO  __main__ - New participant "
+        "registered: T P1",
+        "2026-08-13 16:05:59,700  INFO  __main__ - Rate gate [pre-video #1]:"
+        " 30.0 Hz sustained (initial 30.1, peak 33.4) | 100.0% detected",
+        "2026-08-13 16:06:43,383  WARNING __main__ - Validation degrees "
+        "shift 14 % once the MEASURED distance (52.7 cm, via inter-ocular "
+        "(GazeFollower eye rects)) replaces the browser's assumption: "
+        "1.74 -> 1.98 deg",
+        "2026-08-13 16:06:43,384  INFO  __main__ - Validation (pre_fit): "
+        "mean error 101.4 px / 1.74 deg | targets measured 7/7, samples "
+        "per target [46, 46, 45, 45, 46, 45, 46] | fullscreen=True "
+        "inner=[1920, 1080] offsets=[0, -8] dpr=1 - sid=X",
+        "2026-08-13 16:07:15,181  INFO  __main__ - Recording started - "
+        "sid=X, participant=T P1, stimulus=A.mp4",
+        "2026-08-13 16:07:45,554  INFO  __main__ - Recording stopped - "
+        "sid=X, participant=T P1, stimulus=A.mp4, gazefollower=continues",
+        "2026-08-13 16:08:41,678  INFO  __main__ - Session "
+        "T_P1_2026-08-13_160841 -> study (EVALUATION data)",
+    ])
+    _p = _rbmod._parse(_log, "T_P1_2026-08-13_160841")
+    check("the log parser recovers the validation", len(_p["validations"]) == 1
+          and _p["validations"][0]["mean_err_px"] == 101.4)
+    check("...its per-target sample counts",
+          _p["validations"][0]["samples_per_target"] == [46, 46, 45, 45, 46,
+                                                         45, 46])
+    check("...the measured distance and its ruler",
+          _p["validations"][0]["distance"]["cm"] == 52.7
+          and "inter-ocular" in _p["validations"][0]["distance"]["source"])
+    check("...the browser geometry",
+          _p["validations"][0]["geometry"]["inner"] == [1920, 1080])
+    check("...the rate gate", len(_p["rate_gates"]) == 1
+          and _p["rate_gates"][0]["hz_sustained"] == 30.0)
+    _built = _rbmod.build("T_P1_2026-08-13_160841", _p)
+    check("the stimulus window is paired start->stop",
+          len(_built["stimulus_log"]) == 1
+          and _built["stimulus_log"][0]["stimulus"] == "A.mp4")
+    check("the built manifest carries the reconstruction warning",
+          "RECONSTRUCTED" in _built["reconstructed"]["warning"])
+
+    # ── Retiring a session, not deleting it ──────────────────────────
+    # A session that disappears leaves a gap, and a gap cannot answer
+    # whether the participant was dropped for a fault or for an
+    # inconvenient number.
+    _ret = read("retire_session.py")
+    check("retiring moves files, never deletes them",
+          "shutil.move(f, target)" in _ret
+          and "os.remove" not in _ret and "os.unlink" not in _ret)
+    check("a reason is required and must say something",
+          'len(args.reason.strip()) < 15' in _ret)
+    check("the retirement is dated and registered",
+          "REGISTRY.md" in _ret and '"retired_at"' in _ret)
+    # "retired" appears in config.py about a retired MODEL, so match the
+    # directory, not the word.
+    check("retired sessions are gitignored like the study folder",
+          any(l.strip() == "data/retired/" for l in read(".gitignore")
+              .splitlines()))
+    check("...and no analysis tool globs the retired directory",
+          not any("retired" in read(f) for f in
+                  ("verify_metrics.py", "claim_check.py", "quality_report.py",
+                   "share_results.py", "backfill_manifests.py")))
+    check("re-recording the same person is flagged as prior exposure",
+          "rerecorded_as" in _ret and "not a first viewing" in _ret)
+
     # ── Cutting the stimuli is a procedure, not a one-off ────────────
     # The clips are not in the repo, so a cut made on one machine cannot
     # travel to another; only the script can. Identical stimulus for
@@ -3104,6 +3364,14 @@ try:
     check("no literal %% leaks into a plain print",
           "~4 %% biological" not in _cg_src
           and "~11 %% and which uses" not in read("tracker_service.py"))
+    check("the field list is defined once, not copied",
+          read("tracker_service.py").count("POSITION_FIELDS = (") == 1
+          and "for k in POSITION_FIELDS" in read("tracker_service.py"))
+    check("the probe reports the payload a session would record",
+          "WHAT A SESSION WOULD RECORD" in read("tracker_service.py"))
+    check("...and refuses when the distance has no source",
+          "POSITION_REQUIRED" in read("tracker_service.py")
+          and "not a" in read("tracker_service.py").split("MISSING:")[1][:300])
     check("the launcher offers the probe",
           "tracker_service.py --distance" in read("windows/START.bat"))
 
@@ -3218,8 +3486,10 @@ try:
     # 2026-08-11 sessions reported "UNKNOWN RULER" at ~75 cm, and every
     # degree divides by that distance.
     _ts = read("tracker_service.py")
+    # The old assertion pinned the exact buggy expression, so it went
+    # green for months while the branch it guards never executed.
     check("a coarse mesh triggers our OWN refined pass",
-          "if not lm or len(lm) < 478:" in _ts
+          "if lm is None or len(lm) < 478:" in _ts
           and "def _refined_landmarks" in _ts)
     check("the refined mesh is actually requested",
           "refine_landmarks=True" in _ts)

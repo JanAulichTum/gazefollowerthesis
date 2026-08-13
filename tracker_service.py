@@ -113,6 +113,27 @@ def log(msg: str) -> None:
     sys.stderr.flush()
 
 
+#: Everything the position payload carries into the session manifest.
+#: Module level, and shared with the --distance probe, because the probe
+#: exists to answer "will a session record this?" - and it can only
+#: answer that if it is looking at the same list the session uses. The
+#: bug this replaces was a field that app.py read and the tracker never
+#: sent; a second copy of the list would reintroduce it.
+POSITION_FIELDS = (
+    "face_center_x", "face_center_y", "eyes_y",
+    "inter_ocular_px", "est_distance_cm", "roll_deg", "openness_ratio",
+    "distance_source", "distance_cm_iris", "distance_cm_iod",
+    "distance_agreement_pct", "distance_estimates_agree",
+    "distance_rel_sd_pct", "distance_warning", "distance_disagreement",
+    "iris_error", "iris_traceback", "iris_landmarks_from",
+    "iris_asymmetry_warning",
+    "focal_px", "focal_measured",
+)
+
+#: Of those, the ones without which a distance cannot be attributed to a
+#: ruler. A session missing these records a number and not a measurement.
+POSITION_REQUIRED = ("est_distance_cm", "distance_source")
+
 _IRIS_MESH = None
 
 
@@ -1202,6 +1223,15 @@ class Service:
         def timed_process(state, timestamp, frame):
             t0 = time.perf_counter()
             self._frame_arrivals.append(t0)
+            # KEEP THE FRAME. GazeFollower owns the camera during a
+            # session, so _grab_frame() had nothing to read and the
+            # refined FaceMesh never ran — which is why every recorded
+            # session fell back to the inter-ocular ruler while the
+            # standalone probe, which opens the camera itself, measured
+            # the iris on 100 % of frames. This callback already receives
+            # every frame; holding a reference costs nothing and is the
+            # only place the frame is available.
+            self._last_frame = frame
             try:
                 return orig(state, timestamp, frame)
             finally:
@@ -1712,11 +1742,19 @@ class Service:
     def _grab_frame(self):
         """Best-effort read of GazeFollower's latest camera frame.
 
+        The callback wrapper stashes every frame it sees, so during a
+        session this returns immediately and correctly. The attribute
+        probing below is the fallback for the window before sampling
+        starts, and is what used to return None for the whole session.
+
         GazeFollower owns the webcam, so we cannot open it separately.
         Different versions expose the frame under different attributes;
         try the known paths and return ``None`` if none work (the guide
         then degrades to static advice — it never blocks calibration).
         """
+        frame = getattr(self, "_last_frame", None)
+        if frame is not None and getattr(frame, "ndim", 0) == 3:
+            return frame
         gf = self.gf
         if gf is None:
             return None
@@ -1909,7 +1947,15 @@ class Service:
             # constant (iris 11.7 mm +- 0.5, ~4 %) in place of a
             # population mean applied to the wrong landmarks (~11 %,
             # and yaw-dependent).
-            if not lm or len(lm) < 478:
+            # `lm is None`, NOT `not lm`. GazeFollower's FaceInfo
+            # carries the landmarks as a NUMPY ARRAY, and `not array`
+            # raises ValueError: the truth value of an array with more
+            # than one element is ambiguous. That exception was swallowed
+            # by a bare except for every session ever recorded, so the
+            # iris ruler never ran and the distance silently came from
+            # the inter-ocular fallback. len() works on both a list and
+            # an array; truthiness does not.
+            if lm is None or len(lm) < 478:
                 own = self._refined_landmarks()
                 if own is not None:
                     lm = own
@@ -1924,11 +1970,18 @@ class Service:
             # from an empty field. The usual cause is that
             # GazeFollower's FaceInfo carries the COARSE 468-point mesh:
             # the iris points are 468-477 and simply do not exist there.
-            if not lm:
+            if lm is None or len(lm) == 0:
                 m["iris_error"] = ("no landmarks on FaceInfo — cannot "
                                    "measure the iris")
             elif iris and iris.get("error"):
                 m["iris_error"] = str(iris["error"])[:120]
+            elif iris and (iris.get("iris") or {}).get("error"):
+                # estimate() catches its own failures and reports them
+                # INSIDE the "iris" block; only a raised exception lands
+                # at the top level. Checking one level was why every
+                # session recorded iris_error as null while silently
+                # using the worse ruler.
+                m["iris_error"] = str(iris["iris"]["error"])[:120]
             elif not iris:
                 m["iris_error"] = "iris estimate returned nothing"
 
@@ -1960,8 +2013,18 @@ class Service:
                         m["distance_disagreement"] = True
                 if chk.get("iris_asymmetry_warning"):
                     m["iris_asymmetry_warning"] = chk["iris_asymmetry_warning"]
-        except Exception:  # noqa: BLE001 — never block the position guide
-            pass
+        except Exception as exc:  # noqa: BLE001 — never block the guide
+            # RECORD it. `pass` here is why PILOT_01 reported a distance
+            # from the inter-ocular fallback with iris_error empty: the
+            # iris block raised somewhere before it could set its own
+            # error field, and the exception went into the void. A
+            # silent fallback to a ruler that reads 73.8 cm where the
+            # iris reads 54.2 is a 36 % error in every angle of that
+            # session, arriving with no evidence that anything happened.
+            m["iris_error"] = "%s: %s" % (type(exc).__name__, exc)[:160]
+            m["iris_traceback"] = traceback.format_exc()[-400:]
+            log("Iris distance failed (%s) — falling back to the "
+                "inter-ocular estimate. %s" % (type(exc).__name__, exc))
         return m
 
     def _guidance_from_metrics(self, m: dict) -> dict:
@@ -2007,9 +2070,16 @@ class Service:
             guidance.append("Good position — hold still and calibrate.")
         out = {"ok": True, "available": True, "face": True, "ready": ready,
                "assumed_hfov_deg": self._ASSUMED_HFOV_DEG, "guidance": guidance}
-        for k in ("face_center_x", "face_center_y", "eyes_y",
-                  "inter_ocular_px", "est_distance_cm", "roll_deg",
-                  "openness_ratio"):
+        # The whitelist carried est_distance_cm but NOT the fields that
+        # say where it came from, so the manifest recorded a distance of
+        # 68.3 cm with source, iris and iod all null — a number with no
+        # provenance, presented in the session summary as "MEASURED".
+        #
+        # It also meant the iris/inter-ocular cross-check never reached
+        # the session record, so the one place the two rulers are
+        # measured on the same frames could not be inspected. Everything
+        # computed alongside the distance now travels with it.
+        for k in POSITION_FIELDS:
             if m.get(k) is not None:
                 out[k] = round(m[k], 3) if isinstance(m[k], float) else m[k]
         return out
@@ -2405,12 +2475,39 @@ def _distance_probe(seconds: float = 10.0) -> int:
         print("  a lighting or positioning problem. Fix that first.")
         return 1
 
+    # THE PAYLOAD A SESSION WOULD RECORD, built from this measurement
+    # through the same field list the live path uses. The probe proved
+    # only that the iris COULD be measured; it could not say whether the
+    # measurement would reach the manifest with its provenance intact -
+    # and it did not, for every session recorded so far.
+    _mid = dists[len(dists) // 2] if dists else None
+    payload = {
+        "est_distance_cm": round(_mid, 1) if _mid else None,
+        "distance_source": "iris" if ok_iris else None,
+        "distance_cm_iris": round(_mid, 1) if _mid else None,
+        "focal_px": round(focal_px, 1) if focal_px else None,
+        "focal_measured": focal_measured,
+        "iris_error": (sorted(errors)[0] if errors else None),
+    }
+    print("  WHAT A SESSION WOULD RECORD")
+    for _k in POSITION_FIELDS:
+        if payload.get(_k) is not None:
+            print("    %-24s %s" % (_k, payload[_k]))
+    _missing = [k for k in POSITION_REQUIRED if payload.get(k) is None]
+    if _missing:
+        print()
+        print("    MISSING: %s" % ", ".join(_missing))
+        print("    A distance without a source is a number, not a")
+        print("    measurement. Do not record a participant.")
+        return 1
+    print()
+
     share = 100.0 * ok_iris / faces
     if ok_iris >= 0.5 * faces:
         print("  PASS — the iris measured %.0f %% of the frames that had a"
               % share)
         print("  face. Distances rest on an 11.7 mm anatomical constant")
-        print("  with a ~4 %% population spread, not on a population mean")
+        print("  with a ~4 % population spread, not on a population mean")
         print("  applied to eye-rectangle centres.")
         if not focal_measured:
             print()

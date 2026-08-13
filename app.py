@@ -265,6 +265,58 @@ def get_participant(participant_id: str) -> dict | None:
 
 # ---- Gaze data ---------------------------------------------------------
 
+def _json_safe(obj):
+    """Last-resort converter for json.dump.
+
+    numpy scalars are the usual culprit: np.float32 is not a Python
+    float and json refuses it, while np.float64 happens to subclass
+    float and slips through - so the failure appears only for some
+    values, on some machines, which is the worst way to find out.
+    """
+    try:
+        import numpy as np
+
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+    except Exception:  # noqa: BLE001
+        pass
+    if isinstance(obj, (set, frozenset, tuple)):
+        return list(obj)
+    if hasattr(obj, "isoformat"):
+        return obj.isoformat()
+    return str(obj)
+
+
+def _strip_unserialisable(obj):
+    """Drop whatever json still cannot take, keeping everything else.
+
+    A manifest missing one field is a session. A manifest that failed to
+    write is not.
+    """
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            try:
+                # No default= here on purpose: this runs only after the
+                # dump WITH default already failed, so the fallback must
+                # keep strictly plain values or it fails a second time.
+                json.dumps(v)
+                out[str(k)] = v
+            except Exception:  # noqa: BLE001
+                out[str(k)] = _strip_unserialisable(v) \
+                    if isinstance(v, (dict, list)) else "<unserialisable>"
+        return out
+    if isinstance(obj, list):
+        return [_strip_unserialisable(v) for v in obj]
+    return obj
+
+
 def finalize_gazefollower_session(
     participant_id: str,
     csv_path: str,
@@ -288,6 +340,45 @@ def finalize_gazefollower_session(
     # participant (otherwise the replay viewer would interleave several
     # recordings of the same stimulus).
     session_id = os.path.splitext(os.path.basename(csv_path))[0]
+
+    # PROVISIONAL MANIFEST, written before any of the slow work.
+    #
+    # Finalisation re-reads the whole CSV once per stimulus and writes
+    # the manifest LAST, so it takes about a minute. Close the app inside
+    # that window - which looks entirely reasonable, the participant has
+    # finished and the screen says complete - and everything held in
+    # server memory is gone: the three validations, the distance, the
+    # correction, the rate gates. The gaze CSV survives and is useless
+    # without them.
+    #
+    # This writes those first. If finalisation completes, the full
+    # manifest replaces it a minute later. If it does not, the session is
+    # still analysable.
+    try:
+        _state = session_states.get(_sid_for_participant(participant_id)) \
+            if "_sid_for_participant" in globals() else None
+    except Exception:  # noqa: BLE001
+        _state = None
+    _provisional = {
+        "session_id": session_id,
+        "participant_id": participant_id,
+        "provisional": {
+            "written_at": datetime.now(timezone.utc).isoformat(),
+            "why": ("written before per-stimulus segmentation so that an "
+                    "interrupted finalisation still leaves the validations "
+                    "and the distance on disk"),
+            "complete": False,
+        },
+        "stimulus_log": stimulus_log,
+        "correction": correction,
+    }
+    try:
+        with open(csv_path.replace(".csv", "_manifest.json"), "w",
+                  encoding="utf-8") as _fh:
+            json.dump(_provisional, _fh, indent=2, default=_json_safe)
+        logger.info("Provisional manifest written for %s", session_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not write the provisional manifest")
 
     if gaze_service.end_session(csv_path) is None:
         logger.error("GazeFollower session save failed — no data written.")
@@ -2360,12 +2451,34 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
                            for s in (state["stimulus_log"] or [])
                            if s.get("stimulus")],
     }
+    _manifest_path = csv_path.replace(".csv", "_manifest.json")
     try:
-        with open(csv_path.replace(".csv", "_manifest.json"), "w",
-                  encoding="utf-8") as fh:
-            json.dump(manifest, fh, indent=2)
-    except OSError:
-        logger.exception("Could not write session manifest")
+        # default= and a broad except, both deliberately.
+        #
+        # This caught only OSError. Anything else — a numpy scalar from
+        # the iris measurement, a set, a datetime — raises TypeError
+        # inside json.dump, the exception propagates out of finalisation,
+        # and the session ends with a gaze CSV and NO manifest: no
+        # validations, no distance, no quality metrics, nothing that
+        # makes the recording analysable. The participant has already
+        # gone home by the time anyone notices.
+        #
+        # The manifest is the unit of record for this study. It is worth
+        # more than the purity of its types.
+        with open(_manifest_path, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=2, default=_json_safe)
+    except Exception:  # noqa: BLE001
+        logger.exception("Manifest write FAILED — retrying without the "
+                         "parts that could not be serialised")
+        try:
+            with open(_manifest_path, "w", encoding="utf-8") as fh:
+                json.dump(_strip_unserialisable(manifest), fh, indent=2)
+            logger.warning("Manifest written in DEGRADED form: some fields "
+                           "were dropped. The session is analysable but "
+                           "check %s", os.path.basename(_manifest_path))
+        except Exception:  # noqa: BLE001
+            logger.exception("Manifest could not be written at all. The "
+                             "gaze CSV survives at %s", csv_path)
 
     logger.info(
         "Session finalized – sid=%s, participant=%s, per-stimulus samples: %s",
@@ -2885,6 +2998,7 @@ def handle_validation_result(payload: dict):
                 "warning": pos.get("distance_warning"),
                 # Why the better ruler was not used, if it was not.
                 "iris_error": pos.get("iris_error"),
+                "iris_traceback": pos.get("iris_traceback"),
                 "focal_measured": pos.get("focal_measured"),
                 "measured": True,
             }
