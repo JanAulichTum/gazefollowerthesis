@@ -113,6 +113,26 @@ def log(msg: str) -> None:
     sys.stderr.flush()
 
 
+#: Everything the position payload carries into the session manifest.
+#: Module level, and shared with the --distance probe, because the probe
+#: exists to answer "will a session record this?" - and it can only
+#: answer that if it is looking at the same list the session uses. The
+#: bug this replaces was a field that app.py read and the tracker never
+#: sent; a second copy of the list would reintroduce it.
+POSITION_FIELDS = (
+    "face_center_x", "face_center_y", "eyes_y",
+    "inter_ocular_px", "est_distance_cm", "roll_deg", "openness_ratio",
+    "distance_source", "distance_cm_iris", "distance_cm_iod",
+    "distance_agreement_pct", "distance_estimates_agree",
+    "distance_rel_sd_pct", "distance_warning", "distance_disagreement",
+    "iris_error", "iris_landmarks_from", "iris_asymmetry_warning",
+    "focal_px", "focal_measured",
+)
+
+#: Of those, the ones without which a distance cannot be attributed to a
+#: ruler. A session missing these records a number and not a measurement.
+POSITION_REQUIRED = ("est_distance_cm", "distance_source")
+
 _IRIS_MESH = None
 
 
@@ -2016,15 +2036,7 @@ class Service:
         # the session record, so the one place the two rulers are
         # measured on the same frames could not be inspected. Everything
         # computed alongside the distance now travels with it.
-        for k in ("face_center_x", "face_center_y", "eyes_y",
-                  "inter_ocular_px", "est_distance_cm", "roll_deg",
-                  "openness_ratio",
-                  "distance_source", "distance_cm_iris", "distance_cm_iod",
-                  "distance_agreement_pct", "distance_estimates_agree",
-                  "distance_rel_sd_pct", "distance_warning",
-                  "distance_disagreement", "iris_error",
-                  "iris_landmarks_from", "iris_asymmetry_warning",
-                  "focal_px", "focal_measured"):
+        for k in POSITION_FIELDS:
             if m.get(k) is not None:
                 out[k] = round(m[k], 3) if isinstance(m[k], float) else m[k]
         return out
@@ -2419,6 +2431,33 @@ def _distance_probe(seconds: float = 10.0) -> int:
         print("  NO FACE was detected in any frame. Not a ruler result —")
         print("  a lighting or positioning problem. Fix that first.")
         return 1
+
+    # THE PAYLOAD A SESSION WOULD RECORD, built from this measurement
+    # through the same field list the live path uses. The probe proved
+    # only that the iris COULD be measured; it could not say whether the
+    # measurement would reach the manifest with its provenance intact -
+    # and it did not, for every session recorded so far.
+    _mid = dists[len(dists) // 2] if dists else None
+    payload = {
+        "est_distance_cm": round(_mid, 1) if _mid else None,
+        "distance_source": "iris" if ok_iris else None,
+        "distance_cm_iris": round(_mid, 1) if _mid else None,
+        "focal_px": round(focal_px, 1) if focal_px else None,
+        "focal_measured": focal_measured,
+        "iris_error": (sorted(errors)[0] if errors else None),
+    }
+    print("  WHAT A SESSION WOULD RECORD")
+    for _k in POSITION_FIELDS:
+        if payload.get(_k) is not None:
+            print("    %-24s %s" % (_k, payload[_k]))
+    _missing = [k for k in POSITION_REQUIRED if payload.get(k) is None]
+    if _missing:
+        print()
+        print("    MISSING: %s" % ", ".join(_missing))
+        print("    A distance without a source is a number, not a")
+        print("    measurement. Do not record a participant.")
+        return 1
+    print()
 
     share = 100.0 * ok_iris / faces
     if ok_iris >= 0.5 * faces:

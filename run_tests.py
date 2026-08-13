@@ -1958,8 +1958,7 @@ try:
     # distance reaches the session manifest. It carried the number and
     # dropped the provenance, so a session recorded 68.3 cm with source,
     # iris and iod all null — and the summary called it MEASURED.
-    _guid = read("tracker_service.py").split(
-        'out = {"ok": True, "available": True, "face": True')[1][:2000]
+    _guid = read("tracker_service.py").split("POSITION_FIELDS = (")[1].split(")")[0]
     for _field in ("distance_source", "distance_cm_iris", "distance_cm_iod",
                    "distance_estimates_agree", "iris_error",
                    "focal_measured"):
@@ -1971,10 +1970,9 @@ try:
     # never sent — which is exactly what happened to distance_source.
     # Asserting the relation catches the next one too.
     _app_reads = set(re.findall(r'pos\.get\("([a-z_]+)"\)', read("app.py")))
-    _sent_block = read("tracker_service.py").split(
-        'out = {"ok": True, "available": True, "face": True')[1][:2000]
     _sent = set(re.findall(r'"([a-z_]+)"',
-                           _sent_block.split("for k in (")[1].split("):")[0]))
+                           read("tracker_service.py")
+                           .split("POSITION_FIELDS = (")[1].split(")")[0]))
     _never_sent = sorted(_app_reads - _sent)
     check("every position field app.py reads is one the tracker sends",
           not _never_sent, "read but never sent: %s" % ", ".join(_never_sent))
@@ -3131,6 +3129,14 @@ try:
     check("no literal %% leaks into a plain print",
           "~4 %% biological" not in _cg_src
           and "~11 %% and which uses" not in read("tracker_service.py"))
+    check("the field list is defined once, not copied",
+          read("tracker_service.py").count("POSITION_FIELDS = (") == 1
+          and "for k in POSITION_FIELDS" in read("tracker_service.py"))
+    check("the probe reports the payload a session would record",
+          "WHAT A SESSION WOULD RECORD" in read("tracker_service.py"))
+    check("...and refuses when the distance has no source",
+          "POSITION_REQUIRED" in read("tracker_service.py")
+          and "not a" in read("tracker_service.py").split("MISSING:")[1][:300])
     check("the launcher offers the probe",
           "tracker_service.py --distance" in read("windows/START.bat"))
 
