@@ -2464,7 +2464,7 @@ def _distance_probe(seconds: float = 10.0) -> int:
         print("  PASS — the iris measured %.0f %% of the frames that had a"
               % share)
         print("  face. Distances rest on an 11.7 mm anatomical constant")
-        print("  with a ~4 %% population spread, not on a population mean")
+        print("  with a ~4 % population spread, not on a population mean")
         print("  applied to eye-rectangle centres.")
         if not focal_measured:
             print()
