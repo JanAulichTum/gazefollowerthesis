@@ -2955,6 +2955,28 @@ try:
     check("no echo inside a ( ) block has an unescaped parenthesis",
           not _paren_bugs, ", ".join(_paren_bugs))
 
+    # ── Cutting the stimuli is a procedure, not a one-off ────────────
+    # The clips are not in the repo, so a cut made on one machine cannot
+    # travel to another; only the script can. Identical stimulus for
+    # every participant therefore depends on the cut being reproducible.
+    _cut = read("cut_stimuli.py")
+    check("the cut re-encodes rather than stream-copies",
+          "libx264" in _cut and '"-c", "copy"' not in _cut)
+    check("...and says why, since a copy cut lands on a keyframe",
+          "nearest keyframe" in _cut)
+    check("originals are moved aside, never overwritten",
+          "full_originals" in _cut and "shutil.move(path" in _cut)
+    check("the originals folder is invisible to the app",
+          "os.listdir(STIMULI_DIR)" in read("config.py"))
+    check("which seconds were taken is recorded",
+          "cut_provenance.json" in _cut and '"start_s"' in _cut)
+    check("the cut is reversible",
+          "--restore" in _cut and "def restore" in _cut)
+    check("running it twice is safe",
+          "already at length, left alone" in _cut)
+    check("it warns that the crowding contrast may not survive the cut",
+          "WATCH BOTH CUTS" in _cut)
+
     check("the stimulus count comes from a script instead",
           "count_stimuli.py" in read("windows/run_session.bat")
           and os.path.isfile(os.path.join(BASE, "count_stimuli.py")))
