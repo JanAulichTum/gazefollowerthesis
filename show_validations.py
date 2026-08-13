@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 
 try:
@@ -43,12 +44,24 @@ import config
 
 
 def _manifests() -> list:
+    """Newest last, ordered by the timestamp IN THE NAME.
+
+    Not by mtime: a file can be touched long after it was recorded - by
+    a backfill, a copy, a sync - and then "the most recent session" is
+    whichever file was last written to, which is not the same question.
+    The session id already carries the recording time.
+    """
     out = []
     for d in (config.STUDY_CSV_DIR, config.GAZEFOLLOWER_CSV_DIR):
         if os.path.isdir(d):
             out += [os.path.join(d, f) for f in os.listdir(d)
                     if f.endswith("_manifest.json")]
-    return sorted(out, key=os.path.getmtime)
+
+    def _key(path):
+        m = re.search(r"(\d{4}-\d{2}-\d{2}_\d{6})", os.path.basename(path))
+        return (m.group(1) if m else "0000-00-00_000000",
+                os.path.basename(path))
+    return sorted(out, key=_key)
 
 
 def report(path: str) -> None:
@@ -126,6 +139,11 @@ def main() -> int:
     if not files:
         print("No manifests found.")
         return 1
+    if not args.path and not args.all:
+        print("  %d session(s) on disk; showing the most recent."
+              % len(_manifests()))
+        print("  Use --all to see every one, or pass a filename.")
+        print()
     for f in files:
         report(f)
     return 0
