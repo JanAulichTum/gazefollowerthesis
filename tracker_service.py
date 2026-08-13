@@ -1223,6 +1223,15 @@ class Service:
         def timed_process(state, timestamp, frame):
             t0 = time.perf_counter()
             self._frame_arrivals.append(t0)
+            # KEEP THE FRAME. GazeFollower owns the camera during a
+            # session, so _grab_frame() had nothing to read and the
+            # refined FaceMesh never ran — which is why every recorded
+            # session fell back to the inter-ocular ruler while the
+            # standalone probe, which opens the camera itself, measured
+            # the iris on 100 % of frames. This callback already receives
+            # every frame; holding a reference costs nothing and is the
+            # only place the frame is available.
+            self._last_frame = frame
             try:
                 return orig(state, timestamp, frame)
             finally:
@@ -1733,11 +1742,19 @@ class Service:
     def _grab_frame(self):
         """Best-effort read of GazeFollower's latest camera frame.
 
+        The callback wrapper stashes every frame it sees, so during a
+        session this returns immediately and correctly. The attribute
+        probing below is the fallback for the window before sampling
+        starts, and is what used to return None for the whole session.
+
         GazeFollower owns the webcam, so we cannot open it separately.
         Different versions expose the frame under different attributes;
         try the known paths and return ``None`` if none work (the guide
         then degrades to static advice — it never blocks calibration).
         """
+        frame = getattr(self, "_last_frame", None)
+        if frame is not None and getattr(frame, "ndim", 0) == 3:
+            return frame
         gf = self.gf
         if gf is None:
             return None
@@ -1950,6 +1967,13 @@ class Service:
                                    "measure the iris")
             elif iris and iris.get("error"):
                 m["iris_error"] = str(iris["error"])[:120]
+            elif iris and (iris.get("iris") or {}).get("error"):
+                # estimate() catches its own failures and reports them
+                # INSIDE the "iris" block; only a raised exception lands
+                # at the top level. Checking one level was why every
+                # session recorded iris_error as null while silently
+                # using the worse ruler.
+                m["iris_error"] = str(iris["iris"]["error"])[:120]
             elif not iris:
                 m["iris_error"] = "iris estimate returned nothing"
 

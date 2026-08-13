@@ -1983,6 +1983,57 @@ try:
     # fall back to the worse ruler with no evidence that anything went
     # wrong. The exception is now the diagnostic.
     _ts_src2 = read("tracker_service.py")
+    # ── The session path, reproduced without a camera ────────────────
+    # Three pilots were spent learning that sessions used the fallback
+    # ruler. The whole failure is reproducible from a fake FaceInfo, and
+    # should have been found here.
+    class _LM:
+        __slots__ = ("x", "y", "z")
+
+        def __init__(self, x, y):
+            self.x, self.y, self.z = x, y, 0.0
+
+    class _FaceInfo:
+        status = True
+        face_rect = [200, 150, 240, 240]
+        left_rect = [250, 230, 40, 24]
+        right_rect = [370, 230, 40, 24]
+        img_w, img_h = 640, 480
+        left_openness = right_openness = 0.3
+        # COARSE mesh, exactly what GazeFollower supplies: 468 points,
+        # no iris landmarks at 468-477.
+        landmarks = [_LM(0.3 + 0.0004 * i, 0.4 + 0.0003 * i)
+                     for i in range(468)]
+
+    _tsm = importlib.import_module("tracker_service")
+    _svc = _tsm.Service.__new__(_tsm.Service)
+    _svc._latest_face_info = _FaceInfo()
+    _svc.gf = None
+    _svc._last_frame = None
+    _m = _svc._metrics_from_face_info() or {}
+    check("a coarse mesh with no frame falls back to the inter-ocular ruler",
+          "inter-ocular" in str(_m.get("distance_source")),
+          str(_m.get("distance_source")))
+    check("...and SAYS SO, which is what three pilots could not tell us",
+          bool(_m.get("iris_error")), _m.get("iris_error") or "silent")
+    check("...naming the coarse mesh as the reason",
+          "468" in str(_m.get("iris_error")))
+
+    # The frame the callback already receives is what makes the refined
+    # mesh possible during a session.
+    _svc2 = _tsm.Service.__new__(_tsm.Service)
+    _svc2.gf = None
+    _svc2._last_frame = None
+    check("_grab_frame returns nothing when no frame was stashed",
+          _svc2._grab_frame() is None)
+    import numpy as _np2
+
+    _svc2._last_frame = _np2.zeros((480, 640, 3), dtype=_np2.uint8)
+    check("_grab_frame returns the frame the callback stashed",
+          _svc2._grab_frame() is _svc2._last_frame)
+    check("the callback stashes every frame it sees",
+          "self._last_frame = frame" in read("tracker_service.py"))
+
     check("a failing iris records WHY, instead of passing silently",
           "except Exception as exc:  # noqa: BLE001 — never block the guide"
           in _ts_src2 and 'm["iris_error"] = "%s: %s"' in _ts_src2)
