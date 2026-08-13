@@ -101,7 +101,8 @@ if "%NSTIM%"=="0" (
     echo.
     echo    *** NO STIMULI FOUND. ***
     echo    SESSION_STIMULUS_MODE=all but the stimuli folder contains no
-    echo    playable video (files starting with _testclip do not count).
+    echo    playable video. Files starting with _testclip are helper
+    echo    clips and do not count.
     echo    The participant would watch nothing. Fix this first.
     echo.
     pause

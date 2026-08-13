@@ -2922,6 +2922,39 @@ try:
     check("a marker prints before the count, so a failure is locatable",
           "Counting stimuli" in bat_code("run_session.bat"))
 
+    # THE bug that actually closed the console. An unescaped ) inside a
+    # parenthesised block ENDS the block at that character, so
+    #     echo    playable video (files ... do not count).
+    # closed the if-block at "count)" and left ".", which cmd reported as
+    #   "." kann syntaktisch an dieser Stelle nicht verarbeitet werden
+    # and then quit. The message names the stray character, never the
+    # line, and the block parses at read time — so it fires even when the
+    # branch is not taken. Neither line endings nor for /f caused it;
+    # both were real hazards found while looking for this one.
+    def _unescaped_parens_in_blocks(name):
+        depth, bad = 0, []
+        for n, line in enumerate(read(os.path.join("windows", name))
+                                 .splitlines(), 1):
+            s = line.strip()
+            low = s.lower()
+            if low.startswith("rem") or low.startswith("::"):
+                continue
+            if low.startswith("echo"):
+                if depth > 0:
+                    body = re.sub(r"\^[()]", "", s[4:])
+                    if "(" in body or ")" in body:
+                        bad.append("%s:%d" % (name, n))
+                continue          # echo text is never block structure
+            code = re.sub(r"\^[()]", "", s)
+            depth = max(0, depth + code.count("(") - code.count(")"))
+        return bad
+
+    _paren_bugs = []
+    for _f in sorted(glob.glob(os.path.join(BASE, "windows", "*.bat"))):
+        _paren_bugs += _unescaped_parens_in_blocks(os.path.basename(_f))
+    check("no echo inside a ( ) block has an unescaped parenthesis",
+          not _paren_bugs, ", ".join(_paren_bugs))
+
     check("the stimulus count comes from a script instead",
           "count_stimuli.py" in read("windows/run_session.bat")
           and os.path.isfile(os.path.join(BASE, "count_stimuli.py")))
