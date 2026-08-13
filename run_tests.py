@@ -3045,6 +3045,30 @@ try:
     check("no echo inside a ( ) block has an unescaped parenthesis",
           not _paren_bugs, ", ".join(_paren_bugs))
 
+    # ── Retiring a session, not deleting it ──────────────────────────
+    # A session that disappears leaves a gap, and a gap cannot answer
+    # whether the participant was dropped for a fault or for an
+    # inconvenient number.
+    _ret = read("retire_session.py")
+    check("retiring moves files, never deletes them",
+          "shutil.move(f, target)" in _ret
+          and "os.remove" not in _ret and "os.unlink" not in _ret)
+    check("a reason is required and must say something",
+          'len(args.reason.strip()) < 15' in _ret)
+    check("the retirement is dated and registered",
+          "REGISTRY.md" in _ret and '"retired_at"' in _ret)
+    # "retired" appears in config.py about a retired MODEL, so match the
+    # directory, not the word.
+    check("retired sessions are gitignored like the study folder",
+          any(l.strip() == "data/retired/" for l in read(".gitignore")
+              .splitlines()))
+    check("...and no analysis tool globs the retired directory",
+          not any("retired" in read(f) for f in
+                  ("verify_metrics.py", "claim_check.py", "quality_report.py",
+                   "share_results.py", "backfill_manifests.py")))
+    check("re-recording the same person is flagged as prior exposure",
+          "rerecorded_as" in _ret and "not a first viewing" in _ret)
+
     # ── Cutting the stimuli is a procedure, not a one-off ────────────
     # The clips are not in the repo, so a cut made on one machine cannot
     # travel to another; only the script can. Identical stimulus for

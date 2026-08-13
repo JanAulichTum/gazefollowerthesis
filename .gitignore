@@ -143,3 +143,7 @@ data/inverse_check/
 # whatever format a rater sends back, and every filename carries a
 # session label.
 data/agreement/
+
+# Retired sessions: real participant recordings, kept for the
+# audit trail. Same rule as data/study/.
+data/retired/
