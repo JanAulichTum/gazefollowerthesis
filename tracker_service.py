@@ -2007,9 +2007,24 @@ class Service:
             guidance.append("Good position — hold still and calibrate.")
         out = {"ok": True, "available": True, "face": True, "ready": ready,
                "assumed_hfov_deg": self._ASSUMED_HFOV_DEG, "guidance": guidance}
+        # The whitelist carried est_distance_cm but NOT the fields that
+        # say where it came from, so the manifest recorded a distance of
+        # 68.3 cm with source, iris and iod all null — a number with no
+        # provenance, presented in the session summary as "MEASURED".
+        #
+        # It also meant the iris/inter-ocular cross-check never reached
+        # the session record, so the one place the two rulers are
+        # measured on the same frames could not be inspected. Everything
+        # computed alongside the distance now travels with it.
         for k in ("face_center_x", "face_center_y", "eyes_y",
                   "inter_ocular_px", "est_distance_cm", "roll_deg",
-                  "openness_ratio"):
+                  "openness_ratio",
+                  "distance_source", "distance_cm_iris", "distance_cm_iod",
+                  "distance_agreement_pct", "distance_estimates_agree",
+                  "distance_rel_sd_pct", "distance_warning",
+                  "distance_disagreement", "iris_error",
+                  "iris_landmarks_from", "iris_asymmetry_warning",
+                  "focal_px", "focal_measured"):
             if m.get(k) is not None:
                 out[k] = round(m[k], 3) if isinstance(m[k], float) else m[k]
         return out

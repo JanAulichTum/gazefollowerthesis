@@ -1954,6 +1954,17 @@ try:
           "once the MEASURED" in _app2)
     check("an unmeasurable distance is recorded as such",
           '"measured": False' in _app2)
+    # The position payload is the ONLY route by which the tracker's
+    # distance reaches the session manifest. It carried the number and
+    # dropped the provenance, so a session recorded 68.3 cm with source,
+    # iris and iod all null — and the summary called it MEASURED.
+    _guid = read("tracker_service.py").split(
+        'out = {"ok": True, "available": True, "face": True')[1][:2000]
+    for _field in ("distance_source", "distance_cm_iris", "distance_cm_iod",
+                   "distance_estimates_agree", "iris_error",
+                   "focal_measured"):
+        check("the position payload carries %s" % _field, _field in _guid)
+
     check("the distance block records which ruler was used",
           '"iris_cm": pos.get("distance_cm_iris")' in _app2)
 except Exception as exc:  # noqa: BLE001
