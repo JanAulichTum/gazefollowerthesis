@@ -2006,6 +2006,37 @@ try:
                      for i in range(468)]
 
     _tsm = importlib.import_module("tracker_service")
+    # GazeFollower carries the landmarks as a NUMPY ARRAY. `not array`
+    # raises ValueError, a bare except swallowed it, and the iris ruler
+    # therefore never ran in ANY recorded session - the distance came
+    # from the inter-ocular fallback every time, silently.
+    class _FaceInfoNumpy:
+        status = True
+        face_rect = [200, 150, 240, 240]
+        left_rect = [250, 230, 40, 24]
+        right_rect = [370, 230, 40, 24]
+        img_w, img_h = 640, 480
+        left_openness = right_openness = 0.3
+        landmarks = None            # set below
+
+    import numpy as _np4
+
+    _FaceInfoNumpy.landmarks = _np4.random.rand(468, 3).astype(_np4.float32)
+    _svc_np = _tsm.Service.__new__(_tsm.Service)
+    _svc_np._latest_face_info = _FaceInfoNumpy()
+    _svc_np.gf = None
+    _svc_np._last_frame = None
+    _m_np = _svc_np._metrics_from_face_info() or {}
+    check("numpy landmarks do not raise on a truthiness test",
+          "ambiguous" not in str(_m_np.get("iris_error") or ""),
+          str(_m_np.get("iris_error"))[:70])
+    check("...and the coarse mesh is reported as the reason instead",
+          "468" in str(_m_np.get("iris_error") or ""),
+          str(_m_np.get("iris_error"))[:70])
+    check("the guard is an explicit None check, not truthiness",
+          "if lm is None or len(lm) < 478:" in read("tracker_service.py")
+          and "if not lm or len(lm)" not in read("tracker_service.py"))
+
     _svc = _tsm.Service.__new__(_tsm.Service)
     _svc._latest_face_info = _FaceInfo()
     _svc.gf = None
@@ -3455,8 +3486,10 @@ try:
     # 2026-08-11 sessions reported "UNKNOWN RULER" at ~75 cm, and every
     # degree divides by that distance.
     _ts = read("tracker_service.py")
+    # The old assertion pinned the exact buggy expression, so it went
+    # green for months while the branch it guards never executed.
     check("a coarse mesh triggers our OWN refined pass",
-          "if not lm or len(lm) < 478:" in _ts
+          "if lm is None or len(lm) < 478:" in _ts
           and "def _refined_landmarks" in _ts)
     check("the refined mesh is actually requested",
           "refine_landmarks=True" in _ts)

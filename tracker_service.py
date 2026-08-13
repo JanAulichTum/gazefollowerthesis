@@ -1947,7 +1947,15 @@ class Service:
             # constant (iris 11.7 mm +- 0.5, ~4 %) in place of a
             # population mean applied to the wrong landmarks (~11 %,
             # and yaw-dependent).
-            if not lm or len(lm) < 478:
+            # `lm is None`, NOT `not lm`. GazeFollower's FaceInfo
+            # carries the landmarks as a NUMPY ARRAY, and `not array`
+            # raises ValueError: the truth value of an array with more
+            # than one element is ambiguous. That exception was swallowed
+            # by a bare except for every session ever recorded, so the
+            # iris ruler never ran and the distance silently came from
+            # the inter-ocular fallback. len() works on both a list and
+            # an array; truthiness does not.
+            if lm is None or len(lm) < 478:
                 own = self._refined_landmarks()
                 if own is not None:
                     lm = own
@@ -1962,7 +1970,7 @@ class Service:
             # from an empty field. The usual cause is that
             # GazeFollower's FaceInfo carries the COARSE 468-point mesh:
             # the iris points are 468-477 and simply do not exist there.
-            if not lm:
+            if lm is None or len(lm) == 0:
                 m["iris_error"] = ("no landmarks on FaceInfo — cannot "
                                    "measure the iris")
             elif iris and iris.get("error"):
