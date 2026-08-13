@@ -1965,6 +1965,22 @@ try:
                    "focal_measured"):
         check("the position payload carries %s" % _field, _field in _guid)
 
+    # THE CONTRACT, not a list of field names. app.py reads keys out of
+    # the position payload; tracker_service decides which keys are in it.
+    # Nothing connected the two, so a field could be read forever and
+    # never sent — which is exactly what happened to distance_source.
+    # Asserting the relation catches the next one too.
+    _app_reads = set(re.findall(r'pos\.get\("([a-z_]+)"\)', read("app.py")))
+    _sent_block = read("tracker_service.py").split(
+        'out = {"ok": True, "available": True, "face": True')[1][:2000]
+    _sent = set(re.findall(r'"([a-z_]+)"',
+                           _sent_block.split("for k in (")[1].split("):")[0]))
+    _never_sent = sorted(_app_reads - _sent)
+    check("every position field app.py reads is one the tracker sends",
+          not _never_sent, "read but never sent: %s" % ", ".join(_never_sent))
+    check("...and the payload is not empty in the first place",
+          len(_sent) >= 15, "%d fields" % len(_sent))
+
     check("the distance block records which ruler was used",
           '"iris_cm": pos.get("distance_cm_iris")' in _app2)
 except Exception as exc:  # noqa: BLE001
