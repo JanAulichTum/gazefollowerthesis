@@ -1979,6 +1979,20 @@ try:
     check("...and the payload is not empty in the first place",
           len(_sent) >= 15, "%d fields" % len(_sent))
 
+    # A bare `except: pass` around the iris block is why a session could
+    # fall back to the worse ruler with no evidence that anything went
+    # wrong. The exception is now the diagnostic.
+    _ts_src2 = read("tracker_service.py")
+    check("a failing iris records WHY, instead of passing silently",
+          "except Exception as exc:  # noqa: BLE001 — never block the guide"
+          in _ts_src2 and 'm["iris_error"] = "%s: %s"' in _ts_src2)
+    check("...with a traceback, since the message alone was not enough",
+          'm["iris_traceback"]' in _ts_src2
+          and "iris_traceback" in read("app.py"))
+    check("the reader shouts when the fallback ruler was used",
+          "The FALLBACK ruler produced this distance"
+          in read("show_validations.py"))
+
     check("the distance block records which ruler was used",
           '"iris_cm": pos.get("distance_cm_iris")' in _app2)
 except Exception as exc:  # noqa: BLE001

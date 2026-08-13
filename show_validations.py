@@ -65,6 +65,16 @@ def report(path: str) -> None:
                  dist.get("iod_cm"), dist.get("estimates_agree")))
         if dist.get("iris_error"):
             print("             iris unavailable: %s" % dist["iris_error"])
+        if dist.get("iris_traceback"):
+            print("             where it failed:")
+            for _ln in str(dist["iris_traceback"]).strip().splitlines()[-6:]:
+                print("               %s" % _ln)
+        if dist.get("source") and "iris" not in str(dist.get("source")):
+            print()
+            print("  *** The FALLBACK ruler produced this distance. Its")
+            print("      population spread is ~11 %% and it foreshortens")
+            print("      with head yaw. Every angle in this session is")
+            print("      scaled by it. ***")
         print()
 
     vals = man.get("validations") or []

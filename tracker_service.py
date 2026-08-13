@@ -125,7 +125,8 @@ POSITION_FIELDS = (
     "distance_source", "distance_cm_iris", "distance_cm_iod",
     "distance_agreement_pct", "distance_estimates_agree",
     "distance_rel_sd_pct", "distance_warning", "distance_disagreement",
-    "iris_error", "iris_landmarks_from", "iris_asymmetry_warning",
+    "iris_error", "iris_traceback", "iris_landmarks_from",
+    "iris_asymmetry_warning",
     "focal_px", "focal_measured",
 )
 
@@ -1980,8 +1981,18 @@ class Service:
                         m["distance_disagreement"] = True
                 if chk.get("iris_asymmetry_warning"):
                     m["iris_asymmetry_warning"] = chk["iris_asymmetry_warning"]
-        except Exception:  # noqa: BLE001 — never block the position guide
-            pass
+        except Exception as exc:  # noqa: BLE001 — never block the guide
+            # RECORD it. `pass` here is why PILOT_01 reported a distance
+            # from the inter-ocular fallback with iris_error empty: the
+            # iris block raised somewhere before it could set its own
+            # error field, and the exception went into the void. A
+            # silent fallback to a ruler that reads 73.8 cm where the
+            # iris reads 54.2 is a 36 % error in every angle of that
+            # session, arriving with no evidence that anything happened.
+            m["iris_error"] = "%s: %s" % (type(exc).__name__, exc)[:160]
+            m["iris_traceback"] = traceback.format_exc()[-400:]
+            log("Iris distance failed (%s) — falling back to the "
+                "inter-ocular estimate. %s" % (type(exc).__name__, exc))
         return m
 
     def _guidance_from_metrics(self, m: dict) -> dict:

@@ -2885,6 +2885,7 @@ def handle_validation_result(payload: dict):
                 "warning": pos.get("distance_warning"),
                 # Why the better ruler was not used, if it was not.
                 "iris_error": pos.get("iris_error"),
+                "iris_traceback": pos.get("iris_traceback"),
                 "focal_measured": pos.get("focal_measured"),
                 "measured": True,
             }
