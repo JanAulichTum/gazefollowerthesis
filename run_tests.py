@@ -38,6 +38,25 @@ except Exception:  # noqa: BLE001 — older Python / exotic stream
 
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+
+def bat_code(name: str) -> str:
+    """A .bat file with its comments stripped.
+
+    Source-text assertions kept matching the REM lines that DOCUMENT the
+    thing being asserted — three separate false positives in one day,
+    each of them a test failing because the fix explained itself. The
+    comment is prose about the code, not the code, so checks that ask
+    "does this file still do X" must not see it.
+    """
+    out = []
+    for line in read(os.path.join("windows", name)).splitlines():
+        stripped = line.strip().lower()
+        if stripped.startswith("rem ") or stripped == "rem" \
+                or stripped.startswith("::"):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
 FAILURES: list[str] = []
 
 
@@ -2885,13 +2904,8 @@ try:
     # takes the console with it — indistinguishable from a crash.
     _inline = []
     for _f in sorted(glob.glob(os.path.join(BASE, "windows", "*.bat"))):
-        for _ln in read(os.path.join("windows",
-                                     os.path.basename(_f))).splitlines():
+        for _ln in bat_code(os.path.basename(_f)).splitlines():
             _low = _ln.strip().lower()
-            # Skip comments: the fix's own REM explains the hazard and
-            # would otherwise match the pattern it warns about.
-            if _low.startswith("rem") or _low.startswith("::"):
-                continue
             if "for /f" in _low and "python -c" in _low:
                 _inline.append(os.path.basename(_f))
     check("no for /f wraps an inline python -c", not _inline,
@@ -2906,6 +2920,19 @@ try:
     # Recording must not hang off a one-line parenthesised block: a
     # failure inside the called script takes the console with it.
     _start_bat = read("windows/START.bat")
+    # A dirty tree used to short-circuit BEFORE the fetch, so the
+    # launcher could not say how far behind the machine was. It printed
+    # "NOT pulling" once and the collection machine then ran stale code
+    # for hours - which is how a fix that was shipped, tested and
+    # confirmed can still be absent from the machine recording data.
+    check("the update fetches BEFORE it inspects the working tree",
+          _start_bat.index("BEHIND=%%i") < _start_bat.index("DIRTY=%%i"))
+    check("being behind AND dirty is stated loudly, not in passing",
+          "RUNNING OLD CODE" in _start_bat)
+    check("...and holds the window so it cannot be scrolled past",
+          "RUNNING OLD CODE" in _start_bat
+          and "pause" in _start_bat.split("RUNNING OLD CODE")[1][:400])
+
     check("option 1 runs as its own labelled block",
           '=="1" goto :record' in _start_bat and "\n:record" in _start_bat)
     check("...and holds the window open on a nonzero exit",
@@ -3298,9 +3325,10 @@ try:
           _start.count("\n:do_update") == 1)
     check("...and called from both launch and the menu",
           _start.count("call :do_update") == 2)
+    _start_code = bat_code("START.bat")
     check("there is exactly one git pull and one dirty-tree guard",
-          _start.count("git pull --ff-only") == 1
-          and _start.count("NOT pulling") == 1)
+          _start_code.count("git pull --ff-only") == 1
+          and _start_code.count("NOT pulling") == 1)
     check("the menu offers the update",
           "u  Update from GitHub" in _start
           and 'if /i "%OPT%"=="u"' in _start)

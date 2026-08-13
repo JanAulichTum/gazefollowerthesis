@@ -112,19 +112,40 @@ REM ====================================================================
 git rev-parse --git-dir >nul 2>&1
 if errorlevel 1 goto :eof
 
-for /f %%i in ('git status --porcelain 2^>nul ^| find /c /v ""') do set DIRTY=%%i
-if not "%DIRTY%"=="0" (
-    echo    %DIRTY% uncommitted change^(s^) on this machine - NOT pulling.
-    echo    Overwriting an edit made here, unrecorded, is worse than
-    echo    running slightly behind. Run:  git status
-    echo.
-    goto :eof
-)
-
+REM FETCH FIRST, decide second. The earlier version returned on a dirty
+REM tree before ever fetching, so it could not say how far behind the
+REM machine was - it printed "NOT pulling" once and the collection
+REM machine then ran stale code for hours without another word about it.
+REM Being behind is what matters; being dirty only decides whether it
+REM can be fixed automatically.
 echo    Checking for updates...
 git fetch --quiet origin 2>nul
 for /f %%i in ('git rev-list --count HEAD..@{u} 2^>nul') do set BEHIND=%%i
 if "%BEHIND%"=="" set BEHIND=0
+
+for /f %%i in ('git status --porcelain 2^>nul ^| find /c /v ""') do set DIRTY=%%i
+if not "%DIRTY%"=="0" (
+    echo.
+    if not "%BEHIND%"=="0" (
+        echo    ****************************************************
+        echo     BEHIND BY %BEHIND% COMMIT^(S^) AND CANNOT UPDATE:
+        echo     %DIRTY% uncommitted change^(s^) are in the way.
+        echo     THIS MACHINE IS RUNNING OLD CODE.
+        echo    ****************************************************
+        echo.
+        echo     Show them:      git status
+        echo     Discard them:   git checkout -- .
+        echo     Then choose u to update.
+        echo.
+        pause
+    ) else (
+        echo    %DIRTY% uncommitted change^(s^) on this machine - NOT pulling.
+        echo    Up to date otherwise. Run:  git status
+        echo.
+    )
+    goto :eof
+)
+
 if "%BEHIND%"=="0" (
     echo    Already up to date.
     echo.
