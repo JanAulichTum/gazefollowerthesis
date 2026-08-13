@@ -83,12 +83,20 @@ echo   ================================================
 REM ---- How many REAL stimuli will be presented? ---------------------
 REM  "all" with an empty folder is a session that records nothing, and
 REM  the participant is already sitting down when you find out.
-REM A separate script, not an inline python -c: inside for /f the command
-REM is re-parsed by a second shell, where the parentheses of len(...) are
-REM metacharacters. cmd then reports a syntax error naming only "." and
-REM terminates the console, taking the calling menu with it.
-for /f %%n in ('python count_stimuli.py 2^>nul') do set NSTIM=%%n
+REM
+REM  Written to a file and read back with set /p. NOT for /f: inside
+REM  for /f the command string is handed to a second shell, where
+REM  parentheses and quotes are metacharacters again, and when that
+REM  parse fails cmd does not name the line - it prints a syntax error
+REM  about a single character and terminates the console. set /p reads
+REM  a file directly and has no subshell and no quoting exposure.
+echo    Counting stimuli...
+python count_stimuli.py > "%TEMP%\nstim.txt" 2>nul
+set "NSTIM="
+set /p NSTIM=<"%TEMP%\nstim.txt"
+del "%TEMP%\nstim.txt" >nul 2>&1
 if "%NSTIM%"=="" set NSTIM=?
+
 if "%NSTIM%"=="0" (
     echo.
     echo    *** NO STIMULI FOUND. ***

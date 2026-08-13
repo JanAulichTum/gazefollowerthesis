@@ -2910,6 +2910,18 @@ try:
                 _inline.append(os.path.basename(_f))
     check("no for /f wraps an inline python -c", not _inline,
           ", ".join(_inline))
+    # for /f hands its command to a second shell. run_session.bat is the
+    # one script a participant is waiting through, so it does not use the
+    # construct at all: the count is written to a file and read with
+    # set /p, which has no subshell and no quoting exposure.
+    check("run_session.bat contains no for /f at all",
+          "for /f" not in bat_code("run_session.bat").lower())
+    check("the count is read with set /p from a file",
+          "set /p NSTIM=<" in bat_code("run_session.bat")
+          and "count_stimuli.py > " in bat_code("run_session.bat"))
+    check("a marker prints before the count, so a failure is locatable",
+          "Counting stimuli" in bat_code("run_session.bat"))
+
     check("the stimulus count comes from a script instead",
           "count_stimuli.py" in read("windows/run_session.bat")
           and os.path.isfile(os.path.join(BASE, "count_stimuli.py")))
