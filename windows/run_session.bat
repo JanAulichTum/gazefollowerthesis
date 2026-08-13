@@ -83,7 +83,11 @@ echo   ================================================
 REM ---- How many REAL stimuli will be presented? ---------------------
 REM  "all" with an empty folder is a session that records nothing, and
 REM  the participant is already sitting down when you find out.
-for /f %%n in ('python -c "import config;print(len(config.discover_stimuli()))" 2^>nul') do set NSTIM=%%n
+REM A separate script, not an inline python -c: inside for /f the command
+REM is re-parsed by a second shell, where the parentheses of len(...) are
+REM metacharacters. cmd then reports a syntax error naming only "." and
+REM terminates the console, taking the calling menu with it.
+for /f %%n in ('python count_stimuli.py 2^>nul') do set NSTIM=%%n
 if "%NSTIM%"=="" set NSTIM=?
 if "%NSTIM%"=="0" (
     echo.

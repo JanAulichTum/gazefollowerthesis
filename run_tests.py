@@ -2878,6 +2878,31 @@ try:
     check("every goto/call target exists", not _missing, ", ".join(_missing))
     check("gitattributes pins .bat to CRLF on checkout",
           "*.bat text eol=crlf" in read(".gitattributes"))
+
+    # Inside for /f ('...') the command is re-parsed by a second shell,
+    # where ( ) are metacharacters. An inline `python -c` containing
+    # len(...) therefore dies with a syntax error naming only "." and
+    # takes the console with it — indistinguishable from a crash.
+    _inline = []
+    for _f in sorted(glob.glob(os.path.join(BASE, "windows", "*.bat"))):
+        for _ln in read(os.path.join("windows",
+                                     os.path.basename(_f))).splitlines():
+            _low = _ln.strip().lower()
+            # Skip comments: the fix's own REM explains the hazard and
+            # would otherwise match the pattern it warns about.
+            if _low.startswith("rem") or _low.startswith("::"):
+                continue
+            if "for /f" in _low and "python -c" in _low:
+                _inline.append(os.path.basename(_f))
+    check("no for /f wraps an inline python -c", not _inline,
+          ", ".join(_inline))
+    check("the stimulus count comes from a script instead",
+          "count_stimuli.py" in read("windows/run_session.bat")
+          and os.path.isfile(os.path.join(BASE, "count_stimuli.py")))
+
+    _csmod = importlib.import_module("count_stimuli")
+    check("count_stimuli prints one integer and nothing else",
+          "print(len(config.discover_stimuli()))" in read("count_stimuli.py"))
     # Recording must not hang off a one-line parenthesised block: a
     # failure inside the called script takes the console with it.
     _start_bat = read("windows/START.bat")
