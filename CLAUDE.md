@@ -10,8 +10,13 @@ Local Flask web app (port **5050**, `python app.py`) that runs a
 webcam-eye-tracking experiment: login/consent → native calibration →
 validation → fullscreen classroom videos → gaze data in Excel → researcher
 review page with gaze replay + Gemini-based "what did they look at"
-feedback. Everything runs on the researcher's Mac; participants use the
-same machine.
+feedback. Everything runs on one machine; participants use the same
+machine as the researcher. **Development is on macOS, but data
+collection runs on Windows** — a difference that matters more than it
+looks: the sampling-rate behaviour, the DPI/screen-space mismatch and
+the console encoding are all platform-specific. Never assume the
+collection platform from the development one; the manifest records
+which produced each dataset.
 
 ## Architecture (three processes)
 
@@ -32,8 +37,16 @@ video frames for the LLM), `fixations.py` (I-DT fixation detection),
 `tidy_data.py`, `fix_environment.sh`, `DATA_README.md` (data dictionary —
 kept current), `README.md`.
 
-## Environment (user's Mac)
+## Environment (macOS development / Windows collection)
 
+- **Platform split.** `setup_env.sh` / `fix_environment.sh` are the macOS
+  path; `check_setup.ps1` and `windows/` cover the collection machine.
+  Anything touching sampling rate, DPI scaling or console encoding must
+  be verified on Windows specifically — see the EcoQoS entry under
+  hard-won gotchas, the screen-space mismatch entry, and the cp1252
+  entry. `perf_mode.py` is active on BOTH (EcoQoS on Windows, QoS +
+  `PRIO_DARWIN_BG` on macOS) because Apple Silicon has the same
+  P-core/E-core demotion reached through a different API.
 - **`bash setup_env.sh` creates the current env, `gaze_thesis`**, from the
   pinned `environment.yml` and then verifies it (arch, imports, tracker
   self-check, integrity suite). On Apple Silicon it forces
@@ -118,9 +131,13 @@ kept current), `README.md`.
   it — failed frames are written with `status=0` and coordinate sentinel
   −65536 instead of being dropped. On by default; `GF_SAMPLE_PATCH=0`
   restores the lossy behaviour for comparison.
-  **Therefore: a low rate on this setup is a TRACKING-QUALITY problem
-  (lighting, distance, camera height, glare), not a CPU problem.**
-  `diagnose_rate.py` now says so explicitly.
+  **Therefore a low recorded rate has two distinct causes that look
+  identical in the number alone**: frames arriving fine but yielding no
+  gaze estimate (detection — lighting, distance, camera height, glare),
+  or frames arriving slowly (compute — EcoQoS/E-core demotion, competing
+  load). `detected_pct` alongside `sustained_hz` is what separates them;
+  never diagnose from the rate alone. See the EcoQoS entry below —
+  chasing the detection explanation exclusively cost days.
 - **Gaze inference runs on the CPU, always.** GazeFollower hardcodes
   `{'precision':'low','backend':0,'numThread':4}` in
   `MGazeNetGazeEstimator.__init__`; MNN backend 0 = CPU, and `numThread`
@@ -216,18 +233,46 @@ kept current), `README.md`.
   two spaces on every validation and store `screen_space` in the record;
   a mismatch is shown first in the review panel. `check_screen_space.py`
   is the standalone check (also queries the Windows DPI scale factor).
-- **MEASURED 2026-08-04 (Windows, `hz_experiment.py`, 60 s per condition,
-  recorded clip as input): a flat 30.0 Hz in EVERY condition** —
+- **SOLVED 2026-08-04 — the rate collapse was Windows parking the tracker
+  on efficiency cores.** Windows 11 judges the tracker subprocess to be
+  background work (the fullscreen browser holds the foreground) and acts
+  on it twice: **EcoQoS** caps its clock, and on hybrid CPUs **Thread
+  Director** parks its threads on E-cores. Neither raises an error;
+  frames simply take longer.
+  The diagnostic signature is decisive — per-stage timers in the live app
+  showed both model stages slowing by the *same* factor with the browser
+  up:
+
+  | | no browser | browser | ratio |
+  |---|---|---|---|
+  | MediaPipe FaceMesh | 9.3 ms | 21.1 ms | 2.27x |
+  | MNN gaze CNN | 19.3 ms | 43.6 ms | 2.26x |
+  | per frame | 28.9 ms | 65.0 ms | — |
+
+  MediaPipe is single-threaded TFLite, MNN is 4-threaded. **Resource
+  contention cannot slow two engines with different threading models by
+  an identical factor.** A uniform scalar across all CPU work means the
+  CPU is executing more slowly. **The fix is `perf_mode.py`** (EcoQoS
+  opt-out via `SetProcessInformation`/`StateMask=0`, ABOVE_NORMAL
+  priority; macOS equivalent clears `PRIO_DARWIN_BG` and raises thread
+  QoS to USER_INTERACTIVE). Applied at tracker start, before any
+  inference: **15.1 Hz → 29.4 Hz**, FaceMesh back to 9.6 ms and the gaze
+  CNN to 20.0 ms. `GF_PERF_MODE=0` disables it; the active policy is
+  recorded in every manifest and asserted by `run_tests.py`.
+- **Why `hz_experiment.py` said the opposite, and why that was not a
+  contradiction.** The same day, `hz_experiment.py` (60 s per condition,
+  recorded clip as input) measured a flat 30.0 Hz in EVERY condition —
   baseline, two repeats, GazeFollower's own writer, flush-on-every-sample,
-  and 8 MNN threads, all with 100 % detection and no slide across twelve
-  5-second buckets. Six minutes of continuous inference at full rate.
-  **This exonerates the software**: not thermal, not accumulation, not the
-  per-sample flush, not thread count, not the tracking pipeline. Since the
-  fake camera's only substitution is the live webcam, the remaining
-  suspects are the camera itself (auto-exposure lowering fps in dim light
-  — `camera_light_test.py` tests exactly this) and the app layer
-  (browser/Flask competing during a real session). Do not re-litigate the
-  CPU/GPU question; it is closed.
+  8 MNN threads — 100 % detection, no slide across twelve 5-second
+  buckets, and concluded the software was exonerated. **It ran with no
+  browser**, so the tracker WAS the foreground process and was never
+  demoted; note its 30.0 Hz matches the 28.9 ms/frame "no browser" row
+  above. The experiment was sound and its conclusion was true of the
+  condition it tested — it simply never reproduced the condition that
+  caused the bug. **Lesson worth keeping: a benchmark that omits the
+  browser cannot speak to a problem whose mechanism IS the browser
+  holding the foreground.** Any future rate benchmark must either run a
+  real session or state explicitly that it does not.
 - **`python session_probe.py`** walks the REAL session lifecycle against
   the fixed clip — the churn every other benchmark skips. `cmd_cycle_sampling`
   reproduces the stop/start pattern calibration and the accuracy check
@@ -278,19 +323,22 @@ kept current), `README.md`.
   landmark geometry differs, so accuracy must be re-validated. Measure
   before adopting.
 - **A low rate has TWO causes that look identical.** Frames arriving
-  slowly (compute: power plan, competing load) versus frames arriving
-  fine but yielding no gaze estimate (detection: camera height, distance,
-  lighting, glare). The gate reports `detected_pct` alongside
-  `sustained_hz` so the UI can name which one instead of guessing —
-  earlier versions asserted "the turbo window closed" with no evidence,
-  which sent Jan chasing CPU/GPU for days when the pipeline was already
-  running at half the frame budget.
+  slowly (compute: **EcoQoS / E-core demotion first — check
+  `perf_mode` in the manifest before anything else** — then competing
+  load) versus frames arriving fine but yielding no gaze estimate
+  (detection: camera height, distance, lighting, glare). The gate reports
+  `detected_pct` alongside `sustained_hz` so the UI can name which one
+  instead of guessing — earlier versions asserted "the turbo window
+  closed" with no evidence, and the opposite error (asserting detection
+  quality, treating compute as closed) cost days on the EcoQoS hunt.
+  **Neither cause may be asserted without its measurement.**
 - **Rate gate** (`RATE_GATE_SECONDS`=25, tail 8 s) runs
   **after calibration succeeds**, via `_run_rate_gate()` in the
   `native_calibration_result` path (`run_rate_gate` event re-runs it).
   It cannot run earlier — see above — and that placement is better
-  anyway: calibration is a 1–2 min inference workload, so the turbo
-  window has already closed and the figure is the true sustained rate.
+  anyway: calibration is a 1–2 min inference workload, so the machine is
+  already warm and under the real load, and the figure is a sustained
+  rate rather than a cold-start one.
   Below `MIN_SAMPLING_HZ` the *accuracy-check* button is disabled; the
   researcher can override with a reason, stored in
   `manifest["rate_gate"]`. It WARNS rather than hard-blocks on purpose —
@@ -300,10 +348,18 @@ kept current), `README.md`.
   Per-frame inference sits right at the 33.3 ms camera frame period; when
   it crosses, the loop misses every other frame and locks to half rate.
   Observed sessions start at either 29 or 15 Hz, and some drop 29→15
-  mid-session when the CPU turbo window closes. Two 4-minute sessions
-  held 29 Hz throughout, so the hardware CAN sustain it — the setup is
-  marginal, not incapable. AC power, Low Power Mode off, and no competing
-  CPU load are what decide which side of the cliff a session lands on.
+  mid-session. Two 4-minute sessions held 29 Hz throughout, so the
+  hardware CAN sustain it — the setup is marginal, not incapable.
+  **What decides which side of the cliff a session lands on is
+  overwhelmingly whether EcoQoS demoted the tracker** (2.26x on all CPU
+  work is more than enough to cross a 33.3 ms budget); "the turbo window
+  closed" was the story before `perf_mode.py` and is not the mechanism.
+  **AC power is NOT the axis** — 29.4 Hz was measured on battery at 53 %
+  with EcoQoS disabled, and 15.1 Hz on the same charge with it active.
+  Jan said the charger made no difference and he was right. Residual
+  headroom is thin: 29.9 ms of a 33.3 ms budget (p90 33.5), so competing
+  CPU load still matters at the margin. `GF_PERF_PRIORITY=high` and
+  `GF_PERF_PIN_CORES` are untried levers if more is needed.
 - Measured quality on this hardware: jitter RMS ~45–60 px filtered;
   vertical accuracy is the weak axis (gain compression) — mitigations:
   13-pt calibration, camera at eye level, gain correction, 32M model.
@@ -372,6 +428,12 @@ reduced-motion. TEST badge + options panel amber #b45309.
    the real pipeline and splits per-frame cost into FaceMesh / gaze CNN /
    GazeFollower overhead, reports the resolution the camera actually
    delivers, and A/Bs the live preview and `GF_CAMERA_FIX`.
+4c. `python perf_mode.py --verify` — **check this FIRST on any rate
+   question.** Confirms the EcoQoS opt-out and priority actually took.
+   Caveat it prints itself: a console is already the foreground process,
+   so a clean result proves the API calls succeed, NOT that the rate is
+   recovered under a fullscreen browser. Only a real session tests that;
+   compare `perf_mode` across sessions with `diagnose_session.py`.
 5. `python backfill_manifests.py --dry-run` after changing any quality
    formula, to see how existing sessions would be re-scored.
 

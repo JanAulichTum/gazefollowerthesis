@@ -8,6 +8,13 @@ Rules for adding: state the number, state how it was obtained, state what
 it licenses you to claim. If something was suspected but not confirmed,
 say so in the entry — a log that mixes the two is worth nothing.
 
+**F-numbers are unique, contiguous from F1, and never reused.** Entries
+are cited by number from the chapters and from `CLAUDE.md`, so a
+duplicate silently makes a citation ambiguous. `run_tests.py` section
+[8] asserts this — it was added after a duplicate F22 (2026-08-12 and
+2026-08-13) went unnoticed; the second was renumbered to F23 on
+2026-08-15.
+
 ---
 
 ## F1 · Windows parks the tracker on efficiency cores
@@ -531,7 +538,7 @@ is currently described as the study's central methodological
 contribution, so shipping it with a derivation that does not close is
 the single most examinable weakness in the project.
 
-## F22 · Focal length calibrated over the operating range, and verified
+## F23 · Focal length calibrated over the operating range, and verified
 **2026-08-13 · Methods (apparatus)**
 
 A single-point calibration solves the focal length so that its own tape
@@ -587,6 +594,55 @@ is consistent with this participant's inter-pupillary distance sitting a
 few per cent above the 6.3 cm population mean the inter-ocular path
 assumes.
 
+## F24 · Fixation counts and durations are an artefact of the sampling rate
+**2026-08-15 · Methods (measures), Limitations — CONFIRMED, controlled test**
+
+Halving the sampling rate roughly halves the fixation count and inflates
+median fixation duration by ~70 %. This was measured on ONE session
+(`fachschaft_2026-07-15_160219`, the clean 29.4 Hz exhibit) decimated in
+software, so participant, stimulus, gaze data and detector parameters
+are all held constant and the sampling rate is the only thing that
+varies. Nothing about the eyes changed between these rows.
+
+| retained | effective Hz | fixations | median duration | p90 duration | median samples | fixations/s |
+|---|---|---|---|---|---|---|
+| every sample | 29.4 | 276 | 0.240 s | 0.517 s | 8 | 2.41 |
+| every 2nd | 14.5 | 127 | 0.407 s | 0.688 s | 7 | 1.11 |
+| every 3rd | 9.7 | 100 | 0.443 s | 0.837 s | 5 | 0.87 |
+
+Mechanism: I-DT accepts a window while dispersion stays under threshold.
+Removing intermediate samples removes the evidence that the gaze left
+the window, so genuinely separate fixations merge into one longer one.
+The effect is a measurement artefact of the detector-plus-rate pair, not
+a property of the viewer.
+
+**Consequence, and it is a serious one.** Recorded sessions are bimodal
+at 29 / 14.5 Hz, so **fixation count and fixation duration are not
+comparable between a 29 Hz session and a 14.5 Hz session.** The observed
+gap between `HFP_2026-07-16` (14.5 Hz, median 0.550 s) and `fachschaft`
+(29.4 Hz, median 0.240 s) is largely reproduced by decimation alone
+(0.407 s), so most of that between-participant difference is
+instrumentation, not behaviour. Any novice-vs-expert contrast built on
+fixation counts or durations across sessions of differing rate is
+confounded by design.
+
+**What this licenses.** (a) The rate gate stops being a quality nicety
+and becomes a *comparability* precondition — for evaluation sessions the
+rate must be reported per session and the analysis must either restrict
+to one rate band or model rate as a covariate. (b) Every reported
+fixation statistic must carry its session's effective rate. (c) Extends
+F8 (precision is not comparable across sampling rates) from precision to
+the fixation-level measures.
+
+Reproduce: load one session's `gaze_video_nx/ny` + `video_time_s`, slice
+`[::k]` for k = 1, 2, 3, run `fixations.detect_fixations` on each.
+
+**Note this also settles an algorithm question.** Switching I-DT for a
+different fixation classifier (I2MC and similar) cannot repair this —
+the information destroyed by decimation is absent from the input, not
+mis-segmented by the detector. Rate matching is the fix; a different
+algorithm is not.
+
 ---
 
 ## Open items before evaluation collection
@@ -603,3 +659,8 @@ assumes.
 - F9's attribution derivation is broken (F22). Rebuild it as a
   probability over the empirical error distribution before any chapter
   or defence uses it.
+- **Fixation measures are rate-confounded (F24).** Decide before
+  collection whether evaluation sessions are restricted to one rate band
+  or whether rate enters the analysis as a covariate, and pre-specify it
+  in `config.py` with the other thresholds. Comparing fixation counts or
+  durations across rate bands is not defensible as things stand.

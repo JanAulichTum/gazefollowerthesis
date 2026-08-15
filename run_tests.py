@@ -903,6 +903,30 @@ try:
           '"rate_gate": state.get("rate_gate")' in _app)
     check("rate-gate override is auditable",
           "rate_gate_override" in _app and "override_reason" in _app)
+
+    # (z) METHODOLOGY_FINDINGS.md is cited BY NUMBER from the thesis
+    #     chapters and from CLAUDE.md, so a duplicate or a gap silently
+    #     makes a citation ambiguous — "see F22" stops identifying one
+    #     entry. Same silent-failure class as the metric bugs above: the
+    #     file still reads fine, it just no longer means what a citation
+    #     to it claims. A duplicate F22 (2026-08-12 and 2026-08-13)
+    #     survived unnoticed until 2026-08-15; the second became F23.
+    #     Append-only numbering is not self-enforcing, so enforce it.
+    _fnums = [int(_m) for _m in
+              re.findall(r"^## F(\d+)\b",
+                         read("METHODOLOGY_FINDINGS.md"), re.M)]
+    check("METHODOLOGY_FINDINGS.md has findings to check", bool(_fnums))
+    _dupes = sorted({_n for _n in _fnums if _fnums.count(_n) > 1})
+    check("F-numbers are unique", not _dupes,
+          ("duplicated: " + ", ".join("F%d" % _n for _n in _dupes))
+          if _dupes else "")
+    _missing = sorted(set(range(1, len(_fnums) + 1)) - set(_fnums))
+    check("F-numbers are contiguous from F1",
+          sorted(_fnums) == list(range(1, len(_fnums) + 1)),
+          ("missing: " + ", ".join("F%d" % _n for _n in _missing))
+          if _missing else "")
+    check("F-numbers ascend in file order (the log is append-only)",
+          _fnums == sorted(_fnums))
 except Exception as exc:  # noqa: BLE001
     _blocked = environment_block(exc)
     check("quality-metric integrity", False, _blocked or repr(exc))
