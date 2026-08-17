@@ -156,10 +156,24 @@ def audit(path: str) -> "dict | None":
                 }
 
     # ── 3. Is the offset stable within the session? ──────────────────
-    # Welch's t on the per-target signed residuals of two phases. The
-    # null is "the tracker's systematic offset did not change between
-    # these two checks"; the scatter across targets inside each phase is
-    # the noise the mean was estimated from.
+    # The UNEQUAL-VARIANCE (Welch) standard error of the difference
+    # between two phases' mean signed residuals. The null is "the
+    # tracker's systematic offset did not change between these two
+    # checks"; the scatter across targets inside each phase is the noise
+    # the mean was estimated from.
+    #
+    # This was called "Welch's t" and reported only as a count of
+    # standard errors. That named a test it did not perform: no
+    # Satterthwaite degrees of freedom and no p-value. It matters — on
+    # the recorded sessions the df comes out between 9.7 and 11.6, so
+    # 2.7 SE is p = 0.021, not the 0.007 a normal approximation would
+    # give. The df and the p-value are computed now, so the figure means
+    # what it is called.
+    #
+    # The test stays CONSERVATIVE for a separate reason worth keeping in
+    # view: the within-phase scatter includes spatially structured error
+    # (the targets sit at different screen positions), so the noise term
+    # is inflated and a real change is harder to detect, not easier.
     stab = []
     order = [p for p in PHASES if p in raw]
     for a, b in zip(order, order[1:]):
@@ -176,12 +190,26 @@ def audit(path: str) -> "dict | None":
             sb = xb.std(ddof=1) / math.sqrt(len(xb))
             se = math.hypot(sa, sb)
             shift = float(xb.mean() - xa.mean())
+            # Welch-Satterthwaite degrees of freedom, so the SE count
+            # can be turned into a probability honestly.
+            df = ((sa ** 2 + sb ** 2) ** 2 /
+                  ((sa ** 4) / (len(xa) - 1) + (sb ** 4) / (len(xb) - 1))) \
+                if (sa > 0 and sb > 0) else float("nan")
+            t = (shift / se) if se > 0 else None
+            try:
+                from scipy import stats as _st
+                pval = (2 * (1 - _st.t.cdf(abs(t), df))
+                        if (t is not None and df == df) else None)
+            except Exception:  # noqa: BLE001 — scipy is not a hard dep
+                pval = None
             entry["d" + axis] = {
                 "from_px": round(float(xa.mean()), 1),
                 "to_px": round(float(xb.mean()), 1),
                 "shift_px": round(shift, 1),
                 "se_px": round(se, 1),
-                "t": round(shift / se, 2) if se > 0 else None,
+                "t": round(t, 2) if t is not None else None,
+                "welch_df": round(float(df), 1) if df == df else None,
+                "p": round(float(pval), 4) if pval is not None else None,
                 "changed": bool(se > 0 and abs(shift) > 2 * se),
             }
         stab.append(entry)
@@ -319,9 +347,12 @@ def render(a: dict) -> None:
                 if not d:
                     continue
                 print("    %-9s -> %-9s %-13s %s %+7.1f -> %+7.1f px "
-                      "(shift %+6.1f, %.1f SE)%s"
+                      "(shift %+6.1f, %.1f SE%s)%s"
                       % (e["from"], e["to"], gap, axis, d["from_px"],
                          d["to_px"], d["shift_px"], abs(d["t"] or 0),
+                         (", Welch df %.1f, p = %.3f"
+                          % (d["welch_df"], d["p"]))
+                         if d.get("p") is not None else "",
                          "   CHANGED" if d["changed"] else ""))
         print()
 

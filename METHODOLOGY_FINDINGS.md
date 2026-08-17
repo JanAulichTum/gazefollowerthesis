@@ -1138,10 +1138,14 @@ blank, and `correction_audit.py` derives both from the per-target records.
 **2026-08-17 · Methods, Limitations — found while measuring F30**
 
 Manuel_P2's post-stimulus validation contains a target at (960, 540)
-measured at (1609, 479): **dx = +649 px**, on a 1920 px screen. Two
-others read dy +235 and +169. Per-target errors for that phase:
+whose RAW measurement is (1609, 479): **dx = +649 px** on a 1920 px
+screen, a distance of 652 px. Two others read dy +235 and +169.
+Per-target distances for that phase, on both bases — the corrected list
+is the one the browser stored as `err_px`, and quoting it without saying
+so is how a reader ends up comparing it against a raw mean:
 
-    89, 68, 165, 634, 190, 98, 57 px
+    raw        78, 140, 129, 652, 236, 169,  31 px   (mean 205.2)
+    corrected  89,  68, 165, 634, 190,  98,  56 px   (mean 185.7)
 
 The reported accuracy is the mean of seven such numbers, with no outlier
 rule anywhere in the pipeline. For that phase:
@@ -1628,13 +1632,103 @@ be the only check on a code path that can be executed.
 docstring left three explanations open — one of which (a correction
 re-fitted to each validation) would have collapsed the two-grid design.
 Settled: **coincidence.** The per-target errors differ completely
-(`28, 9, 70, 114, 257, 54, 54` against `50, 89, 112, 93, 53, 95, 94`), the
+(`28, 9, 70, 114, 257, 54, 54` against `50, 89, 112, 93, 52, 95, 94`), the
 measured points differ, and the records are 92 s apart. Both means land on
 585.2 and 585.3 over seven. The docstring's third possibility is
 eliminated, and the first — one measurement written twice — with it.
 
 Worth noting that `pre_check` contains a 257 px target among six under
 115: F31 again, in a session nobody had flagged.
+
+---
+
+## F35 · Second pass over F30–F34: the tables hold, three statements did not
+**2026-08-17 · Methods — a re-check of the audit, from angles the first pass did not use**
+
+Asked to check once more. Repeating the first pass would only reproduce
+it, so this one attacked from three directions it had not used: every
+literal number in F30–F34 recomputed from the manifests, the 2-D map
+re-derived a THIRD way, and the claims that are about statistics rather
+than about data checked as statistics.
+
+### Everything tabulated survives
+
+Recomputed and matching: PILOT_03's half-means (−16.5 / +234.7 px) and
+its regression (t = 3.88, R² = 0.751); Manuel_P2's worst target
+(960, 540) → (1609, 479), dx = +649; the bias-ratio range 0.80–0.96; the
+overfitting figures (−61 %/−6 %, −42 %/−1 %); PILOT_04's |bias|
+174.8 → 19.3 px; PILOT_00's per-target lists; every entry of F30's
+stability table (3.15, 2.68, 2.84, 2.04 SE); every `m_yx` and every
+bootstrap interval in F33; every cell of F34's ruler table; the
+fourteen-target simulation (−28 % and −15 %, with the other four sessions
+at +2 % to +6 %, i.e. the full model losing); and the 1793 re-derived rows
+for PILOT_02, which match the manifest's own `sample_counts`.
+
+**The 2-D map, a third way.** Re-fitted on centred clouds with no
+intercept column and decomposed by SVD into a rotation times a symmetric
+stretch — a different parameterisation and a different routine. Agreement
+to three decimals on all of `m_yx`, the rotation angle and the shear, for
+PILOT_03, PILOT_04 and Manuel_P2.
+
+**F32's bound checked as mathematics, not asserted.** For strictly
+positive paired differences at n = 7, `mean / SE ≥ 1`. Random search over
+20 000 heavy-tailed draws and a Nelder–Mead minimisation both bottom out
+at exactly 1.0000, approached only in the degenerate limit of one spike
+and six zeros. The claim holds.
+
+### 1. F31 quoted the corrected per-target list as though it were raw
+
+The list `89, 68, 165, 634, 190, 98, 57` is the browser's stored
+`err_px`, i.e. the CORRECTED distances. The raw ones are
+`78, 140, 129, 652, 236, 169, 31`. F31 printed the corrected list
+immediately above a table whose first row is the RAW mean, inviting
+exactly the comparison that does not hold. Both are now given, labelled.
+
+The same sentence said one target was "measured 649 px from its mark".
+649 is the horizontal component; the distance is 652 px raw and 634 px
+corrected. Corrected.
+
+Neither changes F31's point — the mean/median split, 3.52° against
+2.41°, is unaffected — but a per-target list whose basis is unstated is
+the same species of fault as an error whose sign is unstated.
+
+### 2. F34 mis-rounded one number
+
+PILOT_00's post per-target distances contain 52.5, written as `53` in
+F34's list and as `52` everywhere the code prints it. Corrected to 52.
+Trivial in itself; recorded because a log that quietly fixes its own
+transcription is not auditable.
+
+### 3. "Welch's t" named a test that was not performed
+
+`correction_audit.py` computed the unequal-variance standard error of a
+difference in means and reported the result as a count of standard
+errors. Its docstring called that "Welch's t", which implies
+Satterthwaite degrees of freedom and a p-value; neither was computed.
+
+It is not cosmetic. On these sessions the Satterthwaite df comes out
+between **9.7 and 11.6**, so 2.7 SE is **p = 0.021**, against the 0.007 a
+normal approximation would suggest — a factor of three. The df and the
+p-value are now computed and printed, and the wording says what is
+actually done.
+
+Every "CHANGED" verdict in F30 survives at p < 0.05: PILOT_02
+`pre_fit → pre_check` dy p = 0.021, `pre_check → post` dy p = 0.016. The
+dx change at 2.0 SE is **p = 0.070** and should not have been called
+changed on a 2-SE rule; it is now visible as the marginal result it is.
+
+Worth keeping in view that this test remains conservative for an
+unrelated reason: the within-phase scatter includes spatially structured
+error, because the targets sit at different screen positions, so the
+noise term is inflated and a real change is harder to detect rather than
+easier.
+
+### What this pass did not find
+
+No error in any pixel measurement, any sign, any matrix orientation, any
+inversion, any cross-validation figure, or any interval. The three faults
+above are one mislabelled list, one mis-rounded digit, and one
+overstated statistical name.
 
 ## Open items before evaluation collection
 

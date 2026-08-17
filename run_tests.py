@@ -980,6 +980,58 @@ try:
     finally:
         shutil.rmtree(_tmp, ignore_errors=True)
 
+    # (f2) THE STABILITY TEST MUST NAME WHAT IT COMPUTES. It reported a
+    #      count of standard errors while its docstring called it
+    #      "Welch's t" — a name that implies Satterthwaite degrees of
+    #      freedom and a p-value, neither of which existed. Not
+    #      cosmetic: on the recorded sessions the df is 9.7-11.6, so
+    #      2.7 SE is p = 0.021 against the 0.007 a normal approximation
+    #      gives (F35).
+    import correction_audit as _ca_mod
+
+    # A shift of 14 px against this scatter lands at 3.45 SE — near the
+    # boundary, where the choice of reference distribution actually
+    # decides something. An extreme case would underflow both p-values
+    # to zero and prove nothing, which the first version of this check
+    # did.
+    _n1 = [-12.0, -6.0, 0.0, 4.0, 7.0, -3.0, 10.0]
+    _n2 = [9.0, -5.0, 2.0, -8.0, 11.0, -4.0, -5.0]
+    _A = [{"tx": 100.0 + 200 * i, "ty": 100.0, "mx": 100.0 + 200 * i,
+           "my": 100.0 + _n1[i]} for i in range(7)]
+    _B = [{"tx": 100.0 + 200 * i, "ty": 100.0, "mx": 100.0 + 200 * i,
+           "my": 114.0 + _n2[i]} for i in range(7)]
+    _man2 = {"gain_correction": {"active": False},
+             "validations": [
+                 {"phase": "pre_fit", "targets": _A,
+                  "recorded_at_utc": "2026-08-17T10:00:00+00:00",
+                  "screen": {"width_px": 1920, "height_px": 1080},
+                  "mean_err_px": 10.0, "mean_err_deg": 0.17},
+                 {"phase": "pre_check", "targets": _B,
+                  "recorded_at_utc": "2026-08-17T10:00:30+00:00",
+                  "screen": {"width_px": 1920, "height_px": 1080},
+                  "mean_err_px": 90.0, "mean_err_deg": 1.55}]}
+    _mp2 = os.path.join(tempfile.gettempdir(), "_stab_manifest.json")
+    with open(_mp2, "w", encoding="utf-8") as _fh:
+        json.dump(_man2, _fh)
+    _aud = _ca_mod.audit(_mp2)
+    _dy = next(e["dy"] for e in _aud["stability"] if e["from"] == "pre_fit")
+    check("the stability test reports Satterthwaite df, not just SE units",
+          _dy.get("welch_df") is not None and _dy.get("p") is not None,
+          "df %s, p %s" % (_dy.get("welch_df"), _dy.get("p")))
+    _pn = 2 * (1 - 0.5 * (1 + math.erf(abs(_dy["t"]) / 2 ** 0.5)))
+    check("...and a 14 px shift against this scatter is detected",
+          0.001 < _dy["p"] < 0.02 and _dy["changed"] is True,
+          "shift %+.1f px, %.2f SE, p = %.4f"
+          % (_dy["shift_px"], _dy["t"], _dy["p"]))
+    check("...and the t reference is STRICTER than a normal approximation",
+          _dy["p"] > 2 * _pn,
+          "t with df %.1f gives p = %.4f; the normal gives %.4f, %.0fx "
+          "smaller" % (_dy["welch_df"], _dy["p"], _pn, _dy["p"] / _pn))
+    check("the docstring no longer calls it a test it does not perform",
+          "Welch's t" not in read("correction_audit.py")
+          or "named a test it did not perform" in read("correction_audit.py"))
+    os.remove(_mp2)
+
     # (f) A session with no per-target fit record cannot be decided, and
     #     must say so rather than defaulting to "leave it as it is".
     _und = rds.decide({"gain_correction": {"px": [1, 0], "py": [1, 0]},
