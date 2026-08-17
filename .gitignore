@@ -147,3 +147,9 @@ data/agreement/
 # Retired sessions: real participant recordings, kept for the
 # audit trail. Same rule as data/study/.
 data/retired/
+
+# Transfer scratch and anything staged for manual deletion. This is not
+# session data and must never enter a commit — a set of transfer archives
+# was swept into one on 2026-08-17 and had to be amended out.
+_to_delete/
+_xfer/
