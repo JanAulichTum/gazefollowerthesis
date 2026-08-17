@@ -636,6 +636,141 @@ except Exception as exc:  # noqa: BLE001
 # is worse than no rule at all if the recorded gaze keeps the correction:
 # the manifest then says one thing and the data says another. These guard
 # the tool that closes that gap.
+print("\n[7d] Vertical error that depends on HORIZONTAL position")
+try:
+    import numpy as np
+
+    import validation_stats as vstat
+
+    _W, _H = 1920.0, 1080.0
+    _CX, _CY = _W / 2, _H / 2
+    _G = [(230, 130), (1690, 130), (960, 335), (288, 540), (1632, 540),
+          (960, 745), (960, 950)]
+
+    def _mk(fn):
+        return [{"tx": float(a), "ty": float(b),
+                 "mx": float(fn(a, b)[0]), "my": float(fn(a, b)[1])}
+                for a, b in _G]
+
+    # (a) A PURE SHEAR must be recovered. This is the fault a participant
+    #     reported twice before any metric saw it: "when looking right
+    #     the y axis behaves weirdly".
+    _s = 0.20
+    _sheared = _mk(lambda x, y: (x + _s * (y - _CY), y + _s * (x - _CX)))
+    _sp = vstat.spatial_terms(_sheared, _W, _H)
+    check("a pure shear is recovered in m_yx",
+          abs(_sp["m_yx"] - _s) < 0.01, "m_yx = %+.3f" % _sp["m_yx"])
+    check("...and is flagged", _sp["shear_large"] is True)
+    check("...and reported as displacement across the screen",
+          abs(_sp["dy_across_screen_px"] - _s * _W) < 2.0,
+          "%.0f px" % _sp["dy_across_screen_px"])
+    check("...and named a shear, not a rotation",
+          "shear" in _sp["structure"], _sp["structure"])
+
+    # (b) A ROTATION is a different fault with a different cause — head
+    #     roll rotates (opposite signs), an off-centre head shears (same
+    #     signs). Reporting one number for both would hide which.
+    _th = np.radians(8.0)
+    _rot = _mk(lambda x, y: (
+        _CX + np.cos(_th) * (x - _CX) - np.sin(_th) * (y - _CY),
+        _CY + np.sin(_th) * (x - _CX) + np.cos(_th) * (y - _CY)))
+    _rp = vstat.spatial_terms(_rot, _W, _H)
+    check("a rotation is named a rotation, not a shear",
+          "rotation" in _rp["structure"]
+          and abs(_rp["rotation_deg"] - 8.0) < 0.5,
+          "%+.2f deg — %s" % (_rp["rotation_deg"], _rp["structure"]))
+    check("...and its shear term is ~zero", abs(_rp["shear"]) < 0.01,
+          "shear %+.3f" % _rp["shear"])
+
+    # (c) A pure per-axis gain — exactly what the correction models —
+    #     must show NO off-diagonal term, or the diagnostic would fire on
+    #     every session and mean nothing.
+    _diag = _mk(lambda x, y: (_CX + 0.85 * (x - _CX),
+                              _CY + 0.90 * (y - _CY) - 40))
+    _dp = vstat.spatial_terms(_diag, _W, _H)
+    check("a pure per-axis gain shows no off-diagonal term",
+          abs(_dp["m_yx"]) < 0.01 and _dp["shear_large"] is False,
+          "m_yx = %+.3f" % _dp["m_yx"])
+
+    # (d) THE STRUCTURAL POINT, stated exactly. The correction is a
+    #     per-axis map D, so applying it gives M' = D·M and therefore
+    #     m_yx' = d_y·m_yx, m_yy' = d_y·m_yy. It CAN rescale the
+    #     off-diagonal — the first version of this check wrongly asserted
+    #     m_yx itself was untouched and caught the rescale, 0.200 ->
+    #     0.176 — but their RATIO is invariant, for a correction of any
+    #     polynomial degree. That ratio is the fault, and no
+    #     recalibration of this form can reduce it.
+    _fit = vstat._fit_candidate(*vstat._pairs(_sheared), "affine", _W, _H)
+    _after = vstat.spatial_terms(
+        vstat.corrected_targets(_sheared, _fit), _W, _H)
+    check("a diagonal correction cannot change the normalised shear",
+          abs(_after["m_yx_normalised"] - _sp["m_yx_normalised"]) < 0.005,
+          "m_yx/m_yy %+.3f -> %+.3f (raw m_yx %+.3f -> %+.3f, rescaled "
+          "but not removed)" % (_sp["m_yx_normalised"],
+                                _after["m_yx_normalised"],
+                                _sp["m_yx"], _after["m_yx"]))
+    _quad = {"px": [1.0, 0.0], "py": [3e-5, 0.9, 20.0], "cy": _CY,
+             "source": "t"}
+    _aq = vstat.spatial_terms(
+        vstat.corrected_targets(_sheared, _quad), _W, _H)
+    check("...nor can a quadratic one",
+          abs(_aq["m_yx_normalised"] - _sp["m_yx_normalised"]) < 0.02,
+          "%+.3f -> %+.3f" % (_sp["m_yx_normalised"],
+                              _aq["m_yx_normalised"]))
+    # The classifier must key on magnitudes, not the sign of a product:
+    # a pure transvection has one off-diagonal exactly zero, and the
+    # product's sign then comes from the last bit of a float.
+    check("a transvection is not misnamed a rotation",
+          "transvection" in vstat._off_diagonal_structure(0.1, 0.1),
+          vstat._off_diagonal_structure(0.1, 0.1))
+    check("a near-zero off-diagonal is called absent, not classified",
+          "neither" in vstat._off_diagonal_structure(1e-17, -1e-17))
+    # NEGATIVE shear must classify too. PILOT_04's is negative, and a
+    # classifier comparing SIGNED values rather than magnitudes calls
+    # -0.20 "smaller than the floor" and reports no off-diagonal term at
+    # all — on the session that has one. The sign carries the direction
+    # of the fault, never whether there is one.
+    check("a NEGATIVE shear is still a shear, not 'absent'",
+          "shear" in vstat._off_diagonal_structure(-0.20, 0.0),
+          vstat._off_diagonal_structure(-0.20, 0.0))
+    check("a NEGATIVE rotation is still a rotation",
+          "rotation" in vstat._off_diagonal_structure(0.0, -0.20),
+          vstat._off_diagonal_structure(0.0, -0.20))
+    _neg = _mk(lambda x, y: (x - 0.20 * (y - _CY), y - 0.20 * (x - _CX)))
+    _np_ = vstat.spatial_terms(_neg, _W, _H)
+    check("...and a negatively sheared grid is flagged like a positive one",
+          _np_["shear_large"] is True and "shear" in _np_["structure"],
+          "shear %+.3f — %s" % (_np_["shear"],
+                                _np_["structure"].split(" —")[0]))
+
+    # (e) Six parameters cannot come from five points.
+    check("fewer than six targets refuses to estimate a 2-D map",
+          vstat.spatial_terms(_sheared[:5], _W, _H)["spatial_available"]
+          is False)
+
+    # (f) Seeded, so a manifest is reproducible.
+    check("the m_yx interval is seeded and reproducible",
+          vstat.spatial_terms(_sheared, _W, _H)["m_yx_ci"]
+          == _sp["m_yx_ci"])
+    check("a real shear's interval excludes zero",
+          _sp["m_yx_excludes_zero"] is True, "CI %s" % _sp["m_yx_ci"])
+
+    # (g) It has to reach the record and the reports, not just exist.
+    check("app.py stores the spatial terms on every validation",
+          'record["spatial"] = _sp' in _appsrc
+          and "VALIDATION IS SHEARED" in _appsrc)
+    _sv = read("show_validations.py")
+    check("show_validations prints the off-diagonal term",
+          "off-diagonal" in _sv and "SHEARED" in _sv)
+    _ca = read("correction_audit.py")
+    check("correction_audit prints the off-diagonal term",
+          "Off-diagonal terms" in _ca)
+    check("the spec lists the off-diagonal terms as a measure",
+          "off_diagonal" in read("metrics_spec.py"))
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("off-diagonal spatial terms", False, _blocked or repr(exc))
+
 print("\n[7c] Re-derivation applies the decision to the recorded gaze")
 try:
     import numpy as np

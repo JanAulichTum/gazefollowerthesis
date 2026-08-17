@@ -122,6 +122,14 @@ def audit(path: str) -> "dict | None":
                                         dpp, in_sample=in_s)
         out["phases"][ph] = row
 
+    # ── 1b. The off-diagonal terms, per phase ────────────────────────
+    # Vertical error that depends on HORIZONTAL position. The correction
+    # models a gain per axis and an offset — the diagonal of the map —
+    # so a shear passes through it untouched and no reported quantity
+    # contained it (F33).
+    out["spatial"] = {ph: vs.spatial_terms(raw[ph], W, H)
+                      for ph in PHASES if ph in raw}
+
     # ── 2. Did it generalise? LOO on the fit grid ────────────────────
     if "pre_fit" in raw:
         sel = vs.select_correction(raw["pre_fit"], W, H)
@@ -275,6 +283,28 @@ def render(a: dict) -> None:
         if a.get("rule_changes_this_session"):
             print("    *** This DIFFERS from what was applied. The session "
                   "must be re-derived. ***")
+        print()
+
+    sp = a.get("spatial") or {}
+    if any(v.get("spatial_available") for v in sp.values()):
+        print("  Off-diagonal terms  (measured = M . (target - centre) + "
+              "offset; the correction models only M's DIAGONAL)")
+        for ph in PHASES:
+            v = sp.get(ph)
+            if not (v and v.get("spatial_available")):
+                continue
+            print("    %-10s mxx %6.3f  mxy %6.3f  myx %6.3f  myy %6.3f  |"
+                  "  shear %+.3f  rot %+.2f deg  resid %5.1f px"
+                  % (ph, v["m_xx"], v["m_xy"], v["m_yx"], v["m_yy"],
+                     v["shear"], v["rotation_deg"], v["residual_px"]))
+            print("               myx = %+.3f, 95%% CI [%+.3f, %+.3f] (%s) "
+                  "-> %+.0f px of VERTICAL error across the screen from "
+                  "HORIZONTAL position alone%s"
+                  % (v["m_yx"], v["m_yx_ci"][0], v["m_yx_ci"][1],
+                     "excludes 0" if v["m_yx_excludes_zero"] else "spans 0",
+                     v["dy_across_screen_px"],
+                     "   *** SHEARED ***" if v["shear_large"] else ""))
+            print("               %s" % v["structure"])
         print()
 
     stab = a.get("stability") or []

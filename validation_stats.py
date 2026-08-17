@@ -244,6 +244,152 @@ def signed_bias(targets: "list[dict]", deg_per_px: "float | None" = None,
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  The off-diagonal terms — vertical error that depends on HORIZONTAL
+#  position, and the reverse
+# ══════════════════════════════════════════════════════════════════════
+#
+# Reported by a participant before any metric saw it, for the second
+# time: "when looking right the y axis behaves weirdly" (F33).
+#
+# Fit the full 2-D map
+#
+#     measured = M . (target - centre) + offset
+#
+# and the correction this pipeline applies is only ever the DIAGONAL of
+# M — a gain per axis — plus an offset. ``myx`` (vertical error per unit
+# of horizontal position) and ``mxy`` are structurally unrepresentable by
+# it, and no reported quantity contained them.
+#
+# On PILOT_03 ``myx = +0.228`` with a bootstrap interval excluding zero:
+# 437 px, about 7.5 deg, of vertical displacement across the screen width
+# purely from looking left versus right. PILOT_04 shows the same fault
+# with the opposite sign. Both are far larger than the 3.0 deg inclusion
+# threshold's worth of error.
+#
+# mxy and myx share a sign in every session measured, which makes this a
+# SHEAR and not a rotation — head roll would give opposite signs. An
+# off-centre head, or a head pose that differs between calibration and
+# validation, produces exactly this.
+#
+# This measures it. It does not correct it: six parameters cannot be
+# estimated from seven targets (leave-one-out gains 4-7 %, inside the
+# noise). At fourteen targets the same fit gains 15-28 % on precisely the
+# two sessions that show shear and loses on the four that do not — so
+# correcting it is a protocol change, not a code change, and pooling the
+# two grids to get there would spend the out-of-sample check.
+
+SHEAR_LARGE = 0.08          # |shear| above this displaces > 150 px across
+#                             a 1920 px screen — about 2.6 deg, most of
+#                             the inclusion budget, from position alone.
+
+
+def spatial_terms(targets: "list[dict]", width: float = 1920.0,
+                  height: float = 1080.0, n_boot: int = 5000,
+                  seed: int = 20260817) -> dict:
+    """The full 2-D linear map, and how much of it the correction misses.
+
+    Returns the four entries of ``M``, the symmetric (shear) and
+    antisymmetric (rotation) parts, a seeded bootstrap interval for
+    ``myx``, and a flag when the off-diagonal structure is large enough
+    to matter. Six free parameters need more than the five targets this
+    refuses below.
+    """
+    m, t = _pairs(targets)
+    out: dict = {"n_targets": int(len(m))}
+    if len(m) < 6:
+        out["spatial_available"] = False
+        out["why"] = ("fewer than six measured targets; a 2-D linear map "
+                      "has six parameters and cannot be estimated")
+        return out
+    cx, cy = width / 2.0, height / 2.0
+    T = np.c_[t[:, 0] - cx, t[:, 1] - cy, np.ones(len(t))]
+    Y = np.c_[m[:, 0] - cx, m[:, 1] - cy]
+    sol, *_ = np.linalg.lstsq(T, Y, rcond=None)
+    M = sol[:2, :].T
+    resid = Y - T @ sol
+    mxx, mxy, myx, myy = (float(M[0, 0]), float(M[0, 1]),
+                          float(M[1, 0]), float(M[1, 1]))
+    # Decompose the off-diagonal into its symmetric (shear) and
+    # antisymmetric (rotation) parts. Classifying by the SIGN of the
+    # product mxy·myx looked equivalent and is not: when one term is
+    # numerically zero the product's sign is set by the last bit of a
+    # float, and a pure transvection — one off-diagonal zero — was named
+    # a rotation on the strength of a -1e-17.
+    shear = (myx + mxy) / 2.0
+    anti = (myx - mxy) / 2.0
+    rot = float(np.degrees(np.arctan2(myx - mxy, mxx + myy)))
+
+    rng = np.random.default_rng(seed)
+    n = len(m)
+    boots = []
+    for _ in range(n_boot):
+        k = rng.integers(0, n, n)
+        try:
+            s, *_ = np.linalg.lstsq(T[k], Y[k], rcond=None)
+            boots.append(s[0, 1])
+        except np.linalg.LinAlgError:
+            continue
+    lo, hi = (np.percentile(boots, [2.5, 97.5]) if boots else (np.nan,) * 2)
+
+    out.update(
+        spatial_available=True,
+        m_xx=round(mxx, 3), m_xy=round(mxy, 3),
+        m_yx=round(myx, 3), m_yy=round(myy, 3),
+        shear=round(float(shear), 3),
+        rotation_deg=round(rot, 2),
+        residual_px=round(float(np.sqrt((resid ** 2).sum(axis=1).mean())), 1),
+        # What the off-diagonal actually costs, in the units a reader
+        # cares about: vertical displacement from one edge of the screen
+        # to the other, caused by horizontal position alone.
+        dy_across_screen_px=round(myx * width, 0),
+        m_yx_ci=[round(float(lo), 3), round(float(hi), 3)],
+        m_yx_excludes_zero=bool(np.isfinite(lo) and (lo > 0 or hi < 0)),
+        shear_large=bool(abs(shear) > SHEAR_LARGE),
+        antisymmetric=round(float(anti), 3),
+        # ── The quantity NO correction here can change ────────────────
+        # A per-axis correction is a diagonal map D, and applying it
+        # gives M' = D·M, so m_yx' = d_y·m_yx and m_yy' = d_y·m_yy. Their
+        # RATIO is therefore invariant under every correction this
+        # pipeline can produce, of any polynomial degree. It is the
+        # honest measure of the off-diagonal fault: the vertical error
+        # caused by horizontal position, expressed as a fraction of the
+        # vertical gain, and no recalibration of this form touches it.
+        m_yx_normalised=(round(myx / myy, 3) if abs(myy) > 1e-9 else None),
+        # A shear and a rotation are different faults with different
+        # causes. Head roll rotates; an off-centre head shears. Saying
+        # which was measured is the value of reporting the pair.
+        structure=_off_diagonal_structure(shear, anti),
+        note=("the applied correction models only the DIAGONAL of this "
+              "map plus an offset; it can rescale these terms but cannot "
+              "null them, and m_yx_normalised is invariant under it"),
+    )
+    return out
+
+
+def _off_diagonal_structure(shear: float, anti: float,
+                            floor: float = 0.02) -> str:
+    """Name the off-diagonal structure from its two parts.
+
+    Judged on MAGNITUDES, not on the sign of a product: when one
+    off-diagonal term is numerically zero the product's sign comes from
+    the last bit of a float, and a pure transvection was named a rotation
+    on the strength of a -1e-17.
+    """
+    s, a = abs(shear), abs(anti)
+    if s < floor and a < floor:
+        return "neither term is present"
+    if s >= 2 * a:
+        return ("shear — an off-centre head, or a head pose that differs "
+                "between calibration and validation, produces this; head "
+                "roll cannot")
+    if a >= 2 * s:
+        return ("rotation — consistent with head roll, which a shear "
+                "cannot produce")
+    return ("shear and rotation in comparable measure — a transvection; "
+            "neither cause is isolated by this measurement alone")
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  Correction candidates, cross-validated on the fit grid
 # ══════════════════════════════════════════════════════════════════════
 

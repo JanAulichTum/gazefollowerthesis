@@ -3031,6 +3031,33 @@ def handle_validation_result(payload: dict):
     except Exception:  # noqa: BLE001 — never lose a validation over this
         logger.exception("Could not recompute validation degrees")
 
+    # ── THE OFF-DIAGONAL TERMS ───────────────────────────────────────
+    # Vertical error that depends on HORIZONTAL position. The gain
+    # correction models a gain per axis and an offset — the diagonal of
+    # the 2-D map — so a shear passes through it untouched, and no
+    # reported quantity contained it. A participant reported this one
+    # too, before any metric did (F33): "when looking right the y axis
+    # behaves weirdly". On one session it is 437 px, about 7.5 deg, of
+    # vertical displacement across the screen from horizontal position
+    # alone.
+    try:
+        _scr = payload.get("screen") or {}
+        _sp = validation_stats.spatial_terms(
+            record["targets"],
+            float(_scr.get("width_px") or 1920),
+            float(_scr.get("height_px") or 1080))
+        record["spatial"] = _sp
+        if _sp.get("shear_large"):
+            logger.warning(
+                "VALIDATION IS SHEARED (%s): m_yx = %+.3f — %+.0f px of "
+                "VERTICAL error across the screen width from HORIZONTAL "
+                "position alone. %s. The gain correction models only the "
+                "diagonal of this map, so it cannot remove this.",
+                record["phase"], _sp.get("m_yx") or 0,
+                _sp.get("dy_across_screen_px") or 0, _sp.get("structure"))
+    except Exception:  # noqa: BLE001 — never lose a validation over stats
+        logger.exception("Could not compute the spatial terms")
+
     # ── THE BIAS IN DEGREES USES THE MEASURED DISTANCE TOO ───────────
     # _uncorrected_error runs before the block above and can only use the
     # browser's px→degree scale, which divides by window.measuredDistanceCm

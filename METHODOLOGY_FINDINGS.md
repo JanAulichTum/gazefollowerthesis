@@ -1340,6 +1340,146 @@ test runs reported failures that the source did not contain. Clear
 `__pycache__` between mutation runs.
 
 
+---
+
+## F33 · Vertical error depends on HORIZONTAL position, and the correction cannot represent it
+**2026-08-17 · Results, Limitations — reported by a participant before any metric saw it, for the second time**
+
+Jan, on PILOT_03 and PILOT_04: *"when looking right the y axis tends to
+behave weirdly."* It does, it is large, and it is a term the correction
+is structurally incapable of removing.
+
+### 1. What it is
+
+Fit the full 2-D map on each validation grid:
+
+    measured = M . (target - centre) + offset
+
+The correction this pipeline applies is a polynomial per axis — the
+**diagonal** of `M` — plus an offset. `m_yx` (vertical error per unit of
+horizontal position) and `m_xy` are not in its vocabulary.
+
+| session | phase | `m_yx` | 95 % CI | dy across the screen | structure |
+|---|---|---|---|---|---|
+| **PILOT_03** | pre_check | **+0.228** | **[+0.042, +0.509]** | **+437 px ≈ 7.5°** | shear |
+| PILOT_03 | post | +0.156 | [−0.105, +0.507] | +300 px | shear |
+| **PILOT_04** | pre_check | **−0.104** | [−0.284, +0.066] | −199 px ≈ 3.4° | shear |
+| PILOT_01 | post | +0.175 | [−0.066, +0.285] | +336 px | transvection |
+| Manuel_P2 | pre_check | **−0.055** | **[−0.076, −0.027]** | −106 px ≈ 1.8° | transvection |
+| PILOT_02 | post | +0.069 | [−0.006, +0.139] | +132 px | shear |
+| PILOT_00 | pre_check | −0.039 | [−0.288, +0.239] | −74 px | — |
+
+PILOT_03's `dy` runs **−17 px on the left half to +235 px on the right**
+(regression of dy on target x: t = 3.9, R² = 0.75). Two intervals exclude
+zero at n = 7. **The sign differs between participants** — which is why it
+reads as "weird" rather than as a consistent direction.
+
+`m_xy` and `m_yx` share a sign in most sessions, making this a **shear**
+rather than a rotation. Head roll produces a rotation (opposite signs); an
+off-centre head, or a head pose that differs between calibration and
+validation, produces a shear. **`head_position` is null in all eight
+manifests** — the positioning guide has never been run — so the mechanism
+is untested and the measurement that would test it is free.
+
+### 2. Why no correction of this form can remove it
+
+A per-axis correction is a diagonal map `D`. Applying it gives `M' = D·M`,
+so `m_yx' = d_y·m_yx` and `m_yy' = d_y·m_yy`. It can **rescale** the
+off-diagonal; it cannot null it, and
+
+    m_yx / m_yy    is invariant under every correction this pipeline can
+                   produce, at any polynomial degree.
+
+That ratio is therefore the honest measure of the fault, and it is what
+is now reported. `run_tests.py` [7d] asserts the invariance for both an
+affine and a quadratic correction rather than trusting the algebra.
+
+### 3. Seven targets cannot support fixing it
+
+Leave-one-out on grid A, mean 2-D error, adding a full 2-D affine (six
+parameters) as a candidate:
+
+| session | none | diagonal | full affine |
+|---|---|---|---|
+| PILOT_03 | 129.5 | 118.1 | 113.3 (−4 %) |
+| PILOT_04 | 179.3 | 120.1 | 111.3 (−7 %) |
+| Manuel_P2 / PILOT_00 / PILOT_01 / PILOT_02 | — | diagonal wins | loses |
+
+Four to seven per cent is inside the noise at n = 7 and would not clear
+the F30 bar. Pooling grid A and grid B to simulate **fourteen** targets:
+
+| session | none | diagonal | full affine |
+|---|---|---|---|
+| **PILOT_03** | 145.6 | 116.3 | **84.2 (−28 %)** |
+| **PILOT_04** | 185.4 | 103.9 | **87.9 (−15 %)** |
+| the other four | — | diagonal wins | loses |
+
+The off-diagonal terms are real and estimable — at fourteen targets, on
+exactly the two sessions that show shear and on none of the four that do
+not. **Correcting shear is a protocol change, not a code change**, and it
+cannot be reached by fitting on A ∪ B, because that spends the
+out-of-sample check the two-grid design exists to provide.
+
+**So this is measured and reported, not corrected.** Adding a six-parameter
+model on seven targets would repeat F30's mistake with more parameters.
+
+### 4. Consequences
+
+**PILOT_03 fails the inclusion criterion.** `pre_check 2.78°`,
+`post 5.60°` → canonical **4.19°**, over the pre-declared 3.0° threshold.
+Its post-check map carries a shear of 0.305 and a 131 px residual. It
+should be retired via `retire_session.py`, and the exclusion reported as
+a result rather than treated as a problem to tune away.
+
+**A shear is worse for the region rubric than its magnitude suggests.**
+It is not a fixed displacement that could be subtracted and not isotropic
+noise that averages out: it moves gaze in *opposite* vertical directions
+on the two halves of the screen. Any region comparison between a
+left-side and a right-side AOI inherits the full swing — 437 px on
+PILOT_03, against a `min_aoi_px` of 349 px at the 3.0° threshold.
+
+**The F30 rule is running in production, and one call is marginal.**
+PILOT_03 carries a `correction_decision` from the 2026-08-17 rule, which
+rejected the correction at 0.41 SE with 3/7 targets improved — correct,
+and the first production use of the rule. But **PILOT_04 was accepted at
+1.4 SE while both distribution-free diagnostics disagreed**: bootstrap CI
+[−22.6, +125.3] spanning zero, 5/7 targets improved, sign test p = 0.45.
+That is the first case where the declared criterion and its corroborating
+statistics part company. Its correction does remove a large real offset
+(|bias| 174.7 → 19.3 px), so it is not overturned — but it is on the
+record, and it is the kind of case a second look at the margin should be
+based on, once there are enough sessions to look at.
+
+### 5. Two defects in the first implementation of this entry
+
+Caught by its own tests, recorded because both are instances of the same
+habit.
+
+*The structure classifier keyed on the sign of `m_xy · m_yx`.* For a pure
+transvection one off-diagonal is exactly zero, so the product's sign came
+from the last bit of a float and a shear was reported as a rotation on
+the strength of a `-1e-17`. It now decomposes into symmetric and
+antisymmetric parts and compares magnitudes, with a floor below which it
+declines to classify at all.
+
+*The claim "the correction leaves the shear untouched" was false.* It
+rescales it: 0.200 → 0.176 under the best diagonal fit. The true
+invariant is the ratio, and the assertion is now the exact one. A test
+written to the imprecise claim would have passed while documenting
+something that is not so.
+
+### 6. Code
+
+* `validation_stats.spatial_terms` — the 2-D map, shear and rotation
+  parts, the invariant ratio, a seeded bootstrap for `m_yx`, and a flag.
+* `app.py` — stored on every validation record; a sheared check is
+  logged as a warning naming the displacement across the screen.
+* `correction_audit.py`, `show_validations.py`, `metrics_spec.py` —
+  reported everywhere an error is reported.
+* `run_tests.py` [7d] — 18 checks, including the invariance under both
+  affine and quadratic corrections.
+
+
 ## Open items before evaluation collection
 
 - ~~`EVALUATION_FROM_DATE`~~ **SET to 2026-08-11T14:00** (F17).

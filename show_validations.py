@@ -82,6 +82,19 @@ def _signed_bias(v: dict) -> "dict | None":
     return out if out.get("bias_available") else None
 
 
+def _spatial(v: dict) -> "dict | None":
+    """Off-diagonal terms for one validation record, from its targets."""
+    scr = v.get("screen") or {}
+    try:
+        import validation_stats
+    except ImportError:
+        return None
+    return validation_stats.spatial_terms(
+        v.get("per_target") or v.get("targets") or [],
+        float(scr.get("width_px") or 1920),
+        float(scr.get("height_px") or 1080))
+
+
 def report(path: str) -> None:
     with open(path, encoding="utf-8") as fh:
         man = json.load(fh)
@@ -149,6 +162,19 @@ def report(path: str) -> None:
                       "aggregate; this does not — every")
                 print("          gaze point in the recording is moved the "
                       "same way. ***")
+        _sp = _spatial(v)
+        if _sp and _sp.get("spatial_available"):
+            print("      off-diagonal : myx %+.3f (95%% CI [%+.3f, %+.3f], %s)"
+                  " -> %+.0f px of dy across the screen"
+                  % (_sp["m_yx"], _sp["m_yx_ci"][0], _sp["m_yx_ci"][1],
+                     "excludes 0" if _sp["m_yx_excludes_zero"] else "spans 0",
+                     _sp["dy_across_screen_px"]))
+            if _sp["shear_large"]:
+                print("      *** SHEARED (%+.3f): vertical error depends on "
+                      "HORIZONTAL position." % _sp["shear"])
+                print("          %s" % _sp["structure"])
+                print("          The gain correction models only the diagonal "
+                      "of this map. ***")
         print("      recorded_at  : %s"
               % (v.get("recorded_at_utc") or v.get("recorded_at", "?")))
         print()

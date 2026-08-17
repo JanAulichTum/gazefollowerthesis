@@ -122,6 +122,16 @@ RQ1_QUALITY = [
      "before any metric did (F30). NOT reported on the fit grid, where "
      "least squares zeroes its own mean residual and the answer is an "
      "algebraic identity rather than a measurement."),
+    ("off_diagonal_m_yx", "session", "-", "collected",
+     "Vertical error per unit of HORIZONTAL target position, from the "
+     "full 2-D map measured = M . (target - centre) + offset. The gain "
+     "correction models only M's DIAGONAL, so this term passes through "
+     "it untouched and no reported quantity contained it. Reported with "
+     "a bootstrap interval, with mxy so a SHEAR (same signs, off-centre "
+     "head) is distinguishable from a ROTATION (opposite signs, head "
+     "roll), and as displacement across the screen width, which is the "
+     "unit that matters: PILOT_03 measured +0.228, i.e. 437 px = 7.5 deg "
+     "of vertical error from looking left versus right (F33)."),
     ("bias_ratio", "session", "-", "collected",
      "|signed bias| / mean unsigned error. Above 0.5 the error is a "
      "systematic displacement rather than scatter and the mean alone "
