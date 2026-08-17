@@ -867,12 +867,30 @@ PARTICIPANTS for every interval; the effective sample size is N.
 ## F29 · Gaze during the stimulus is biased UPWARD, and the validation cannot see it
 **2026-08-17 · Results, Limitations — the study's most consequential finding so far**
 
+> **CORRECTED 2026-08-17, same day.** The observation below is real and
+> the direction is right. **The explanation and the numbers were wrong,
+> and are superseded by F30.** The evidence originally offered — a
+> comparison of validation-period and stimulus-period gaze medians,
+> giving shifts of 154–211 px — is confounded and cannot support the
+> claim: the validation *instructs* fixation at targets placed
+> symmetrically about screen centre, so its median is fixed by the task
+> rather than by the tracker. Comparing it with a free-viewing median
+> measures the difference between the two tasks, not a tracker bias.
+> The mechanism proposed — that a dark validation screen and a bright
+> video present different eye images to an appearance-based estimator —
+> **remains untested** and is now a separate open question, not this
+> finding's explanation.
+>
+> The signed per-target error, which does support the claim, is in F30.
+> Nothing below is deleted, because a log whose corrections are invisible
+> cannot be audited.
+
 Reported by the participant first: "all the eye gaze was above the
 people, even though I never looked above", together with "I thought the
 accuracy check was better because the green dot was very close". Both
 observations are correct, and together they identify the problem.
 
-Splitting each session's gaze CSV by the stimulus triggers:
+**SUPERSEDED — the comparison below is confounded; see the correction above.** Splitting each session's gaze CSV by the stimulus triggers:
 
 | | validation median | stimulus median | shift | in degrees |
 |---|---|---|---|---|
@@ -891,7 +909,7 @@ unaffected — the stimulus-period median x is 961 px on a 1920 px screen.
 The bias is vertical, appears only while the video plays, and disappears
 again afterwards.
 
-**Why the two-grid protocol cannot detect it.** Validation measures
+**SUPERSEDED — why the two-grid protocol was thought not to detect it.** (It does detect it, once the error is reported SIGNED. See F30.) Validation measures
 accuracy against dots on a dark screen; the stimulus is a bright,
 full-frame classroom video. Different luminance, different eye image,
 and an appearance-based estimator cannot distinguish "the eye looks
@@ -922,6 +940,236 @@ this literature appears to make, and it converts a limitation into a
 number.
 
 ---
+
+---
+
+## F30 · The gain correction was overfitted, and the offset it removes does not hold still
+**2026-08-17 · Methods, Results, Limitations — supersedes the explanation in F29**
+
+The participant reported it first: *"all the eye gaze was above the
+people, even though I never looked above"*, together with *"I thought the
+accuracy check was better because the green dot was very close"*. Both
+are correct and they are the same fault seen from two sides.
+
+### 1. No reported quantity was signed
+
+Accuracy was reported as the **mean unsigned distance** between measured
+gaze and target. That statistic reads identically for
+
+    scattered 60 px in random directions   →  mean error 60 px
+    displaced 60 px upward, every sample   →  mean error 60 px
+
+and the two are not interchangeable. Scatter averages out of any
+aggregate; a displacement moves every gaze point the same way, so region
+assignment, correspondence with the model's boxes and the ambiguity rate
+all inherit it. A participant noticed before any metric did, because
+nothing anywhere in the pipeline was signed.
+
+Measured per target, on the two sessions carrying per-target records
+(`correction_audit.py`):
+
+| session | phase | basis | mean px | median px | bias (x, y) | \|bias\| | bias / error |
+|---|---|---|---|---|---|---|---|
+| Manuel_P2 | pre_fit | raw | 96.5 | 84.5 | (−32.0, **+72.4**) | 79.2 | 0.82 |
+| Manuel_P2 | pre_check | raw | 65.8 | 56.3 | (−58.4, +20.1) | 61.8 | 0.94 |
+| Manuel_P2 | pre_check | corrected | 61.6 | 65.5 | (−27.7, **−52.3**) | 59.2 | 0.96 |
+| Manuel_P2 | post | corrected | 185.7 | 97.9 | (+76.0, −2.7) | 76.0 | 0.41 |
+| PILOT_02 | pre_fit | raw | 79.0 | 81.6 | (+34.1, **+37.1**) | 50.5 | 0.64 |
+| PILOT_02 | pre_check | raw | 113.9 | 111.6 | (+94.0, −34.8) | 100.2 | 0.88 |
+| PILOT_02 | pre_check | corrected | 112.2 | 116.4 | (+55.0, **−71.4**) | 90.2 | 0.80 |
+| PILOT_02 | post | corrected | 80.5 | 57.6 | (+49.0, +1.7) | 49.0 | 0.61 |
+
+**80–96 % of the out-of-sample error is a fixed displacement, not
+scatter.** Negative y is above the target: the corrected pre-check sits
+0.9–1.2° above where the participant was looking, which is what they
+reported.
+
+Two claims in the original brief do not survive this table. The bias is
+**not** vertical only — PILOT_02's horizontal bias exceeds its vertical
+in every phase. And the signed bias on the FIT grid after correction is
+exactly (0.0, 0.0) in both sessions, which is not a measurement: least
+squares zeroes its own mean residual. It is reported as `in_sample` and
+must never be quoted as evidence.
+
+### 2. The correction is overfitted
+
+Seven targets, two free parameters per axis, applied unconditionally:
+
+| session | grid A (the fit set) | grid B, `pre_check` | grid B, `post` |
+|---|---|---|---|
+| Manuel_P2 | 96.5 → 37.4 px (**−61 %**) | 65.8 → 61.6 px (**−6 %**) | 205.2 → 185.7 px (−10 %) |
+| PILOT_02 | 79.0 → 45.8 px (**−42 %**) | 113.9 → 112.2 px (**−1 %**) | 109.4 → 80.5 px (−26 %) |
+
+It removes 42–61 % of the error where it was fitted and 1–6 % where it
+was not.
+
+**This was visible from grid A alone.** Leave-one-out on the seven fit
+targets — predict each from a model refitted without it — gives 56.8 px
+for Manuel_P2 against 37.4 px refit, and 67.6 px for PILOT_02 against
+45.8 px. The gap between the LOO figure and the refit figure *is* the
+overfitting. It required no second grid, no second validation and no
+participant. Three participants were spent learning something a saved
+CSV would have shown.
+
+### 3. Why it cannot generalise: the offset moves
+
+Change in RAW signed bias between consecutive checks, tested against the
+target-to-target scatter each mean was estimated from (Welch, per axis):
+
+| session | interval | gap | axis | shift | evidence |
+|---|---|---|---|---|---|
+| Manuel_P2 | pre_fit → pre_check | 21 s | dy | +72.4 → +20.1 px | 3.1 SE |
+| PILOT_02 | pre_fit → pre_check | 40 s | dy | +37.1 → −34.8 px | 2.7 SE |
+| PILOT_02 | pre_fit → pre_check | 40 s | dx | +34.1 → +94.0 px | 2.0 SE |
+| PILOT_02 | pre_check → post | 90 s | dy | −34.8 → +41.4 px | 2.8 SE |
+
+The systematic offset changes by **0.9–1.3° in 21–40 seconds**, and the
+change is larger than the noise its own estimate carries. Manuel_P2's
+fitted vertical polynomial was `[1.0008, −72.9]` — a gain of 1.000 and a
+pure −73 px offset. The correction subtracted a snapshot of a moving
+quantity, at a moment when the quantity had already moved, and that
+subtraction is most of the upward displacement the participant saw.
+
+**No session-wise correction can fix this**, and the measurements say so
+directly. Out-of-sample \|bias\| on `pre_check` under every candidate
+model, including no correction at all:
+
+| session | none | affine | quadratic-vertical |
+|---|---|---|---|
+| Manuel_P2 | 61.8 px | 59.2 px | 61.7 px |
+| PILOT_02 | 100.2 px | 90.2 px | 89.5 px |
+
+The correction rotates the residual — Manuel_P2's (−58, +20) becomes
+(−28, −52) — without shrinking it.
+
+### 4. The rule, fixed 2026-08-17, before application to any session
+
+**Previous rule:** fit on grid A, apply unconditionally, no check that it
+generalised.
+
+**New rule** (`validation_stats.select_correction`): fit
+{none, affine, quadratic-vertical} on grid A and select by **leave-one-out
+cross-validation on grid A**. A candidate is accepted only if it beats
+no-correction on BOTH the mean 2-D error — by more than one standard
+error of the paired per-target difference, because on seven targets a
+5 % gain is inside the noise — and the magnitude of the signed bias,
+which must not increase. Ties and near-ties go to the simpler model. The
+chosen model, every candidate's figures, the criterion and the date it
+was fixed are written to the manifest as `correction_decision`, so a
+session whose correction was fitted and REJECTED is distinguishable from
+one where none was ever fitted.
+
+**Selection happens on grid A, not grid B, and this is the point.**
+Choosing the model on `pre_check` would spend the only held-out
+measurement the two-grid protocol produces: `pre_check` would become
+in-sample-for-selection and could no longer be reported as the corrected
+accuracy.
+
+**What the rule does to the recorded sessions**, stated because it is a
+change to a pre-specified analysis step made after seeing data:
+
+* **Manuel_P2 → affine**, i.e. the correction already applied. Nothing
+  changes. Its −52 px upward out-of-sample bias survives, because
+  nothing can remove it.
+* **PILOT_02 → none.** The affine fit beat no-correction by 11.4 px
+  under LOO, which is 0.8 SE, below the 1.0 SE bar. Its recorded gaze is
+  re-derived uncorrected.
+
+**Disclosed, because it matters:** on grid B that rejected correction was
+in fact helping PILOT_02 (`post` 109.4 → 80.5 px, \|bias\| 97.0 → 49.0).
+The rule is conservative and in this instance it is conservative in the
+wrong direction, judged against a set it is forbidden to consult. The
+margin was fixed before the figure was computed and has not been moved
+since; 0.8 SE is close enough to the bar that the alternative should be
+stated rather than buried. With two sessions, one instance decides
+nothing.
+
+### 5. What this costs the thesis
+
+The instrument carries a **systematic directional offset of roughly
+1.0–1.7°** on the out-of-sample check, which recalibration does not
+reduce, in addition to scatter. That belongs in the accuracy claim and in
+the limitations.
+
+It bears directly on the region rubric. `metrics_spec.min_aoi_px` derives
+the smallest resolvable AOI from accuracy on the assumption that error
+can move a gaze point either way across a boundary. A *systematic* 1.5°
+displacement is worse than 1.5° of isotropic noise: it moves every point
+in the same direction, so it does not average out over a fixation, over a
+clip, or over participants, and it will push gaze consistently into
+whichever region lies above the true one. The 3.0° inclusion threshold
+admits sessions whose systematic component alone is half the bar.
+
+### 6. Code
+
+* `validation_stats.py` — new. Signed bias, robust accuracy, the
+  cross-validated selection rule, and numeric inversion of any monotone
+  correction.
+* `correction_audit.py` — new. Both-ways table, the LOO diagnostic and
+  the stability test, for any manifest.
+* `app.py` — `_auto_fit_correction` selects instead of assuming;
+  `_uncorrected_error` now inverts a quadratic instead of refusing it
+  (it previously reported `raw_available: False`, which would have
+  dropped any quadratic-fitted session out of both the rule and the
+  comparison); validation records and the manifest carry the signed
+  bias and the decision.
+* `verify_metrics.py`, `show_validations.py`, `templates/review.html`,
+  `metrics_spec.py` — every place an error is reported now reports the
+  signed bias beside it and flags offset-dominated error.
+* `run_tests.py` — section [7b], 27 new checks. All six deliberate
+  mutations of the new logic are caught.
+
+**Sessions recorded before today have no `correction_decision` and no
+recorded bias.** Every tool says so explicitly rather than showing a
+blank, and `correction_audit.py` derives both from the per-target records.
+
+---
+
+## F31 · Validation accuracy is a seven-target mean with no rejection rule
+**2026-08-17 · Methods, Limitations — found while measuring F30**
+
+Manuel_P2's post-stimulus validation contains a target at (960, 540)
+measured at (1609, 479): **dx = +649 px**, on a 1920 px screen. Two
+others read dy +235 and +169. Per-target errors for that phase:
+
+    89, 68, 165, 634, 190, 98, 57 px
+
+The reported accuracy is the mean of seven such numbers, with no outlier
+rule anywhere in the pipeline. For that phase:
+
+| basis | mean | median |
+|---|---|---|
+| raw | 205.2 px = **3.52°** | 140.4 px = 2.41° |
+| corrected | 185.7 px = **3.19°** | 97.9 px = 1.68° |
+
+The inclusion threshold is 3.0°. Whether that phase passes turns on
+whether one blown target is counted. The session is admitted anyway
+because the canonical figure averages `pre_check` with `post`
+(2.12°) — which means the criterion's behaviour on a session with one
+bad target depends on a second measurement, not on a rule.
+
+**No rule is imposed here.** Both figures are now reported everywhere,
+plus the worst single target, and `verify_metrics.py` flags any phase
+where mean and median differ by more than 25 %. Which figure the
+inclusion criterion uses, and whether a per-target rejection rule exists,
+is a pre-registration decision and must be made deliberately and dated —
+not settled by whichever choice rescues a session already recorded.
+
+Three candidates, for that decision:
+
+1. **Report both, keep the mean.** Honest, changes nothing, leaves the
+   leverage in place.
+2. **Median becomes canonical.** Robust, but chosen after seeing which
+   session it rescues.
+3. **Pre-declared per-target rejection** (e.g. error > 3× the median, or
+   fewer than N samples on that target), recompute the mean, record every
+   dropped target. Keeps the mean, removes the single-point leverage.
+
+The reason a single target can be that wrong is itself unmeasured: 45
+samples were collected at it, so it is not a sampling failure. A blink, a
+glance away, or a momentary tracking loss are all consistent with the
+data available, and none is currently recorded.
+
 
 ## Open items before evaluation collection
 
