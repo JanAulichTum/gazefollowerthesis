@@ -2650,23 +2650,13 @@ def _apply_series(x_series, y_series, corr):
 
 
 def _correction_payload(corr: "dict | None") -> dict:
-    if not corr:
-        return {"active": False}
-    px, py = corr.get("px", [1, 0]), corr.get("py", [1, 0])
-    cy = corr.get("cy", 0.0)
-    gx = px[0] if len(px) == 2 else _slope(px, corr.get("cx", 0.0))
-    gy = py[0] if len(py) == 2 else _slope(py, cy)
-    return {
-        "active": True,
-        "px": [round(c, 6) for c in px],
-        "py": [round(c, 6) for c in py],
-        "cy": round(cy, 1),
-        "kind": "quadratic-vertical" if len(py) == 3 else "affine",
-        "gain_x": round(gx, 3),
-        "gain_y": round(gy, 3),
-        "gain_mean": round((gx + gy) / 2, 2),
-        "source": corr["source"],
-    }
+    """The manifest/UI form of a correction.
+
+    One implementation, in validation_stats, shared with the review page
+    and rederive_session.py. Two copies would let the manifest and the
+    recorded data describe different corrections.
+    """
+    return validation_stats.payload(corr)
 
 
 def _auto_fit_correction(state: dict, record: dict, sid: str) -> None:
@@ -3040,6 +3030,32 @@ def handle_validation_result(payload: dict):
                                       "viewing_distance_cm")}
     except Exception:  # noqa: BLE001 — never lose a validation over this
         logger.exception("Could not recompute validation degrees")
+
+    # ── THE BIAS IN DEGREES USES THE MEASURED DISTANCE TOO ───────────
+    # _uncorrected_error runs before the block above and can only use the
+    # browser's px→degree scale, which divides by window.measuredDistanceCm
+    # and in practice by a hardcoded 60 cm (F21). The authoritative scale
+    # is the one just computed from the iris. Leaving the bias on the
+    # browser's scale would have reported it 6 % low on PILOT_02 while the
+    # accuracy beside it was right — two angles on the same line, measured
+    # against two different rulers, which is precisely the class of fault
+    # this whole session set out to remove.
+    _px = record.get("mean_err_px")
+    _deg_m = record.get("mean_err_deg_measured")
+    if _px and _deg_m:
+        _dpp = _deg_m / _px
+        for _f, _src in (("bias_deg", "bias_px"),
+                         ("bias_x_deg", "bias_x_px"),
+                         ("bias_y_deg", "bias_y_px"),
+                         ("median_err_deg", "median_err_px")):
+            if record.get(_src) is not None:
+                record[_f] = round(record[_src] * _dpp, 2)
+        record["bias_deg_basis"] = "measured distance (%s)" % (
+            (record.get("distance") or {}).get("source") or "unknown")
+    elif record.get("bias_deg") is not None:
+        record["bias_deg_basis"] = ("browser assumption — no measured "
+                                    "distance at validation time")
+
     # ── WHICH CHECK IS WHICH, decided here and recorded ──────────────
     # pre_fit    grid A, uncorrected. Native accuracy AND the fit set.
     # pre_check  grid B, corrected, positions the fit never saw. The

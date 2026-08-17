@@ -946,6 +946,12 @@ number.
 ## F30 · The gain correction was overfitted, and the offset it removes does not hold still
 **2026-08-17 · Methods, Results, Limitations — supersedes the explanation in F29**
 
+> **AMENDED 2026-08-17 by F32.** Reviewing this entry's own code found
+> three silent defects in it, and the rule's statistical basis needed
+> qualifying. The finding stands; section 4's rule is unchanged; the
+> corroborating evidence for PILOT_02's rejection is stronger than the
+> "0.8 SE" figure below suggests. Read F32 with this.
+
 The participant reported it first: *"all the eye gaze was above the
 people, even though I never looked above"*, together with *"I thought the
 accuracy check was better because the green dot was very close"*. Both
@@ -1169,6 +1175,169 @@ The reason a single target can be that wrong is itself unmeasured: 45
 samples were collected at it, so it is not a sampling failure. A blink, a
 glance away, or a momentary tracking loss are all consistent with the
 data available, and none is currently recorded.
+
+
+---
+
+## F32 · Reviewing the F30 fix: three silent defects, and what the rule can actually claim
+**2026-08-17 · Methods — a review of the same day's work, before any session is recorded under it**
+
+F30 replaced a correction that was applied without evidence. Reviewing
+its code found three defects of exactly the kind it was written to
+remove: each returned a plausible number, none raised anything.
+
+### 1. Inversion past a fold returned a fabricated number
+
+`invert_poly` bisected over an interval a whole screen wider than the
+screen and chose its direction by comparing the two padded endpoints. A
+quadratic has one turning point; when that point fell inside the padded
+window — which it does for any real quadratic fit, because the pad is a
+screen height — the direction was taken from the wrong branch. A value
+produced from y = 1400 came back as **1350**. That is a number, it looks
+like a measurement, and it is not one.
+
+Off-screen gaze is not hypothetical here: one real validation target was
+measured at x = 1609 on a 1920 px screen, and gaze leaves the frame
+during viewing routinely.
+
+Fixed: `monotone_span` clips the search at the turning points, a fit that
+folds *on* the screen is refused outright, and a value the mapping never
+attains returns **NaN** rather than the edge of the bracket. `_pairs`
+drops non-finite measurements, so one unrecoverable target no longer
+contaminates a whole grid.
+
+### 2. The offset flag was defeated by the outlier it should have caught
+
+`|mean bias| / mean error` is the obvious statistic and it fails exactly
+where it is needed: an outlier inflates the denominator without moving
+the numerator. **Manuel_P2's post check is 76 px of almost pure
+displacement and scored 0.41, under the 0.5 bar, purely because one
+target sat 634 px away.** The phase most damaged by the fault was the one
+phase that escaped the flag.
+
+Fixed: the ratio is computed a second time from medians (`0.56` for that
+phase) and either exceeding the bar raises the flag. Both are recorded,
+because the two disagreeing is itself the signal that a single target is
+carrying the mean — see F31.
+
+### 3. The bias was reported in degrees against the wrong ruler
+
+The signed bias was converted to degrees with the BROWSER's pixel-to-degree
+scale, which divides by a hardcoded 60 cm (F21), while the accuracy printed
+on the same line used the server-side scale from the measured iris
+distance. On PILOT_02 that is a 6.2 % discrepancy — two angles on one
+line, measured against two different rulers, which is the fault class
+this whole exercise set out to remove. The bias now uses the measured
+distance whenever there is one, and records which ruler it used.
+
+### 4. What the rule's standard-error test can and cannot claim
+
+The declared criterion compares a candidate against no-correction using
+the standard error of the paired per-target differences. **Those seven
+differences are not independent**: consecutive leave-one-out folds share
+five of their seven training targets. There is no unbiased estimator of
+cross-validation variance, so the SE is optimistic by an unknown amount
+and the test is anti-conservative. The rule is unchanged — it was fixed
+before application and moving it now would be indefensible — but the
+claim it supports is weaker than a t-statistic implies.
+
+Two distribution-free views are now recorded beside it, as corroboration
+only:
+
+| session | improvement | SE test | bootstrap 95 % CI | targets improved | sign test |
+|---|---|---|---|---|---|
+| Manuel_P2 | +39.8 px | 3.5 SE | [+20.2, +60.4] | **7/7** | p = 0.02 |
+| PILOT_02 | +11.4 px | 0.8 SE | [−13.6, +37.2] | **4/7** | p = 1.00 |
+
+**This materially strengthens PILOT_02's rejection.** F30 called 0.8 SE a
+knife-edge and said so against itself. It is not one: the bootstrap
+interval spans zero and the correction improves four targets out of
+seven, which is a coin flip. Three statistics agree the improvement is
+not established. The knife-edge was in the statistic, not in the
+evidence.
+
+**A property of the rule worth stating, because it bounds what the
+diagnostics add.** For strictly positive paired differences at n = 7, the
+ratio mean / SE is bounded below by 1.0. A **unanimous** improvement
+therefore cannot fail the 1.0 SE bar, so the sign test adds nothing when
+it is unanimous; it earns its place only when it is not. The two criteria
+are not independent at this sample size and the entry should not be read
+as though they were.
+
+The bootstrap is seeded. A decision record whose numbers move between
+runs cannot be audited.
+
+### 5. Deciding was not applying: `rederive_session.py`
+
+F30 decided that PILOT_02's correction should not have been applied and
+left the corrected coordinates in the recorded data. A manifest that says
+one thing while its data says another is worse than having no rule.
+
+Nothing is lost by having applied a correction, because it is applied
+*downstream* of everything it touches: `corrected_gaze_position_*` is
+`poly(filtered_gaze_position_*)`, and `gaze_video_nx/ny` derives from
+whichever of those was active, against the per-stimulus `video_rect` in
+the manifest. The whole chain regenerates from columns that were never
+modified.
+
+`rederive_session.py` does that, mirroring `finalize_gazefollower_session`
+exactly — including the rounding, which `run_tests.py` asserts rather
+than trusts. It copies the workbook and the manifest before touching
+either, keeps the previous correction under `superseded_gain_correction`,
+and refuses to edit the manifest at all if the workbook is missing.
+
+Verified on PILOT_02's real CSV and manifest: **1793 rows**, and the
+result matches the coordinates that would have been recorded with no
+correction, exactly.
+
+**It marks the session's derived products STALE** — fixations, saccades,
+`data_quality`, LLM feedback, `claim_check` output, replay payloads. All
+of them are computed from the gaze it rewrites. Re-deriving without
+regenerating them would leave a session whose event metrics describe
+coordinates that no longer exist.
+
+One near-miss worth recording: the tool first read `manifest["session_id"]`
+to find its rows. Finalisation derives that id from the session CSV
+basename and **most manifests never store the key at all** — only
+reconstructed ones do. It matched zero rows and reported "no rows for
+this session", which reads like a clean result. A silent no-op on the one
+operation that must not silently no-op.
+
+### 6. What the reported accuracy becomes
+
+Applying the rule changes the headline number, in the direction a rule
+that removes an unjustified improvement should:
+
+| session | canonical accuracy as recorded | under the rule |
+|---|---|---|
+| Manuel_P2 | 2.12° | 2.12° (unchanged — affine kept) |
+| PILOT_02 | 1.65° | **1.92°** (median basis: 1.49° → 2.01°) |
+
+Both still pass the 3.0° threshold. PILOT_02's reported accuracy gets
+worse by 0.27°, and that is the honest figure: the previous one was
+partly an artefact of a correction fitted to seven points and never shown
+to generalise.
+
+### 7. Verification
+
+`run_tests.py` sections [7], [7b] and [7c] — 1011 checks passing.
+**Eighteen deliberate mutations** of the new logic were applied and every
+one was caught: leave-one-out disabled, bias reported unsigned, the bias
+condition stubbed true, the in-sample flag not suppressed, quadratic
+inversion stubbed, the SE margin removed, the monotone span ignored,
+out-of-range inversion returning the bracket edge, non-finite
+measurements averaged in, the flag falling back to the mean ratio, bias
+degrees left on the browser's ruler, the session id read from the wrong
+key, the video mapping dropping the rect offset, the dry run writing
+anyway, stale corrected columns left in place, the workbook backup
+skipped, the manifest edited without a workbook, and staleness not
+recorded.
+
+One process note, because it cost time twice: a mutation restored with
+`shutil.move` can leave a `.pyc` that Python believes is current, since
+the restored file's size and mtime can both match the mutated one. Two
+test runs reported failures that the source did not contain. Clear
+`__pycache__` between mutation runs.
 
 
 ## Open items before evaluation collection

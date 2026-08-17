@@ -128,10 +128,19 @@ def _pairs(targets: "list[dict]") -> "tuple[np.ndarray, np.ndarray]":
         if t.get("mx") is None or t.get("my") is None:
             continue
         try:
-            ms.append([float(t["mx"]), float(t["my"])])
-            ts.append([float(t["tx"]), float(t["ty"])])
+            row = [float(t["mx"]), float(t["my"])]
+            tgt = [float(t["tx"]), float(t["ty"])]
         except (TypeError, ValueError, KeyError):
             continue
+        # A non-finite measurement is a FAILED recovery, not a value.
+        # invert_poly returns NaN where a correction has no preimage;
+        # averaging that in would turn one unrecoverable target into a
+        # NaN accuracy for the whole grid, or — worse, before this guard
+        # existed — into a fabricated one.
+        if not all(math.isfinite(x) for x in row + tgt):
+            continue
+        ms.append(row)
+        ts.append(tgt)
     if not ms:
         return np.zeros((0, 2)), np.zeros((0, 2))
     return np.asarray(ms, float), np.asarray(ts, float)
@@ -197,11 +206,35 @@ def signed_bias(targets: "list[dict]", deg_per_px: "float | None" = None,
         median_bias_y_px=round(float(np.median(d[:, 1])), 1),
         max_err_px=round(float(err.max()), 1),
         bias_ratio=round(ratio, 2),
-        # The flag the brief asked for: is this error an offset or is it
-        # scatter? Meaningless on a fit set, where the answer is forced.
-        offset_dominated=bool(ratio > OFFSET_DOMINATED_RATIO
-                              and not in_sample),
     )
+    # ── The flag, computed BOTH ways ─────────────────────────────────
+    # Is this error an offset or is it scatter? The obvious statistic —
+    # |mean bias| / mean error — is defeated by a single bad target,
+    # because the outlier inflates the denominator without moving the
+    # numerator much. On the real session that motivated all of this,
+    # Manuel_P2's post check is 76 px of almost pure displacement and
+    # scored 0.41, under the 0.5 bar, purely because one target sat
+    # 634 px away. The phase most damaged was the one that escaped the
+    # flag.
+    #
+    # So the ratio is computed a second time from medians, and EITHER
+    # exceeding the bar raises it. The two disagreeing is itself worth
+    # seeing, which is why both are kept.
+    med_bias = math.hypot(out["median_bias_x_px"], out["median_bias_y_px"])
+    med_err = out["median_err_px"]
+    ratio_med = (med_bias / med_err) if med_err > 0 else 0.0
+    out["bias_ratio_median"] = round(ratio_med, 2)
+    out["offset_dominated"] = bool(
+        max(ratio, ratio_med) > OFFSET_DOMINATED_RATIO and not in_sample)
+    # Meaningless on a fit set, where least squares forces the answer.
+    out["offset_dominated_basis"] = (
+        "n/a (fit set)" if in_sample else
+        "mean and median" if (ratio > OFFSET_DOMINATED_RATIO
+                              and ratio_med > OFFSET_DOMINATED_RATIO) else
+        "median only — one target inflates the mean error"
+        if ratio_med > OFFSET_DOMINATED_RATIO else
+        "mean only — the offset is carried by a minority of targets"
+        if ratio > OFFSET_DOMINATED_RATIO else "not dominated")
     if deg_per_px:
         out["bias_deg"] = round(bias * deg_per_px, 2)
         out["bias_x_deg"] = round(bx * deg_per_px, 2)
@@ -308,6 +341,40 @@ def apply_point(x: float, y: float, corr: "dict | None") -> "tuple":
             float(np.polyval(py, y)) if py else y)
 
 
+def apply_axis(values, coeffs: "list | None"):
+    """Apply one axis of a correction to an array of measurements."""
+    v = np.asarray(values, float)
+    return np.polyval(coeffs, v) if coeffs else v
+
+
+def payload(corr: "dict | None") -> dict:
+    """The manifest/UI form of a correction.
+
+    One implementation, shared by the server, the review page and the
+    re-derivation tool. Two copies of this would let the manifest and the
+    recorded data describe different corrections, which is the failure
+    the whole exercise exists to prevent.
+    """
+    if not corr:
+        return {"active": False}
+    px, py = corr.get("px", [1, 0]), corr.get("py", [1, 0])
+    cy = corr.get("cy", 0.0)
+    gx = px[0] if len(px) == 2 else local_gain(px, corr.get("cx", 0.0))
+    gy = py[0] if len(py) == 2 else local_gain(py, cy)
+    return {
+        "active": True,
+        "px": [round(c, 6) for c in px],
+        "py": [round(c, 6) for c in py],
+        "cy": round(cy, 1),
+        "kind": corr.get("kind") or ("quadratic-vertical" if len(py) == 3
+                                     else "affine"),
+        "gain_x": round(gx, 3),
+        "gain_y": round(gy, 3),
+        "gain_mean": round((gx + gy) / 2, 2),
+        "source": corr.get("source", "unknown"),
+    }
+
+
 def _predict(m: np.ndarray, corr: "dict | None") -> np.ndarray:
     if not corr:
         return m.copy()
@@ -375,6 +442,44 @@ def _loo_summary(m, t, candidate, width, height) -> "dict | None":
             "_per_target": dist}
 
 
+def _diagnostics(diff: np.ndarray, n_boot: int = 20000,
+                 seed: int = 20260817) -> dict:
+    """Distribution-free views of a paired per-target improvement.
+
+    Recorded beside the standard-error test, never in place of it. Seeded
+    so a manifest is reproducible: a decision record whose numbers move
+    between runs cannot be audited.
+    """
+    n = len(diff)
+    if n < 2:
+        return {}
+    rng = np.random.default_rng(seed)
+    means = rng.choice(diff, size=(n_boot, n), replace=True).mean(axis=1)
+    lo, hi = np.percentile(means, [2.5, 97.5])
+    improved = int((diff > 0).sum())
+    # Two-sided exact binomial against p = 0.5, on the targets that moved.
+    moved = int((diff != 0).sum())
+    k = improved
+    if moved:
+        tail = sum(math.comb(moved, i)
+                   for i in range(min(k, moved - k), -1, -1)) \
+            + sum(math.comb(moved, i)
+                  for i in range(max(k, moved - k), moved + 1))
+        p = min(1.0, tail / (2 ** moved))
+    else:
+        p = 1.0
+    return {
+        "loo_bootstrap_ci_px": [round(float(lo), 1), round(float(hi), 1)],
+        "loo_bootstrap_excludes_zero": bool(lo > 0 or hi < 0),
+        "loo_targets_improved": "%d/%d" % (improved, n),
+        "loo_sign_test_p": round(float(p), 3),
+        "diagnostics_note": ("corroborating only — the rule is the "
+                             "standard-error test; these exist because "
+                             "leave-one-out folds are not independent and "
+                             "the SE is optimistic by an unknown amount"),
+    }
+
+
 def select_correction(targets: "list[dict]", width: float,
                       height: float) -> dict:
     """Choose a correction by leave-one-out cross-validation on grid A.
@@ -431,6 +536,23 @@ def select_correction(targets: "list[dict]", width: float,
             else bool(diff.mean() > 0)
         s["beats_baseline_bias"] = bias_not_worsened(
             s["loo_bias_px"], base["loo_bias_px"], s["loo_bias_se_px"])
+        # ── Corroborating diagnostics. NOT criteria. ─────────────────
+        # The standard error above treats the seven leave-one-out errors
+        # as independent, and they are not: consecutive folds share five
+        # of their seven training targets. There is no unbiased estimator
+        # of cross-validation variance, so the SE is optimistic and the
+        # test is anti-conservative by an unknown amount.
+        #
+        # Two distribution-free views are therefore recorded alongside
+        # it: a percentile bootstrap over the paired differences, and a
+        # sign test counting how many of the seven targets the candidate
+        # actually improves. Neither decides anything — the rule is the
+        # rule as declared — but a reader can see whether all three
+        # agree. On the two sessions measured they do, and they disagree
+        # about how close the call was: PILOT_02's affine fit reads a
+        # marginal 0.8 SE, yet its bootstrap interval spans zero and it
+        # improves 4 targets out of 7, which is a coin flip.
+        s.update(_diagnostics(diff))
         rows.append(s)
 
     # Walk the candidates from simplest to most flexible. A more complex
@@ -489,20 +611,58 @@ def select_correction(targets: "list[dict]", width: float,
 #  Recovering the raw measurement, for any correction form
 # ══════════════════════════════════════════════════════════════════════
 
+def monotone_span(coeffs: list, lo: float, hi: float) -> "tuple":
+    """The largest interval around [lo, hi] on which the map is monotone.
+
+    A quadratic's derivative is linear, so it has at most one turning
+    point; beyond it the mapping folds and is not invertible at all. The
+    first version of ``invert_poly`` bisected over ``[lo - pad, hi + pad]``
+    and decided the direction by comparing the two padded endpoints. When
+    the turning point sat inside that padded window — which it does for
+    any real quadratic fit, since the pad is a whole screen height — the
+    direction was decided by the wrong branch and the function returned a
+    plausible, silently wrong number: a value produced from y = 1400 came
+    back as 1350.
+
+    Returns ``(lo_bound, hi_bound)`` clipped at the turning points.
+    """
+    c = np.asarray(coeffs, float)
+    pad = (hi - lo) if hi > lo else 1000.0
+    lo_b, hi_b = lo - pad, hi + pad
+    if len(c) < 3:
+        return lo_b, hi_b
+    deriv = np.polyder(c)
+    roots = np.roots(deriv) if len(deriv) > 1 else np.array([])
+    for r in np.real(roots[np.isreal(roots)]):
+        if lo <= r <= hi:
+            # A turning point INSIDE the screen means the mapping is not
+            # monotone where it is used. gain_is_sane refuses such a fit,
+            # so this is a corrupt or hand-edited correction.
+            return float("nan"), float("nan")
+        if r < lo:
+            lo_b = max(lo_b, float(r))
+        else:
+            hi_b = min(hi_b, float(r))
+    return lo_b, hi_b
+
+
 def invert_poly(values, coeffs: "list | None", lo: float, hi: float):
     """Invert a monotone polynomial mapping numerically.
 
     ``_uncorrected_error`` inverted AFFINE corrections only and reported
     a quadratic-vertical fit as "not recoverable". That gap is load
-    bearing: the apply-if-it-helps rule and the corrected-vs-uncorrected
+    bearing: the selection rule and the corrected-vs-uncorrected
     comparison both need the raw figure for EVERY session, and a session
     that happened to get a quadratic fit would silently drop out of both.
 
     Affine is inverted in closed form. Higher degrees are inverted by
-    bisection on the screen extent, which is valid because a correction
-    is only ever accepted when its local gain is positive and bounded
-    across that extent (``gain_is_sane``), so the mapping is monotone
-    there.
+    bisection, restricted to the monotone span (see ``monotone_span``).
+
+    A value the mapping never attains on that span — off-screen gaze past
+    a turning point, or a corrupt correction — returns **NaN**. It used
+    to return the edge of the search bracket, which is a number, looks
+    like a measurement, and is not one. Callers drop non-finite
+    measurements rather than averaging them.
     """
     v = np.asarray(values, float)
     if not coeffs:
@@ -512,17 +672,25 @@ def invert_poly(values, coeffs: "list | None", lo: float, hi: float):
         if a == 0:
             return np.full_like(v, np.nan)
         return (v - b) / a
-    pad = (hi - lo) if hi > lo else 1000.0
-    lo_b = np.full_like(v, lo - pad)
-    hi_b = np.full_like(v, hi + pad)
-    increasing = np.polyval(coeffs, hi + pad) > np.polyval(coeffs, lo - pad)
-    for _ in range(60):
+    lo_b0, hi_b0 = monotone_span(coeffs, lo, hi)
+    if not (np.isfinite(lo_b0) and np.isfinite(hi_b0)):
+        return np.full_like(v, np.nan)
+    f_lo = float(np.polyval(coeffs, lo_b0))
+    f_hi = float(np.polyval(coeffs, hi_b0))
+    increasing = f_hi > f_lo
+    reach_lo, reach_hi = (f_lo, f_hi) if increasing else (f_hi, f_lo)
+    lo_b = np.full_like(v, lo_b0)
+    hi_b = np.full_like(v, hi_b0)
+    for _ in range(80):
         mid = 0.5 * (lo_b + hi_b)
         f = np.polyval(coeffs, mid)
         go_up = (f < v) if increasing else (f > v)
         lo_b = np.where(go_up, mid, lo_b)
         hi_b = np.where(go_up, hi_b, mid)
-    return 0.5 * (lo_b + hi_b)
+    out = 0.5 * (lo_b + hi_b)
+    # Outside the attainable range there is no preimage. Say so.
+    return np.where((v < reach_lo - 1e-9) | (v > reach_hi + 1e-9),
+                    np.nan, out)
 
 
 def raw_targets(targets: "list[dict]", corr: "dict | None",
