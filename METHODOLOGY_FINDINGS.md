@@ -864,6 +864,63 @@ re-coded blind after an interval for intra-coder consistency.
 ~2200 judgments are not 2200 independent observations. Resample
 PARTICIPANTS for every interval; the effective sample size is N.
 
+## F29 · Gaze during the stimulus is biased UPWARD, and the validation cannot see it
+**2026-08-17 · Results, Limitations — the study's most consequential finding so far**
+
+Reported by the participant first: "all the eye gaze was above the
+people, even though I never looked above", together with "I thought the
+accuracy check was better because the green dot was very close". Both
+observations are correct, and together they identify the problem.
+
+Splitting each session's gaze CSV by the stimulus triggers:
+
+| | validation median | stimulus median | shift | in degrees |
+|---|---|---|---|---|
+| Julianne P1 | 553 px | 342 px | −211 px | **−3.64°** |
+| Manuel P2 | 629 px | 465 px | −164 px | **−2.83°** |
+| PILOT_02 | 503 px | 348 px | −154 px | **−2.66°** |
+
+All three shift the same way, by roughly the same amount. **The bias
+during viewing is as large as, or larger than, the validation accuracy
+those same sessions report** (1.65–2.82°).
+
+The tracker is not broken and the calibration does not drift: the
+validations bracketing the stimuli both span the full screen (p10–p90 of
+730–900 px) and centre near 500–630 px. Horizontal position is
+unaffected — the stimulus-period median x is 961 px on a 1920 px screen.
+The bias is vertical, appears only while the video plays, and disappears
+again afterwards.
+
+**Why the two-grid protocol cannot detect it.** Validation measures
+accuracy against dots on a dark screen; the stimulus is a bright,
+full-frame classroom video. Different luminance, different eye image,
+and an appearance-based estimator cannot distinguish "the eye looks
+different because of the light" from "the eye looks different because it
+moved". The protocol was built to make accuracy honest about
+generalisation across TARGET POSITIONS; it says nothing about
+generalisation across VIEWING CONDITIONS, and the second gap is the
+larger one.
+
+**Consequence for the inclusion figure.** The reported accuracy
+describes the validation task, not the recording. A session admitted at
+1.65° may carry a systematic 2.7° vertical offset through both clips.
+Every downstream spatial claim — region assignment, correspondence with
+the model's boxes, the ambiguity rate — inherits it.
+
+**Caveat, stated because it weakens the compression half of the
+result.** The gaze range also narrows during viewing (span ~330 px vs
+~750 px). That is partly expected and not evidence of anything: the
+validation *instructs* fixation at 12 % and 88 % of screen height, while
+video content sits centrally. The SHIFT is the robust finding; the
+compression is confounded with the task.
+
+**The test that would measure it directly:** overlay validation targets
+on a playing clip, or on a still frame from one, so that luminance and
+content match the stimulus condition, and compare against the same
+participant's dark-screen validation. That is a measurement nobody in
+this literature appears to make, and it converts a limitation into a
+number.
+
 ---
 
 ## Open items before evaluation collection
