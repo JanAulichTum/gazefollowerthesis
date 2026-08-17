@@ -248,12 +248,30 @@ def render(a: dict) -> None:
               % (sel.get("rule_fixed_on"), sel["chosen"].upper()))
         print("    %s" % sel.get("reason", ""))
         for c in sel.get("candidates", []):
+            if c.get("loo_mean_err_px") is None:
+                print("      %-20s %s" % (c["candidate"],
+                                          c.get("status", "not evaluated")))
+                continue
             print("      %-20s LOO mean %7.1f px  median %7.1f px  "
                   "|bias| %6.1f px  %s"
                   % (c["candidate"], c["loo_mean_err_px"],
                      c["loo_median_err_px"], c["loo_bias_px"],
                      ("beats none by %.1f SE" % c["improvement_se_units"])
                      if c.get("improvement_se_units") is not None else ""))
+            # The standard error above treats seven leave-one-out folds
+            # as independent and they share five of seven training
+            # targets each, so it is optimistic by an unknown amount.
+            # These two are distribution-free and corroborate — or fail
+            # to corroborate — the figure the rule actually used.
+            if c.get("loo_bootstrap_ci_px"):
+                lo, hi = c["loo_bootstrap_ci_px"]
+                print("      %-20s   bootstrap 95%% CI [%+.1f, %+.1f] px "
+                      "(%s zero) · improved %s targets, sign test p = %.3f"
+                      % ("", lo, hi,
+                         "excludes" if c.get("loo_bootstrap_excludes_zero")
+                         else "SPANS",
+                         c.get("loo_targets_improved"),
+                         c.get("loo_sign_test_p")))
         if a.get("rule_changes_this_session"):
             print("    *** This DIFFERS from what was applied. The session "
                   "must be re-derived. ***")
