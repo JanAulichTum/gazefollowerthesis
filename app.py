@@ -87,6 +87,7 @@ from config import (
     VIEWING_DISTANCE_CM,
     discover_stimuli,
 )
+import validation_stats
 from excel_style import style_workbook
 from gaze_service import GazeService
 
@@ -1114,6 +1115,19 @@ def api_session_quality():
                     "distance": v.get("distance"),
                     "mean_err_deg_measured": v.get("mean_err_deg_measured"),
                     "sampled_at_hz": v.get("sampled_at_hz"),
+                    # THE SIGNED BIAS and the robust figure beside it.
+                    # The accuracy above is a mean unsigned distance and
+                    # reads identically for 60 px of scatter and 60 px of
+                    # uniform displacement; only these separate them (F30).
+                    "bias_x_px": v.get("bias_x_px"),
+                    "bias_y_px": v.get("bias_y_px"),
+                    "bias_px": v.get("bias_px"),
+                    "bias_deg": v.get("bias_deg"),
+                    "bias_ratio": v.get("bias_ratio"),
+                    "bias_direction": v.get("bias_direction"),
+                    "offset_dominated": v.get("offset_dominated"),
+                    "median_err_px": v.get("median_err_px"),
+                    "max_err_px": v.get("max_err_px"),
                 })
             out["validations"] = vals
             # The distance that was actually in force. Reported at the
@@ -1160,6 +1174,7 @@ def api_session_quality():
                 out["drift_comparable"] = bool(
                     a.get("n_targets") and a["n_targets"] == b.get("n_targets"))
             out["gain_correction"] = manifest.get("gain_correction")
+            out["correction_decision"] = manifest.get("correction_decision")
             out["rate_gate"] = manifest.get("rate_gate")
             out["quality_thresholds"] = manifest.get("quality_thresholds")
             out["data_quality"] = (
@@ -2387,6 +2402,13 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
         # Post-hoc gain correction applied to the corrected_* columns
         # and the video-normalized coordinates (raw columns untouched)
         "gain_correction": _correction_payload(state.get("correction")),
+        # WHY that correction — or no correction. The cross-validated
+        # comparison of {none, affine, quadratic-vertical} on the fit
+        # grid, the criterion, the date the criterion was fixed, and the
+        # rule it replaced. A session where the correction was fitted and
+        # then REJECTED is indistinguishable from one where it was never
+        # fitted unless this is written down (F30).
+        "correction_decision": state.get("correction_decision"),
         # Head-position snapshot from the pre-calibration guide. OPTIONAL
         # — the guide is a convenience for seating the participant, and
         # in most sessions nobody opens it, so this is usually null.
@@ -2589,46 +2611,20 @@ def _fit_poly(pairs: "list[tuple[float, float]]",
               degree: int) -> "list | None":
     """Least-squares fit target = poly(measured); coeffs highest-first.
 
-    Uses numpy's Polynomial.fit, which fits in a scaled/shifted domain
-    and is therefore well-conditioned even for raw pixel inputs in the
-    hundreds — a plain polyfit at degree 2 on such values is
-    numerically unstable and silently collapses the quadratic term.
+    One implementation, in ``validation_stats``: the fit and the rule
+    that decides whether to USE the fit have to agree about what a fit
+    is, and two copies of a polynomial fitter in two files is how they
+    stop agreeing.
     """
-    import numpy as np
-
-    if len(pairs) < degree + 1:
+    if not pairs:
         return None
-    xs = [p[0] for p in pairs]
-    ts = [p[1] for p in pairs]
-    if len({round(x, 1) for x in xs}) < degree + 1:
-        return None          # not enough distinct measured levels
-    try:
-        fitted = np.polynomial.Polynomial.fit(xs, ts, degree)
-        # .convert() → standard basis, ascending order; reverse to the
-        # highest-first convention used by np.polyval throughout.
-        coeffs = list(fitted.convert().coef)[::-1]
-        # Pad in case a leading coeff collapsed to ~0 (degree preserved).
-        while len(coeffs) < degree + 1:
-            coeffs.insert(0, 0.0)
-        return [float(c) for c in coeffs]
-    except Exception:
-        return None
-
-
-def _rms_resid(pairs: "list[tuple[float, float]]", coeffs: list) -> float:
-    import numpy as np
-
-    return float(np.sqrt(np.mean(
-        [(np.polyval(coeffs, m) - t) ** 2 for m, t in pairs])))
+    return validation_stats.fit_poly([p[0] for p in pairs],
+                                     [p[1] for p in pairs], degree)
 
 
 def _slope(coeffs: list, at: float) -> float:
     """Local gain (derivative) of the mapping at coordinate *at*."""
-    import numpy as np
-
-    if len(coeffs) < 2:
-        return 0.0
-    return float(np.polyval(np.polyder(coeffs), at))
+    return validation_stats.local_gain(coeffs, at)
 
 
 def _apply_point(x: float, y: float, corr: "dict | None") -> "tuple":
@@ -2674,72 +2670,66 @@ def _correction_payload(corr: "dict | None") -> dict:
 
 
 def _auto_fit_correction(state: dict, record: dict, sid: str) -> None:
-    """Fit measured→true from a completed pre-validation.
+    """Fit measured→true from a completed pre-validation, and decide
+    whether the fit is worth applying AT ALL.
 
-    Recovers the RAW measured gaze (inverting any affine correction that
-    was active during the check), then fits target = poly(raw): degree 1
-    for x, and degree 2 for y when it materially beats a line and stays
-    monotonic across the screen (the up-gaze overshoot fix). Fitting on
-    recovered raw avoids composing corrections, so repeated checks can
-    only improve — never double-apply.
+    Recovers the RAW measured gaze (inverting any correction that was
+    active during the check), then hands the raw target pairs to
+    ``validation_stats.select_correction``, which chooses between
+    {none, affine, quadratic-vertical} by leave-one-out cross-validation
+    ON THE FIT GRID.
+
+    WHAT CHANGED, AND WHY (2026-08-17, F30). The previous rule fitted on
+    grid A and applied the result unconditionally, with no check that it
+    generalised. Measured on the two sessions carrying per-target
+    records, it removed 42-61 % of the error at the seven points it was
+    fitted to and 1-6 % at the seven points it was not: two free
+    parameters per axis on seven targets, fitting session-moment noise.
+    Leave-one-out on grid A alone exposes that (96.5 -> 56.8 px LOO
+    against 37.4 px refit) without touching grid B, which is why the
+    selection happens here and not on ``pre_check`` — spending grid B on
+    the decision would destroy the one out-of-sample accuracy figure the
+    two-grid protocol exists to produce.
+
+    Fitting on recovered raw avoids composing corrections, so repeated
+    checks can only improve — never double-apply.
     """
     active = record.get("correction_active") or {}
-    px0, py0 = active.get("px"), active.get("py")
-    affine_active = bool(active.get("active")) and \
-        (px0 and len(px0) == 2 and py0 and len(py0) == 2)
-    if active.get("active") and not affine_active:
-        logger.info("Gain auto-fit skipped (active correction is not "
-                    "affine-invertible — keeping current)")
+    corr_active = {"px": active.get("px"), "py": active.get("py")} \
+        if active.get("active") else None
+    width = float((record.get("screen") or {}).get("width_px") or 0) or 1920.0
+    height = float((record.get("screen") or {}).get("height_px") or 0) or 1080.0
+
+    raw = validation_stats.raw_targets(record.get("targets", []),
+                                       corr_active, width, height)
+    result = validation_stats.select_correction(raw, width, height)
+    decision = result["decision"]
+    # The decision is stored on the session so it reaches the manifest.
+    # "Why was this session corrected, or not?" must be answerable from
+    # the data afterwards, not from someone's memory of the run.
+    state["correction_decision"] = decision
+    corr = result["correction"]
+
+    if corr is None:
+        state["correction"] = None
+        state["auto_correction"] = None
+        logger.warning(
+            "Gain correction NOT applied: %s. Candidates: %s",
+            decision.get("reason"),
+            ", ".join("%s %s" % (c["candidate"],
+                                 ("LOO %.1f px" % c["loo_mean_err_px"])
+                                 if c.get("loo_mean_err_px") is not None
+                                 else c.get("status", "?"))
+                      for c in decision.get("candidates", [])))
+        socketio.emit("gain_correction", _correction_payload(None), to=sid)
         return
 
-    def _raw(m: float, coeffs) -> float:
-        return (m - coeffs[1]) / coeffs[0] if affine_active else m
-
-    pairs_x, pairs_y = [], []
-    for t in record.get("targets", []):
-        if t.get("mx") is None or t.get("my") is None:
-            continue
-        pairs_x.append((_raw(float(t["mx"]), px0), float(t["tx"])))
-        pairs_y.append((_raw(float(t["my"]), py0), float(t["ty"])))
-
-    fit_x = _fit_poly(pairs_x, 1)
-    lin_y = _fit_poly(pairs_y, 1)
-    if not fit_x or not lin_y:
-        logger.info("Gain auto-fit skipped (too few / degenerate targets)")
-        return
-    if not (_GAIN_MIN <= fit_x[0] <= _GAIN_MAX):
-        logger.info("Gain auto-fit skipped (implausible horizontal gain)")
-        return
-
-    # Try a quadratic vertical fit; accept only if it clearly beats the
-    # line AND the mapping stays monotonic with a sane local gain across
-    # the whole screen height (no fold-over, no runaway magnification).
-    chosen_y, kind = lin_y, "affine"
-    quad_y = _fit_poly(pairs_y, 2)
-    height = float((record.get("screen") or {}).get("height_px") or 0)
-    if quad_y and height > 0:
-        ok = True
-        for yy in (0.0, height * 0.5, height):
-            g = _slope(quad_y, yy)
-            if not (_GAIN_MIN <= g <= _GAIN_MAX):   # monotone & sane
-                ok = False
-                break
-        if ok and _rms_resid(pairs_y, quad_y) < 0.8 * _rms_resid(pairs_y,
-                                                                 lin_y):
-            chosen_y, kind = quad_y, "quadratic-vertical"
-
-    corr = {
-        "px": fit_x,
-        "py": chosen_y,
-        "cx": (fit_x and (record.get("screen") or {}).get("width_px", 0)
-               / 2) or 0.0,
-        "cy": height / 2 if height else 0.0,
-        "source": "auto-fit (%s)" % kind,
-    }
     state["correction"] = corr
     state["auto_correction"] = dict(corr)     # restorable via "Auto"
-    logger.info("Gain correction auto-fitted (%s): gain_x %.2f, gain_y "
-                "(centre) %.2f", kind, fit_x[0], _slope(chosen_y, corr["cy"]))
+    logger.info("Gain correction applied (%s): gain_x %.2f, gain_y "
+                "(centre) %.2f — %s", decision["chosen"], corr["px"][0],
+                _slope(corr["py"], corr.get("cy", 0.0)),
+                decision.get("reason"))
     socketio.emit("gain_correction", _correction_payload(corr), to=sid)
 
 
@@ -2853,37 +2843,62 @@ def _uncorrected_error(payload: dict, corr: "dict | None") -> "dict":
     comparison is also in-sample on one side. Storing a raw figure for
     every phase makes drift a like-for-like, out-of-sample comparison.
 
-    Only affine corrections are analytically invertible here; a quadratic
-    vertical fit is reported as not invertible rather than approximated.
-    """
-    import numpy as np
+    EVERY correction form is inverted, not just the affine one. The
+    previous version refused a quadratic-vertical fit and reported
+    ``raw_available: False``. That gap was load bearing: the selection
+    rule and the corrected-vs-uncorrected comparison both need a raw
+    figure for every session, and a session that happened to receive a
+    quadratic fit would have dropped silently out of both. A correction
+    is only ever accepted when its local gain is positive and bounded
+    across the screen, so the mapping is monotone there and
+    ``validation_stats.invert_poly`` inverts it by bisection.
 
+    The SIGNED bias is returned alongside, on both bases. A mean unsigned
+    distance cannot distinguish 60 px of scatter from 60 px of uniform
+    upward displacement, and it was the second that this study had.
+    """
     out: dict[str, Any] = {"raw_available": False}
+    targets = payload.get("targets") or []
+    err_px, err_deg = payload.get("mean_err_px"), payload.get("mean_err_deg")
+    deg_per_px = (err_deg / err_px) if (err_px and err_deg) else None
+    scr = payload.get("screen") or {}
+    width = float(scr.get("width_px") or 1920)
+    height = float(scr.get("height_px") or 1080)
+
     if not corr:
         # Nothing was applied — the measured error IS the raw error.
         out.update(raw_available=True,
-                   mean_err_px_raw=payload.get("mean_err_px"),
-                   mean_err_deg_raw=payload.get("mean_err_deg"))
-        return out
-    px, py = corr.get("px"), corr.get("py")
-    if not (px and len(px) == 2 and py and len(py) == 2 and px[0] and py[0]):
-        return out                      # quadratic / degenerate → skip
-    errs = []
-    for t in payload.get("targets", []):
-        if t.get("mx") is None or t.get("my") is None:
+                   mean_err_px_raw=err_px,
+                   mean_err_deg_raw=err_deg)
+        raw_stats = validation_stats.signed_bias(targets, deg_per_px)
+    else:
+        px, py = corr.get("px"), corr.get("py")
+        if not (px and py):
+            return out
+        raw = validation_stats.raw_targets(targets, corr, width, height)
+        raw_stats = validation_stats.signed_bias(raw, deg_per_px)
+        if not raw_stats.get("bias_available"):
+            return out
+        out.update(raw_available=True,
+                   mean_err_px_raw=raw_stats["mean_err_px"])
+        if deg_per_px:
+            out["mean_err_deg_raw"] = round(
+                raw_stats["mean_err_px"] * deg_per_px, 2)
+
+    # ── The signed bias, on both bases ───────────────────────────────
+    # AS MEASURED (whatever correction was live at the time) and RAW.
+    # Named apart so a reader never has to work out which basis a bias
+    # figure is on — the whole class of bug here was a quantity whose
+    # basis was implicit.
+    measured = validation_stats.signed_bias(targets, deg_per_px)
+    for key, src in (("", measured), ("_raw", raw_stats)):
+        if not src.get("bias_available"):
             continue
-        rx = (float(t["mx"]) - px[1]) / px[0]
-        ry = (float(t["my"]) - py[1]) / py[0]
-        errs.append(float(np.hypot(rx - float(t["tx"]), ry - float(t["ty"]))))
-    if not errs:
-        return out
-    mean_px = float(np.mean(errs))
-    # Reuse the browser's px→degree scale (it knows the screen geometry).
-    err_px, err_deg = payload.get("mean_err_px"), payload.get("mean_err_deg")
-    deg_per_px = (err_deg / err_px) if (err_px and err_deg) else None
-    out.update(raw_available=True, mean_err_px_raw=round(mean_px, 1))
-    if deg_per_px:
-        out["mean_err_deg_raw"] = round(mean_px * deg_per_px, 2)
+        for field in ("bias_x_px", "bias_y_px", "bias_px", "bias_deg",
+                      "bias_ratio", "offset_dominated", "bias_direction",
+                      "median_err_px", "median_err_deg", "max_err_px"):
+            if field in src:
+                out[field + key] = src[field]
     return out
 
 
@@ -3085,10 +3100,30 @@ def handle_validation_result(payload: dict):
         geom.get("fullscreen"), geom.get("inner"), geom.get("offsets"),
         geom.get("device_pixel_ratio"), sid,
     )
+    # ── IS THIS ERROR AN OFFSET OR IS IT SCATTER? ────────────────────
+    # The distinction the mean unsigned distance cannot make, and the
+    # one that decides whether the recording is usable for spatial
+    # claims. Scatter averages out of any aggregate; a systematic
+    # displacement does not — every gaze point is moved the same way, so
+    # region assignment, correspondence with the model's boxes and the
+    # ambiguity rate all inherit it. A participant reported this before
+    # any metric did, because no reported quantity was signed (F30).
+    if record.get("offset_dominated"):
+        logger.warning(
+            "VALIDATION IS OFFSET-DOMINATED (%s): %.0f %% of the %.1f px "
+            "mean error is a fixed displacement — %s. Scatter averages "
+            "out of an aggregate; this does not. Every spatial claim from "
+            "this recording carries it.",
+            record["phase"], 100 * (record.get("bias_ratio") or 0),
+            record.get("mean_err_px") or -1,
+            record.get("bias_direction"))
     _telemetry_event(sid, "validation",
                      phase=record["phase"],
                      mean_err_px=record.get("mean_err_px"),
                      mean_err_deg=record.get("mean_err_deg"),
+                     bias_x_px=record.get("bias_x_px"),
+                     bias_y_px=record.get("bias_y_px"),
+                     offset_dominated=record.get("offset_dominated"),
                      targets=len(record["targets"]),
                      min_samples_per_target=min(counts) if counts else None,
                      fullscreen=geom.get("fullscreen"))
