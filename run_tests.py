@@ -577,6 +577,58 @@ try:
     check("app.py rescales the bias with the MEASURED distance",
           "bias_deg_basis" in _appsrc
           and '_deg_m = record.get("mean_err_deg_measured")' in _appsrc)
+    # ...and the INCLUSION figure is still computed on the browser's
+    # ruler, which differs from the measured one by -22 % to +15 % across
+    # the recorded sessions. The two have not yet disagreed about the
+    # 3.0 deg threshold; one will. Changing which ruler the criterion
+    # uses is a pre-registration decision, so verify_metrics must SAY so
+    # rather than silently switch (F34).
+    _vm = read("verify_metrics.py")
+    check("verify_metrics reports both rulers for the inclusion figure",
+          "accuracy_ruler" in _vm and "mean_err_deg_measured" in _vm)
+    check("...and flags loudly when they disagree about the threshold",
+          "THE TWO RULERS DISAGREE ABOUT THE THRESHOLD" in _vm)
+    check("...and does not switch the figure on its own authority",
+          "pre-registration decision" in _vm)
+    # AND IT MUST ACTUALLY RUN. The three checks above are source-text
+    # assertions, and every one of them passed while check_session raised
+    # NameError on the ruler block's first line — it referenced INCLUSION
+    # instead of SPEC.INCLUSION and took the whole report down with it. A
+    # source-text check cannot see that. Execute the function.
+    import verify_metrics as _vmod
+
+    _tg7 = [{"tx": 100.0 + 200 * i, "ty": 100.0 + 100 * i,
+             "mx": 140.0 + 200 * i, "my": 60.0 + 100 * i} for i in range(7)]
+    _mani = {"gain_correction": {"active": False},
+             "correction_decision": {"chosen": "none", "reason": "t",
+                                     "rule_fixed_on": "2026-08-17"},
+             "validations": [
+                 {"phase": "pre_fit", "grid": "A", "mean_err_px": 100.0,
+                  "mean_err_deg": 1.72, "mean_err_deg_measured": 1.90,
+                  "targets": _tg7},
+                 {"phase": "pre_check", "grid": "B", "mean_err_px": 110.0,
+                  "mean_err_deg": 1.89, "mean_err_deg_measured": 2.30,
+                  "median_err_px": 105.0, "bias_px": 90.0,
+                  "bias_x_px": 60.0, "bias_y_px": -67.0,
+                  "bias_ratio": 0.82, "bias_direction": "above",
+                  "offset_dominated": True, "targets": _tg7},
+                 {"phase": "post", "grid": "B", "mean_err_px": 120.0,
+                  "mean_err_deg": 2.06, "mean_err_deg_measured": 2.50,
+                  "median_err_px": 118.0, "bias_px": 30.0,
+                  "bias_x_px": 20.0, "bias_y_px": -22.0,
+                  "bias_ratio": 0.25, "bias_direction": "above",
+                  "offset_dominated": False, "targets": _tg7}]}
+    _res = _vmod.Result()
+    _vmod.check_session(_mani, _res)
+    check("verify_metrics.check_session RUNS without raising", True)
+    check("...and emits the ruler comparison when it runs",
+          any("accuracy_ruler" in str(r[1]) for r in _res.rows),
+          "emitted %d rows" % len(_res.rows))
+    # The two rulers here differ by 22 %, which must be graded, not
+    # passed over in silence.
+    _rr = next(r for r in _res.rows if "accuracy_ruler" in str(r[1]))
+    check("...and grades a >5 % gap between the rulers as degenerate",
+          _rr[2] == "DEGENERATE", "%s — %s" % (_rr[2], _rr[3]))
 
     # (n) THE DIAGNOSTICS MUST NOT BECOME THE RULE. Leave-one-out folds
     #     share five of seven training targets, so the standard error is
@@ -754,6 +806,16 @@ try:
           == _sp["m_yx_ci"])
     check("a real shear's interval excludes zero",
           _sp["m_yx_excludes_zero"] is True, "CI %s" % _sp["m_yx_ci"])
+    # Coverage is MEASURED, not assumed. At n=7 a percentile interval
+    # nominally at 95 % contained the truth 91.2 % of the time in
+    # simulation (true m_yx 0.15, 40 px noise, 400 replicates), so
+    # "excludes zero" is optimistic and the number saying by how much has
+    # to travel with the interval (F34).
+    check("the interval carries its MEASURED coverage, not the nominal one",
+          _sp.get("ci_measured_coverage") == 0.91
+          and _sp.get("ci_nominal_coverage") == 0.95,
+          "nominal %s, measured %s" % (_sp.get("ci_nominal_coverage"),
+                                       _sp.get("ci_measured_coverage")))
 
     # (g) It has to reach the record and the reports, not just exist.
     check("app.py stores the spatial terms on every validation",

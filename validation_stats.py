@@ -344,6 +344,15 @@ def spatial_terms(targets: "list[dict]", width: float = 1920.0,
         dy_across_screen_px=round(myx * width, 0),
         m_yx_ci=[round(float(lo), 3), round(float(hi), 3)],
         m_yx_excludes_zero=bool(np.isfinite(lo) and (lo > 0 or hi < 0)),
+        # MEASURED coverage, not nominal. A percentile bootstrap on seven
+        # points under-covers: simulated at a true m_yx of 0.15 with
+        # 40 px of noise over 400 replicates, the nominal 95 % interval
+        # contained the truth 91 % of the time. "Excludes zero" is
+        # therefore slightly optimistic, and an interval whose near end
+        # sits close to zero should be read as suggestive rather than
+        # established.
+        ci_nominal_coverage=0.95,
+        ci_measured_coverage=0.91,
         shear_large=bool(abs(shear) > SHEAR_LARGE),
         antisymmetric=round(float(anti), 3),
         # ── The quantity NO correction here can change ────────────────

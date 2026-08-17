@@ -286,6 +286,48 @@ def check_session(manifest: dict, res: Result) -> None:
                 if _lev > 0.25 else
                 "mean and median agree; no single target dominates")
 
+    # ── WHICH RULER IS THE INCLUSION FIGURE MEASURED WITH? ───────────
+    # Every degree below comes from `mean_err_deg`, which the BROWSER
+    # computed by dividing by window.measuredDistanceCm — in practice a
+    # hardcoded 60 cm (F21). The server recomputes the same error from
+    # the distance measured at validation time and stores it as
+    # `mean_err_deg_measured`, and metrics_spec already calls that one
+    # authoritative: "the browser's own figure used a hardcoded 60 cm and
+    # is retained only for comparison".
+    #
+    # The applied rule and the declared rule are therefore reading
+    # different numbers. Across the recorded sessions they differ by
+    # -22 % to +15 %, in whichever direction the participant sat relative
+    # to 60 cm. No verdict has flipped yet; one will.
+    #
+    # This does NOT switch the figure. Which ruler the criterion uses is
+    # a pre-registration decision and must be made deliberately and
+    # dated, not changed inside a report (F34).
+    _pairs_deg = []
+    for _v in (chk or []) + (post or []):
+        _b, _m = _v.get("mean_err_deg"), _v.get("mean_err_deg_measured")
+        if _b and _m:
+            _pairs_deg.append((_v.get("phase"), _b, _m))
+    if _pairs_deg:
+        _bm = sum(b for _, b, _m in _pairs_deg) / len(_pairs_deg)
+        _mm = sum(_m for _, _b, _m in _pairs_deg) / len(_pairs_deg)
+        _thr = SPEC.INCLUSION["max_validation_error_deg"]
+        _disagree = (_bm > _thr) != (_mm > _thr)
+        _gap = abs(_mm - _bm) / _bm if _bm else 0
+        res.add("RQ1", "accuracy_ruler",
+                DEGENERATE if (_disagree or _gap > 0.05) else PRESENT,
+                "browser %.2f vs measured %.2f deg" % (_bm, _mm),
+                ("THE TWO RULERS DISAGREE ABOUT THE THRESHOLD — this "
+                 "session passes on one and fails on the other. Which "
+                 "ruler the criterion uses must be settled and dated "
+                 "before this session is admitted or excluded."
+                 if _disagree else
+                 "the two differ by %.0f %%. The figure reported above "
+                 "uses the BROWSER's assumed distance; metrics_spec "
+                 "calls the measured one authoritative (F34)." % (100 * _gap)
+                 if _gap > 0.05 else
+                 "browser and measured distance agree to within 5 %"))
+
     # ── WAS THE CORRECTION APPLIED, AND WHY ──────────────────────────
     _dec = (manifest.get("correction_decision") or {})
     if _dec:

@@ -1093,8 +1093,11 @@ nothing.
 ### 5. What this costs the thesis
 
 The instrument carries a **systematic directional offset of roughly
-1.0–1.7°** on the out-of-sample check, which recalibration does not
-reduce, in addition to scatter. That belongs in the accuracy claim and in
+1.1–1.5°** on the out-of-sample check (Manuel_P2 59.2 px = 1.11°,
+PILOT_02 90.2 px = 1.45°, both on the MEASURED viewing distance —
+corrected from 1.0–1.7° by F34, which found these had been converted on
+the browser's assumed 60 cm), which recalibration does not reduce, in
+addition to scatter. That belongs in the accuracy claim and in
 the limitations.
 
 It bears directly on the region rubric. `metrics_spec.min_aoi_px` derives
@@ -1345,6 +1348,14 @@ test runs reported failures that the source did not contain. Clear
 ## F33 · Vertical error depends on HORIZONTAL position, and the correction cannot represent it
 **2026-08-17 · Results, Limitations — reported by a participant before any metric saw it, for the second time**
 
+> **ANGLES CORRECTED 2026-08-17 by F34.** The degree figures below were
+> first quoted on the BROWSER's pixels-per-degree, which divides by a
+> hardcoded 60 cm. They now use the distance measured at validation time,
+> which metrics_spec calls authoritative. PILOT_03's shear reads **6.8°**,
+> not 7.5; PILOT_04's **3.0°**, not 3.4; Manuel_P2's **2.0°**, not 1.8 —
+> larger, because he sat nearer than 60 cm. Every pixel figure is
+> unchanged; only the conversion was wrong.
+
 Jan, on PILOT_03 and PILOT_04: *"when looking right the y axis tends to
 behave weirdly."* It does, it is large, and it is a term the correction
 is structurally incapable of removing.
@@ -1361,11 +1372,11 @@ horizontal position) and `m_xy` are not in its vocabulary.
 
 | session | phase | `m_yx` | 95 % CI | dy across the screen | structure |
 |---|---|---|---|---|---|
-| **PILOT_03** | pre_check | **+0.228** | **[+0.042, +0.509]** | **+437 px ≈ 7.5°** | shear |
+| **PILOT_03** | pre_check | **+0.228** | **[+0.042, +0.509]** | **+437 px ≈ 6.8°** | shear |
 | PILOT_03 | post | +0.156 | [−0.105, +0.507] | +300 px | shear |
-| **PILOT_04** | pre_check | **−0.104** | [−0.284, +0.066] | −199 px ≈ 3.4° | shear |
+| **PILOT_04** | pre_check | **−0.104** | [−0.284, +0.066] | −199 px ≈ 3.0° | shear |
 | PILOT_01 | post | +0.175 | [−0.066, +0.285] | +336 px | transvection |
-| Manuel_P2 | pre_check | **−0.055** | **[−0.076, −0.027]** | −106 px ≈ 1.8° | transvection |
+| Manuel_P2 | pre_check | **−0.055** | **[−0.076, −0.027]** | −106 px ≈ 2.0° | transvection |
 | PILOT_02 | post | +0.069 | [−0.006, +0.139] | +132 px | shear |
 | PILOT_00 | pre_check | −0.039 | [−0.288, +0.239] | −74 px | — |
 
@@ -1479,6 +1490,151 @@ something that is not so.
 * `run_tests.py` [7d] — 18 checks, including the invariance under both
   affine and quadratic corrections.
 
+
+---
+
+## F34 · Audit of F30–F33: what reproduces, and the two things that did not
+**2026-08-17 · Methods — every number in F30, F31, F32 and F33 re-derived independently**
+
+Asked to check the arithmetic. Each claim was recomputed from the raw
+manifest JSON with explicit hand-written algebra rather than by re-running
+the code that produced it — re-running would only reproduce an error.
+
+### What reproduces exactly
+
+**Sign convention.** Screen y grows downward, `dy = measured − target`,
+so a negative `dy` means the gaze sits ABOVE the target. Asserted in both
+axes against constructed cases.
+
+**The 2-D map's orientation.** `m_yx` is the coefficient of TARGET X in
+the MEASURED Y equation, i.e. `d(measured_y)/d(target_x)`, and since
+`measured_y = target_y + dy` that is `d(dy)/d(target_x)`. Verified by
+solving the normal equations by hand and by recovering a known matrix
+exactly.
+
+**Rotation sign.** For a rotation by θ the matrix is
+`[[cos, −sin], [sin, cos]]`, so `m_xy = −sinθ` and `m_yx = +sinθ`.
+Constructed rotations of ±8° are reported as ±8.00° with a shear of zero.
+
+**The inversion of the correction.** For all **15** validation phases
+carrying a correction: inverting to raw and re-applying returns the stored
+measurement to better than 1e-13, and the mean error recomputed from the
+recovered raw matches the manifest's own `mean_err_px_raw` — a figure
+computed by `app.py`, not by this analysis — to within 0.2 px on every
+one.
+
+**The stability test.** PILOT_02 `pre_fit → pre_check`: means +37.14 and
+−34.83, SEMs 21.33 and 16.28, so `SE_diff = 26.83` and
+`t = −71.97 / 26.83 = −2.68`. Reported as 2.7 SE.
+
+**Leave-one-out.** An independent loop reproduces the tool AND the
+decision records written by the deployed app during PILOT_03 and PILOT_04:
+0.41 SE with 3/7 improved, and 1.40 SE with 5/7. That is an end-to-end
+check that the analysis and the production code agree.
+
+**The sign test** matches `scipy.stats.binomtest` at every count from 0/7
+to 7/7 (the 0.0160 against 0.0156 is rounding to three decimals, not a
+different number).
+
+**The joint and marginal slopes agree** — `m_yx` from the 2-D fit versus
+a plain regression of `dy` on target x: −0.055/−0.057, +0.228/+0.233,
+−0.104/−0.119. The validation grid has `corr(tx, ty) = 0.13`, so the
+choice of estimator does not carry the shear finding.
+
+### Error 1 — every angle was converted on the wrong ruler
+
+Degrees were taken from `mean_err_deg`, which the browser computes by
+dividing by a hardcoded 60 cm. The server recomputes the same error from
+the distance measured at validation time, and `metrics_spec` already
+calls that one authoritative. Across the recorded sessions the two differ
+by **−22 % to +15 %**, in whichever direction the participant sat.
+
+| claim | as first stated | on the measured ruler |
+|---|---|---|
+| PILOT_03 shear across the screen | 7.5° | **6.8°** |
+| PILOT_04 shear across the screen | 3.4° | **3.0°** |
+| Manuel_P2 shear across the screen | 1.8° | **2.0°** |
+| irreducible offset (F30 §5) | 1.0–1.7° | **1.1–1.5°** |
+| `min_aoi_px` at 3.0° | 349 px | **321–403 px**, per participant |
+
+Every PIXEL figure is unchanged and every conclusion survives. Manuel_P2
+moves the *wrong* way — up, not down — because he sat nearer than 60 cm,
+which is the point: the error is not a uniform shrinkage that could be
+mentally discounted.
+
+### Error 2 — the inclusion criterion is applied to the browser's ruler
+
+This is not a reporting slip. `verify_metrics.py` computes the canonical
+figure from `mean_err_deg`. `mean_err_deg_measured` is present on all
+seven sessions with validations, and `app.py`'s own comment says the
+browser's value "is retained for comparison rather than overwritten".
+**The declared rule and the applied rule read different numbers.**
+
+| session | browser | measured |
+|---|---|---|
+| Julianne_P1 | 2.46° | **2.82°** |
+| Manuel_P2 | 2.12° | 2.31° |
+| PILOT_00 | 1.44° | 1.25° |
+| PILOT_01 | 1.92° | 1.57° |
+| PILOT_02 | 1.65° | 1.56° |
+| **PILOT_03** | **4.19° FAIL** | **3.88° FAIL** |
+| PILOT_04 | 2.04° | 1.75° |
+
+No verdict flips today — PILOT_03 fails on both — but Julianne_P1 moves
+from 2.46° to 2.82° against a 3.0° bar, and the next session that sits
+close will flip. **The figure has NOT been switched here.** Which ruler
+the criterion uses is a pre-registration decision and must be dated, not
+changed inside a report. `verify_metrics.py` now reports both, flags a
+gap above 5 %, and flags loudly when the two disagree about the
+threshold.
+
+### Error 3, minor — the bootstrap intervals under-cover
+
+Simulated at a true `m_yx` of 0.15 with 40 px of per-target noise over
+400 replicates, the nominal 95 % percentile interval contained the truth
+**91.2 %** of the time. Expected for a percentile bootstrap at n = 7, and
+now recorded in the output. "Excludes zero" is therefore slightly
+optimistic. It matters for one claim: PILOT_03's `m_yx` interval is
+[+0.042, +0.509], whose near end sits close to zero, so that session's
+shear is better described as **strongly suggestive** than as established
+at 95 %. Manuel_P2's [−0.076, −0.027] is not near the boundary. The
+shear finding does not rest on the interval alone — the marginal
+regression gives t = 3.9 with R² = 0.75 — but the interval should not be
+quoted as though it were exact.
+
+### A fourth, found by the fix for the second
+
+The `verify_metrics.py` change above raised **NameError on its first
+line** — it referenced `INCLUSION` where the module imports
+`metrics_spec as SPEC` — and took the entire report down for every
+session. Three new checks asserting the change was present all **passed**,
+because all three were source-text assertions: `"accuracy_ruler" in
+read("verify_metrics.py")` is true of a module that cannot be imported.
+
+This is the failure `CLAUDE.md` already warns about, arriving again:
+tests that assert the text of a line rather than its behaviour. The suite
+now imports `verify_metrics` and calls `check_session` on a synthetic
+manifest, requires it not to raise, requires the ruler row to actually be
+emitted, and requires a 22 % gap between the two rulers to be graded
+DEGENERATE rather than passed over.
+
+A source-text check is worth having — it pins intent — but it must never
+be the only check on a code path that can be executed.
+
+### Resolved along the way
+
+`show_validations.py` was written because PILOT_00's `pre_check` and
+`post` both reported **83.6 px** to the tenth of a pixel, and its
+docstring left three explanations open — one of which (a correction
+re-fitted to each validation) would have collapsed the two-grid design.
+Settled: **coincidence.** The per-target errors differ completely
+(`28, 9, 70, 114, 257, 54, 54` against `50, 89, 112, 93, 53, 95, 94`), the
+measured points differ, and the records are 92 s apart. Both means land on
+585.2 and 585.3 over seven. The docstring's third possibility is
+eliminated, and the first — one measurement written twice — with it.
+
+Worth noting that `pre_check` contains a 257 px target among six under
+115: F31 again, in a session nobody had flagged.
 
 ## Open items before evaluation collection
 
