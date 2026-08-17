@@ -1,3 +1,8 @@
+> **SUPERSEDED 2026-08-16 by Design A (F27).** The C1/C2/C3 rubric and the
+> Cohen's-kappa plan are no longer the study design. Kept for the record and
+> for the reasoning in sections 3, 7 and 10, which remains sound. Do not
+> implement the code changes in section 5 - they are void.
+
 # The evaluation rubric
 
 **Status: CANDIDATE v2 — revised 2026-08-11 against the professional-vision

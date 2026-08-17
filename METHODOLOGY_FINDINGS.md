@@ -328,6 +328,16 @@ actual presentation order is recorded per session in the manifest's
 Pooling a crowded and a sparse scene averages two different ambiguity
 rates into a number that describes neither.
 
+> **CORRECTED 2026-08-15 — the crowding contrast asserted above does not
+> exist.** Measured in F25: the two selected clips differ by ~3 % in
+> visible-face count and ~13 % in nearest-neighbour separation. The
+> prediction "correspondence should be higher, and the ambiguous share
+> lower, on the sparse clip" is **withdrawn**; there is no sparse clip.
+> Two clips remain justified on the precision and
+> not-a-single-clip grounds above, which are unaffected. Per-clip
+> reporting also stands, but as a check that the result is not
+> clip-specific — not as a manipulation. See F25.
+
 ---
 
 ## F17 · Collection boundary and data separation
@@ -642,6 +652,217 @@ different fixation classifier (I2MC and similar) cannot repair this —
 the information destroyed by decimation is absent from the input, not
 mis-segmented by the detector. Rate matching is the fix; a different
 algorithm is not.
+
+## F25 · The two stimulus clips are not a crowding manipulation
+**2026-08-15 · Methods (materials), Analysis plan — CONFIRMED, corrects F16**
+
+F16 selected two 30 s clips "chosen to DIFFER on crowding" and derived a
+testable prediction from it: correspondence higher, ambiguous share
+lower, on the sparse clip. Jan stated on 2026-08-15 that the clips are
+"not super different". Measured, he is right and F16 is wrong.
+
+Method: every 15th frame of each clip (50 sampled frames per clip),
+OpenCV Haar frontal-face detection, identical detector and parameters
+for both. Crowding operationalised two ways — how many faces are
+visible, and how far apart the nearest two are, since F9 makes
+*separation* the quantity attribution actually depends on.
+
+| clip | faces/frame | mean nearest-neighbour | as % of frame width | centroid spread |
+|---|---|---|---|---|
+| `Stimuli_1_30s.mp4` | 7.92 | 111.1 px | 8.7 % | 133.6 |
+| `Stimuli_5_30s.mp4` | 7.68 | 96.8 px | 7.6 % | 111.2 |
+
+Both 1280×720 @ 25 fps. A 3 % difference in face count and a 13 %
+difference in separation is not a manipulation; **neither clip is
+sparse.** Both are crowded classroom scenes with roughly eight visible
+faces about 100 px apart.
+
+**Consequences.**
+1. F16's prediction is withdrawn (annotated in place). Withdrawing a
+   prediction before collection costs nothing; reporting it as a null
+   result after collection would have cost a chapter.
+2. The Methods sentence "pooling a crowded and a sparse scene averages
+   two different ambiguity rates into a number that describes neither"
+   is **unsupported and must be rewritten.** Per-clip reporting stays,
+   justified as a check that the result is not clip-specific.
+3. Two clips remain justified: precision (±3.7 → ±2.6 pp at N=10) and
+   not resting the conclusion on a single clip. Those grounds never
+   depended on the contrast.
+4. **This corroborates the region-level decision.** Nearest-neighbour
+   separation of 97–111 px sits below the 134 px used in F9's worked
+   example and near the measured error scale (~1° ≈ 61 px, jitter RMS
+   45–60 px). Face-level attribution would be unreliable in *both*
+   clips, which is exactly why the rubric codes at region level.
+
+**Limitation of the measurement.** Haar frontal-face detection misses
+profile and back-of-head students, so absolute counts understate the
+people present. Both clips were measured with the identical detector, so
+the comparison is sound even though the absolute numbers are floors.
+
+**If a real contrast is wanted**, it must come from re-selecting: five
+source videos exist in `Stimuli/full_originals`, and the same measurement
+run across all five would identify the widest-separation pair. That is a
+stimulus-design decision to take before collection, not after.
+
+## F26 - The region taxonomy does not match the stimuli, and both criteria are prevalence-skewed
+**2026-08-16 - Methods (measures), rubric freeze - CONFIRMED, blocks the freeze**
+
+The five-region scheme in `RUBRIC.md` was written without inspecting the
+selected clips. Measured over both full clips (every 10th frame, Haar
+frontal-face, identical parameters), plus visual inspection of sampled
+frames:
+
+| | Stimuli_1_30s | Stimuli_5_30s |
+|---|---|---|
+| face detections | 589 | 579 |
+| face x (p5 / p50 / p95) | 0.18 / 0.44 / 0.79 | 0.18 / 0.40 / 0.67 |
+| face y (p5 / p50 / p95) | 0.35 / 0.39 / 0.48 | 0.33 / 0.38 / 0.49 |
+| faces above y = 0.30 | 0 (0.0 %) | 1 (0.2 %) |
+| mean frame-to-frame change | 3.07/255 | 2.08/255 |
+
+**1. TEACHER does not exist.** No face appears in the upper third of
+either clip across the full 30 s. The camera faces the class, so any
+teaching adult is behind it. Drop the category - it is not a judgement
+call, it is absent. Confirmed by Jan from a frame: "no teacher, no
+whiteboard".
+
+**2. INSTRUCTIONAL SURFACE is nearly absent.** There is no board. The
+only instructional content is three hand-drawn posters and an anatomical
+model on the rear wall, roughly y in [0.13, 0.28] - a band about 0.15 of
+frame height, which is only ~1.5-2x the vertical measurement error. Gaze
+attributed there will be unreliable, so expect a high UNRESOLVABLE share
+for that region specifically.
+
+**3. The scene is three horizontal bands.** Faces occupy y in
+[0.33, 0.49]; with bodies the student band is roughly y in [0.30, 0.60],
+x in [0.13, 0.85]. Above it: wall, posters, window, ceiling truss.
+Below it: desks, bags, floor. Static camera. Polygon drawing is
+therefore trivial and stable across the whole clip - one set per clip,
+no tracking needed.
+
+**4. Both surviving criteria are prevalence-skewed, in opposite
+directions.** Students are the only people in frame, centrally placed,
+and carry essentially all the salient content, so C1 (">50 % of
+resolvable gaze on STUDENTS") should be TRUE in the large majority of
+windows. C3 ("two regions each >=20 %") then fails for the same reason -
+if nearly all gaze is on students, a second region rarely reaches 20 %.
+Skew in either direction deflates kappa (Byrt et al. 1993; Norman et al.
+2026 measure 33-41 pp), so as written **both criteria risk producing an
+uninterpretable headline number regardless of how well the model
+performs.**
+
+**Option worth deciding before freeze:** partition WITHIN the student
+band instead of around it. Face x spans 0.18-0.79, so three blocks of
+~0.2 normalised width are ~256 px each - about 4x the horizontal error
+and comfortably above the 134 px F9 uses. A distribution criterion over
+LEFT / CENTRE / RIGHT student blocks has genuinely balanced prevalence,
+because some viewers scan and some fixate one area. That is a rubric
+design decision for Jan, not a code change.
+
+**Reproduce:** `cv2` Haar over both clips, every 10th frame, record
+normalised face centres.
+
+## F27 - Design A: naming accuracy replaces rubric agreement
+**2026-08-16 - Design decision, supersedes RUBRIC.md and the kappa plan**
+
+The study now asks whether the LLM **correctly names the region at the
+reported gaze location**, judged by a human coder against the same
+annotated frames. Percent agreement plus a disagreement analysis. The
+C1/C2/C3 rubric, Cohen's kappa, the human-human ceiling, prevalence and
+bias indices, PABAK and the participant bootstrap are all **dropped**.
+
+**Why kappa went.** Kappa corrects for chance agreement between two
+judges exercising *judgement* against a standard. Naming what is at a
+location has a right answer, so the correction answers a question the
+design no longer asks. F26 also showed both surviving criteria were
+prevalence-skewed in opposite directions, which would have deflated
+kappa regardless of model performance.
+
+**The claim boundary, which is load-bearing.** Two bounded claims that
+compose:
+1. instrument accuracy, from the validation targets, in degrees;
+2. LLM scene-reading, from coder-vs-LLM on identical annotated frames.
+
+The wording is "the LLM correctly names the region **at the reported
+gaze location**", never "what the participant looked at". The gap
+between those sentences IS claim 1, and collapsing them is the most
+likely way this design fails at a defence.
+
+**Known weakness, to be stated in Limitations.** Coder and model read
+the same annotated frame, so a systematically displaced marker produces
+*agreement on the wrong object* and is invisible to the comparison. The
+only independent check on the gaze is the validation-target accuracy.
+Region AOIs would have supplied a **computed** unresolvable rate - per
+sample, whether the gaze fell close enough to a boundary that
+attribution is unreliable - and were rejected as too time-consuming to
+draw. Partial mitigation at no cost: the coder marks UNCLEAR when they
+cannot tell, making the unclear rate a measured rather than computed
+property (F11 measured 16.9 % at fixation level).
+
+**Correction to an earlier cost claim.** Coding was priced against
+rubric judgements, which are slow. A naming call is fast, so
+"coding is quicker" is defensible for THIS task even though it was not
+for the previous one.
+
+**Consequences in code - all three rubric blockers are void.**
+The unit is the **fixation**, already produced by the pipeline and
+already the UI default (`detail=fixations`). So: no `windows` option
+needed in `review.html`; no per-criterion `criteria_met` dict, meaning
+the four silent call sites (`app.py:1641`, `verify_metrics.py:539`,
+`model_comparison.py:315`, `agreement_kit.py:114,190-195`) must be **left
+alone**; C2's event list is moot. `verify_metrics` reporting `aoi_*` as
+"N/A by design: no hand-drawn AOIs" is now simply true.
+
+**Open, before freezing:** how many fixations per participant are coded
+(~70 per 30 s clip makes all of them infeasible; 20 gives ~300 items at
+N=15), and the selection rule - which must be mechanical (every k-th, or
+a seeded draw), never "the interesting ones".
+
+## F28 - Coding protocol: census, RIGHT/WRONG/UNCLEAR, and the anchoring correction
+**2026-08-16 - Methods (coding protocol) - DECISION**
+
+Settled with Jan on 2026-08-16, completing F27.
+
+**Census, not a sample.** EVERY fixation is coded: ~72 per 30 s clip at
+2.4 fixations/s, ~145 per participant, ~2200 items at N=15. Rationale
+worth one sentence in Methods: a census has no selection rule, so
+selection bias is not available as a competing explanation; and the model
+already labels every fixation (F10's keyframe cap exceeds the ~70 a 30 s
+clip produces), so sampling would discard output already generated.
+
+**N is not fixed in advance.** Recruit for the whole collection window
+and report the achieved N. Legitimate because nothing is powered for a
+hypothesis test. **The exclusion rules are a different matter and must
+still be pre-specified** - the rate gate, the 3.0 deg inclusion limit and
+the 60 % valid-sample floor - because choosing a threshold after seeing
+which sessions it removes is unfalsifiable.
+
+**Response options: RIGHT / WRONG / UNCLEAR.** UNCLEAR is reserved for
+"cannot tell which of two candidate regions the marker sits on" and is a
+substantive response, not an abstention - its rate is the study's measure
+of how often the method resolves attention at all (F11 measured 16.9 % at
+fixation level).
+
+**Two additions the format obliges.**
+1. *Free text on WRONG* - what the region actually was. Fires only on the
+   minority of items and preserves the failure analysis, which is the
+   contribution; a bare WRONG flag loses what F19 found (names at 88 %,
+   localises at 16.9-28.8 %).
+2. *A blind-first subset* - RIGHT/WRONG/UNCLEAR is a VERIFICATION task,
+   so the coder sees the model's answer before responding. This is
+   inherent to the format, not a procedural lapse, and it biases accuracy
+   upward: raters accept a plausible label more readily than they would
+   generate it. On a subset the coder names the region before the answer
+   is revealed; the difference on the same items estimates the anchoring
+   inflation. Both figures reported, never one alone.
+
+**Fatigue controls a census requires:** fixed-length blocks, randomised
+participant order, coding date recorded per block, and ~100 items
+re-coded blind after an interval for intra-coder consistency.
+
+**Non-independence.** Consecutive fixations often share a region, so
+~2200 judgments are not 2200 independent observations. Resample
+PARTICIPANTS for every interval; the effective sample size is N.
 
 ---
 

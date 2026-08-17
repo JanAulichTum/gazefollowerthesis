@@ -1,8 +1,13 @@
 # Project Memory — Eye-Tracking Web Experiment (Master Thesis, Jan Aulich, TUM)
 
 Handoff context for any AI assistant continuing work on this project.
-Read this FIRST. Supervisor: Dr. Christian Kosel. Study: visual attention
-of viewers (novice vs expert teachers) watching classroom videos.
+Read this FIRST. Supervisor: Dr. Christian Kosel.
+
+**Scope, decided 2026-08-16.** This is a METHOD proof of concept: can a
+webcam-gaze + multimodal-LLM pipeline produce data of known quality, at a
+known analytic resolution, with feedback that corresponds to the recorded
+gaze. The classroom domain is the vehicle, not the subject. There is NO
+novice-vs-expert contrast and no domain hypothesis. Do not reintroduce one.
 
 ## What this is
 
@@ -389,11 +394,11 @@ kept current), `README.md`.
   design: calls = participants × videos × 3–5 repetitions; report
   inter-run consistency + LLM-vs-human agreement on a ~20% subset.
   Cost with billing ≈ half a cent per call.
-- The user has a novice-vs-expert teacher rubric prompt (phase-structured
-  summary format, ≤250 words, 3 evidence points) — see chat history or
-  re-derive: expert = broad recurring monitoring, short fixations on
-  faces; novice = long dwells on few salient students, time on
-  walls/boards/floor, neglected zones.
+- **No novice/expert characterisation is asked of the model.** An earlier
+  prompt asked for expert-vs-novice viewing patterns; no research question
+  consumes that, and asking for it adds uncontrolled degrees of freedom to
+  the output. The model reports what region was attended at the gaze
+  location and nothing about viewer expertise.
 
 ## Design system
 

@@ -91,7 +91,8 @@ for _stream in (sys.stdout, sys.stderr):
 
 USER_AGENT = "cite_check/1.0 (master thesis; mailto:%s)"
 TIMEOUT_S = 20
-SLEEP_S = 0.4            # be polite; arXiv asks 3 s, Crossref far less
+SLEEP_S = 1.5            # Semantic Scholar throttles at ~100 req/5 min;
+                         # 0.4 s rate-limited every entry on the first run
 
 # Title similarity above which two titles are "the same work". Chosen
 # high: the point is to catch a DIFFERENT work sitting behind a DOI, and
@@ -147,13 +148,46 @@ def surnames(author_field: str) -> "list[str]":
     return [s for s in out if s]
 
 
+def _name_match(a: str, b: str) -> bool:
+    """Do two folded surnames plausibly denote the same person?
+
+    Exact equality is too strict and produced false AUTHOR_MISMATCH flags
+    on the first real run:
+
+      * transliteration  - Yarbus vs Iarbus (both render the same Russian
+        name), Tchaikovsky vs Chaikovsky, and so on.
+      * name particles   - a bib entry may carry "Van der Cruyssen" while
+        the database's family field holds only "Cruyssen".
+
+    Both are the SAME author, and a false mismatch costs a manual lookup,
+    so match on the trailing token and on containment as well. This can
+    only make the check more permissive; a genuinely different name still
+    fails, which is what the flag is for.
+    """
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    ta, tb = a.split()[-1], b.split()[-1]      # particle-tolerant
+    if ta == tb:
+        return True
+    # containment, but long enough that "li" does not match "kelin"
+    if len(ta) >= 4 and (ta in tb or tb in ta):
+        return True
+    # transliteration: same length, differing in at most one character
+    if len(ta) == len(tb) >= 5 and sum(x != y for x, y in zip(ta, tb)) <= 1:
+        return True
+    return False
+
+
 def author_overlap(bib_authors: str, record_surnames: "list[str]") -> float:
     """Fraction of the entry's surnames that appear in the record."""
-    mine = set(surnames(bib_authors))
-    theirs = {_fold(s) for s in record_surnames if s}
+    mine = surnames(bib_authors)
+    theirs = [_fold(s) for s in record_surnames if s]
     if not mine or not theirs:
         return -1.0                            # unknown, not zero
-    return len(mine & theirs) / len(mine)
+    hits = sum(1 for m in mine if any(_name_match(m, o) for o in theirs))
+    return hits / len(mine)
 
 
 # ── .bib parsing ──────────────────────────────────────────────────────
@@ -214,19 +248,44 @@ def parse_bib(text: str) -> "list[dict]":
 
 # ── database lookups ──────────────────────────────────────────────────
 
-def _get_json(url: str, mailto: str) -> "dict | None":
+def _get_json(url: str, mailto: str, tries: int = 4) -> "dict | None":
+    """GET with backoff on 429.
+
+    The first real run rate-limited on EVERY entry (44/50 and 50/50), and
+    the damage is subtle rather than obvious: an entry whose second source
+    was throttled silently falls from VERIFIED to LISTED, so the run looks
+    like weak evidence rather than a broken measurement. Retrying is the
+    fix; the per-entry error note stays, so a run that still hits limits
+    is still reported as degraded.
+    """
     req = urllib.request.Request(
         url, headers={"User-Agent": USER_AGENT % (mailto or "anonymous"),
                       "Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
-            return json.loads(resp.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return None
-        return {"__error__": "HTTP %d" % exc.code}
-    except Exception as exc:  # noqa: BLE001
-        return {"__error__": str(exc)[:120]}
+    delay = 2.0
+    for attempt in range(tries):
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+                return json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            if exc.code in (429, 500, 502, 503, 504) and attempt < tries - 1:
+                wait = delay
+                try:                            # honour Retry-After
+                    wait = max(wait, float(exc.headers.get("Retry-After")))
+                except (TypeError, ValueError):
+                    pass
+                time.sleep(min(wait, 30.0))
+                delay *= 2
+                continue
+            return {"__error__": "HTTP %d" % exc.code}
+        except Exception as exc:  # noqa: BLE001
+            if attempt < tries - 1:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            return {"__error__": str(exc)[:120]}
+    return {"__error__": "gave up after %d tries" % tries}
 
 
 def _norm_record(title, authors, year, venue, doi, retracted=False,
@@ -489,6 +548,139 @@ def render_markdown(results: "list[dict]", bib_path: str,
     return "\n".join(out)
 
 
+# ── offline audit ─────────────────────────────────────────────────────
+# Everything checkable WITHOUT a network. Worth having separately
+# because (a) the sandboxes this project is developed in have no egress
+# to the bibliographic APIs, and (b) most real bibliography defects are
+# visible without asking anyone: placeholder text left in a field, a
+# work entered twice under two keys, a \cite that resolves to nothing.
+# Run this first; it is instant and it finds the boring failures.
+
+_PLACEHOLDER = re.compile(
+    r"to be (resolved|confirmed|added)|\bTBD\b|\bTODO\b|\bXXX\b|"
+    r"author list|et al\.?\s*$|\?\?\?", re.I)
+
+_CITE_RE = re.compile(
+    r"\\(?:auto|paren|text|foot|super|smart)?[cC]ite[a-zA-Z]*\s*"
+    r"(?:\[[^\]]*\])*\s*\{([^}]*)\}")
+
+
+def cited_keys(tex_paths: "list[str]") -> "dict[str, set]":
+    """Keys cited by any \\cite-family command, mapped to the files."""
+    found: "dict[str, set]" = {}
+    for p in tex_paths:
+        try:
+            with open(p, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        text = re.sub(r"(?<!\\)%.*", "", text)      # drop LaTeX comments
+        for m in _CITE_RE.finditer(text):
+            for k in m.group(1).split(","):
+                k = k.strip()
+                if k:
+                    found.setdefault(k, set()).add(os.path.basename(p))
+    return found
+
+
+def audit(bib_path: str, tex_paths: "list[str]") -> dict:
+    with open(bib_path, encoding="utf-8") as fh:
+        raw = fh.read()
+    entries = parse_bib(raw)
+    keys = [e["key"] for e in entries]
+    issues: "list[dict]" = []
+
+    def add(kind, key, detail):
+        issues.append({"kind": kind, "key": key, "detail": detail})
+
+    for k in sorted({k for k in keys if keys.count(k) > 1}):
+        add("DUPLICATE_KEY", k, "defined more than once; biber takes one")
+
+    for i in range(len(entries)):
+        for j in range(i + 1, len(entries)):
+            a, b = entries[i], entries[j]
+            s = title_similarity(a["fields"].get("title", ""),
+                                 b["fields"].get("title", ""))
+            if s >= 0.75:
+                add("DUPLICATE_WORK", "%s / %s" % (a["key"], b["key"]),
+                    "titles %.0f%% identical — likely the same work twice; "
+                    "citations will split across two keys" % (100 * s))
+
+    for e in entries:
+        k, f = e["key"], e["fields"]
+        for field in ("author", "title", "year"):
+            v = f.get(field, "")
+            if not v:
+                add("MISSING_FIELD", k, "no %s" % field)
+            elif _PLACEHOLDER.search(v):
+                add("PLACEHOLDER", k,
+                    "%s still reads %r — this renders verbatim in APA "
+                    "output" % (field, v[:60]))
+        if not f.get("doi"):
+            add("NO_DOI", k, "no DOI, so the cross-field coherence check "
+                             "cannot run on this entry")
+
+    n_markers = len(re.findall(r"%\s*TO VERIFY", raw))
+
+    coverage = {}
+    if tex_paths:
+        bibkeys = set(keys)
+        c = cited_keys(tex_paths)
+        for k in sorted(set(c) - bibkeys):
+            add("CITED_NOT_IN_BIB", k,
+                "cited in %s but absent from the bib — prints as '?'"
+                % ", ".join(sorted(c[k])))
+        coverage = {"cited": len(c), "in_bib": len(bibkeys),
+                    "uncited": sorted(bibkeys - set(c))}
+
+    return {"bib": bib_path, "entries": len(entries), "issues": issues,
+            "to_verify_markers": n_markers, "coverage": coverage}
+
+
+def render_audit(a: dict) -> str:
+    out = ["# Offline bibliography audit — `%s`" % os.path.basename(a["bib"]),
+           "", "%d entries. No network used: this is what is wrong on the "
+           "face of the file." % a["entries"], ""]
+    by_kind: "dict[str, list]" = {}
+    for it in a["issues"]:
+        by_kind.setdefault(it["kind"], []).append(it)
+    severity = ["DUPLICATE_KEY", "CITED_NOT_IN_BIB", "DUPLICATE_WORK",
+                "PLACEHOLDER", "MISSING_FIELD", "NO_DOI"]
+    if not a["issues"]:
+        out.append("No structural issues found.")
+    for kind in severity:
+        group = by_kind.get(kind) or []
+        if not group:
+            continue
+        out += ["## %s (%d)" % (kind, len(group)), ""]
+        if kind == "NO_DOI":
+            out.append("- " + ", ".join("`%s`" % g["key"] for g in group))
+            out += ["", "  Adding DOIs to these is the single highest-value "
+                        "bibliography chore: the DOI is what lets the online "
+                        "check detect an entry assembled from more than one "
+                        "real work.", ""]
+            continue
+        for g in group:
+            out.append("- `%s` — %s" % (g["key"], g["detail"]))
+        out.append("")
+    if a["to_verify_markers"]:
+        out += ["## In-file markers", "",
+                "%d `%% TO VERIFY` comments remain in the .bib. These are "
+                "Jan's own markers; the ledger says what each needs."
+                % a["to_verify_markers"], ""]
+    cov = a.get("coverage") or {}
+    if cov:
+        out += ["## Coverage", "",
+                "- %d distinct keys cited across the scanned .tex files"
+                % cov["cited"],
+                "- %d entries in the bib" % cov["in_bib"],
+                "- %d never cited%s" % (len(cov["uncited"]),
+                                        (": " + ", ".join("`%s`" % k for k in
+                                                          cov["uncited"][:20]))
+                                        if cov["uncited"] else ""), ""]
+    return "\n".join(out)
+
+
 # ── self-test (offline) ───────────────────────────────────────────────
 
 def _self_test() -> int:
@@ -602,6 +794,20 @@ def _self_test() -> int:
     t("missing author metadata is not treated as a mismatch",
       "AUTHOR_MISMATCH" not in unknown["flags"])
 
+    t("transliteration is not a mismatch (Yarbus / Iarbus)",
+      _name_match("yarbus", "iarbus"))
+    t("name particles are not a mismatch (Van der Cruyssen / Cruyssen)",
+      _name_match("van der cruyssen", "cruyssen"))
+    t("genuinely different names still mismatch",
+      not _name_match("wang", "li") and not _name_match("posner", "ganeri"))
+    t("short names do not over-match", not _name_match("li", "kelin"))
+    t("overlap uses the relaxed matcher",
+      author_overlap("Yarbus, Alfred L.", ["Iarbus"]) == 1.0)
+    t("overlap still returns 0 for a real mismatch",
+      author_overlap("Posner, Michael I.", ["Ganeri"]) == 0.0)
+    t("unknown authors stay unknown, not zero",
+      author_overlap("Posner, Michael I.", []) == -1.0)
+
     md = render_markdown([chimera, clean], "references.bib", "self-test")
     t("report puts coherence flags first",
       md.index("COHERENCE FLAGS") < md.index("## VERIFIED"))
@@ -626,12 +832,39 @@ def main() -> int:
                     help="seconds between API calls (default %.1f)" % SLEEP_S)
     ap.add_argument("--self-test", action="store_true",
                     help="offline logic check, no network")
+    ap.add_argument("--audit", action="store_true",
+                    help="OFFLINE structural audit only — no network. "
+                         "Placeholders, duplicates, missing DOIs, and "
+                         "\\cite keys with no bib entry.")
+    ap.add_argument("--tex", nargs="*", default=[],
+                    help="\\.tex files to scan for \\cite coverage "
+                         "(used with --audit)")
     args = ap.parse_args()
 
     if args.self_test:
         return _self_test()
     if not args.bib:
         ap.error("--bib is required (or use --self-test)")
+
+    if args.audit:
+        a = audit(args.bib, args.tex)
+        md = render_audit(a)
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                fh.write(md)
+            print("Audit written to %s" % args.out)
+        else:
+            print(md)
+        if args.json:
+            with open(args.json, "w", encoding="utf-8") as fh:
+                json.dump(a, fh, indent=2, ensure_ascii=False)
+        blocking = [i for i in a["issues"]
+                    if i["kind"] in ("DUPLICATE_KEY", "CITED_NOT_IN_BIB",
+                                     "PLACEHOLDER", "DUPLICATE_WORK")]
+        print("\nVERDICT: %d entries, %d blocking issues, %d without DOI."
+              % (a["entries"], len(blocking),
+                 sum(1 for i in a["issues"] if i["kind"] == "NO_DOI")))
+        return 1 if blocking else 0
     if not args.mailto:
         print("NOTE: no --mailto given. Crossref will still answer, but "
               "slower and without warning you before rate-limiting.\n")
