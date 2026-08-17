@@ -235,15 +235,18 @@ try:
     import numpy as np
     import pandas as pd
 
+    import validation_stats as _vstats
+
     _src = read("app.py")
     _tree = ast.parse(_src)
-    _want = {"_fit_poly", "_rms_resid", "_slope", "_apply_point",
+    _want = {"_fit_poly", "_slope", "_apply_point",
              "_apply_series", "_correction_payload", "_auto_fit_correction"}
     _keep = [n for n in _tree.body
              if isinstance(n, ast.FunctionDef) and n.name in _want]
     _assign = [n for n in _tree.body if isinstance(n, ast.Assign)
                and "_GAIN_MIN" in ast.dump(n)]
     _ns = {"pd": pd, "logger": logging.getLogger("t"),
+           "validation_stats": _vstats,
            "socketio": type("S", (), {"emit": staticmethod(
                lambda *a, **k: None)})()}
     exec(compile(ast.Module(body=_assign + _keep, type_ignores=[]),
@@ -307,9 +310,13 @@ try:
     ly = _ns["_fit_poly"](curved, 1)
     check("_fit_poly returns a quadratic (3 coeffs)",
           qy is not None and len(qy) == 3)
+    def _rms(pairs, coeffs):
+        return float(np.sqrt(np.mean(
+            [(np.polyval(coeffs, m) - t) ** 2 for m, t in pairs])))
+
     if qy and ly:
-        res_q = _ns["_rms_resid"](curved, qy)
-        res_l = _ns["_rms_resid"](curved, ly)
+        res_q = _rms(curved, qy)
+        res_l = _rms(curved, ly)
         check("quadratic fit beats the line on curved data "
               "(well-conditioned)", res_q < 0.3 * res_l,
               "quad %.1f px vs line %.1f px" % (res_q, res_l))
@@ -342,6 +349,449 @@ try:
 except Exception as exc:  # noqa: BLE001
     _blocked = environment_block(exc)
     check("gain-correction round-trip", False, _blocked or repr(exc))
+
+# ── 7b. The correction is only applied when it GENERALISES ────────────
+# The rule these guard was fixed 2026-08-17 and replaced "fit on grid A,
+# apply unconditionally". On the two sessions carrying per-target
+# records the old rule removed 42-61 % of the error where it was fitted
+# and 1-6 % everywhere else — two free parameters per axis on seven
+# targets, fitting session-moment noise. Every check below is about the
+# difference between those two numbers.
+print("\n[7b] Correction selection is cross-validated, not assumed")
+try:
+    import numpy as np
+
+    import validation_stats as vstat
+
+    _W7, _H7 = 1920.0, 1080.0
+    _grid7 = [(230, 130), (1690, 130), (960, 335), (288, 540), (1632, 540),
+             (960, 745), (960, 950)]
+
+    def _tg(fn):
+        out = []
+        for tx, ty in _grid7:
+            mx, my = fn(float(tx), float(ty))
+            out.append({"tx": float(tx), "ty": float(ty),
+                        "mx": float(mx), "my": float(my)})
+        return out
+
+    # (a) A REAL, stable gain error must be found and applied. If the
+    #     rule cannot accept a correction that genuinely helps, it is
+    #     not a rule, it is an off switch.
+    _real = _tg(lambda tx, ty: (_W7 / 2 + 0.80 * (tx - _W7 / 2),
+                                _H7 / 2 + 0.80 * (ty - _H7 / 2)))
+    _r = vstat.select_correction(_real, _W7, _H7)
+    check("a genuine gain error is detected and corrected",
+          _r["decision"]["chosen"] != "none"
+          and _r["correction"] is not None,
+          "chose %s" % _r["decision"]["chosen"])
+
+    # (b) PURE NOISE must be rejected. A least-squares fit on seven
+    #     points always reduces the in-sample error — that is arithmetic,
+    #     not evidence — so a rule that looks only at the fit set would
+    #     "correct" a perfectly calibrated tracker.
+    _rng = np.random.default_rng(20260817)
+    _noise = _tg(lambda tx, ty: (tx + _rng.normal(0, 70),
+                                 ty + _rng.normal(0, 70)))
+    _n = vstat.select_correction(_noise, _W7, _H7)
+    check("pure noise is NOT 'corrected'",
+          _n["decision"]["chosen"] == "none" and _n["correction"] is None,
+          "chose %s" % _n["decision"]["chosen"])
+    _ins = vstat._fit_candidate(*vstat._pairs(_noise), "affine", _W7, _H7)
+    _ins_err = vstat.signed_bias(
+        vstat.corrected_targets(_noise, _ins))["mean_err_px"]
+    _raw_err = vstat.signed_bias(_noise)["mean_err_px"]
+    check("...even though refitting it 'improves' the fit set",
+          _ins_err < _raw_err,
+          "in-sample %.1f px vs raw %.1f px — the improvement the old "
+          "rule believed" % (_ins_err, _raw_err))
+
+    # (c) Leave-one-out must be strictly harsher than refitting. If these
+    #     two ever agree, the LOO loop is refitting on all seven and the
+    #     whole guard is inert.
+    _loo = next(c for c in _n["decision"]["candidates"]
+                if c["candidate"] == "affine")
+    check("LOO error clearly exceeds the in-sample refit error",
+          _loo["loo_mean_err_px"] > 1.05 * _ins_err,
+          "LOO %.1f px vs refit %.1f px — if these converge, the loop is "
+          "refitting on all seven and the guard is inert"
+          % (_loo["loo_mean_err_px"], _ins_err))
+
+    # (d) The decision must be legible after the fact, not inferred from
+    #     coefficients: which candidates were considered, the criterion,
+    #     the date it was fixed, and the rule it replaced.
+    _d = _n["decision"]
+    check("the decision record names every candidate considered",
+          {c["candidate"] for c in _d["candidates"]}
+          == set(vstat.CANDIDATE_ORDER))
+    check("the decision record states the criterion and its date",
+          bool(_d.get("rule")) and _d.get("rule_fixed_on") == "2026-08-17"
+          and bool(_d.get("previous_rule")))
+    check("selection is declared to happen on the fit grid, not grid B",
+          "grid B is never consulted" in _d.get("selection_grid", ""))
+
+    # (e) Selecting on grid B would spend the only out-of-sample
+    #     measurement the two-grid protocol produces. Assert the code
+    #     path cannot see it: select_correction takes ONE grid.
+    import inspect as _inspect
+    _sig = _inspect.signature(vstat.select_correction)
+    check("select_correction is given a single grid, so it cannot peek",
+          list(_sig.parameters) == ["targets", "width", "height"])
+    _appsrc = read("app.py")
+    check("app.py selects from the fit phase only",
+          "_auto_fit_correction" in _appsrc
+          and 'record["phase"] in ("pre_fit", "pre")' in _appsrc)
+
+    # (f) A rejected correction must still be RECORDED. A session where
+    #     the fit was rejected and one where it was never attempted are
+    #     different facts and must not look identical in the manifest.
+    check("a rejected correction is still recorded in the manifest",
+          '"correction_decision": state.get("correction_decision")'
+          in _appsrc)
+    check("the rejection reason is stored, not just the verdict",
+          bool(_n["decision"].get("reason")))
+
+    # (g) The fit set's post-correction bias is an algebraic identity —
+    #     least squares zeroes its own mean residual — so it must be
+    #     marked in-sample and must never raise the offset flag.
+    _fitted = vstat._fit_candidate(*vstat._pairs(_real), "affine", _W7, _H7)
+    _fs = vstat.signed_bias(vstat.corrected_targets(_real, _fitted),
+                            in_sample=True)
+    check("the fit set's own signed bias is zero by construction",
+          abs(_fs["bias_px"]) < 0.5, "%.2f px" % _fs["bias_px"])
+    check("...and is marked in-sample rather than reported as evidence",
+          _fs["bias_in_sample"] is True
+          and _fs["offset_dominated"] is False)
+
+    # (h) Direction words. Screen y grows DOWNWARD; a report that gets
+    #     this backwards is worse than one that omits it.
+    check("negative dy reads as ABOVE the target",
+          "above" in vstat.direction_words(0.0, -60.0))
+    check("positive dy reads as BELOW the target",
+          "below" in vstat.direction_words(0.0, 60.0))
+    check("negative dx reads as LEFT of the target",
+          "left of" in vstat.direction_words(-60.0, 0.0))
+
+    # (i) Numeric inversion of a monotone quadratic must round-trip.
+    _qy = [8e-5, 0.9, 20.0]
+    _pts = np.array([0.0, 270.0, 540.0, 810.0, 1080.0])
+    _back = vstat.invert_poly(np.polyval(_qy, _pts), _qy, 0.0, _H7)
+    check("a quadratic correction inverts to sub-pixel",
+          float(np.max(np.abs(_back - _pts))) < 0.01,
+          "max %.4f px" % float(np.max(np.abs(_back - _pts))))
+
+    # (j) THE condition the mean unsigned error cannot express: a
+    #     candidate that shrinks the error while GROWING the systematic
+    #     offset must be refused. Scatter averages out of an aggregate;
+    #     a displacement moves every gaze point the same way and every
+    #     spatial claim inherits it.
+    check("a correction that grows the bias is refused",
+          vstat.bias_not_worsened(80.0, 40.0, 2.0) is False)
+    check("a correction that shrinks the bias is accepted",
+          vstat.bias_not_worsened(40.0, 80.0, 2.0) is True)
+    check("an unchanged bias is not called worse (sub-pixel float noise)",
+          vstat.bias_not_worsened(1e-14, 0.0, 0.0) is True)
+    check("...but a whole pixel of extra bias is",
+          vstat.bias_not_worsened(31.0, 30.0, 0.0) is False)
+    check("the bias condition is wired into the rule, not just defined",
+          "bias_not_worsened(" in read("validation_stats.py").split(
+              "def select_correction")[1])
+
+    # (k) INVERSION MUST NOT FABRICATE. A quadratic has one turning
+    #     point; past it the mapping folds and has no inverse. The first
+    #     version bisected over a window a whole screen wider than the
+    #     screen and chose its direction from the padded endpoints, so
+    #     when the turning point fell inside that window it silently
+    #     returned the wrong branch — a value produced from y = 1400 came
+    #     back as 1350, which is a number, looks like a measurement, and
+    #     is not one. Off-screen gaze is not hypothetical: a real
+    #     validation target was measured at x = 1609 on a 1920 px screen.
+    _turn = [-4e-4, 1.10, 10.0]          # turning point at y = 1375
+    _lo_b, _hi_b = vstat.monotone_span(_turn, 0.0, 1080.0)
+    check("the monotone span stops at the turning point",
+          abs(_hi_b - 1375.0) < 1.0, "span ends at %.0f" % _hi_b)
+    _true = np.array([0.0, 540.0, 1080.0, 1300.0])
+    _rt = vstat.invert_poly(np.polyval(_turn, _true), _turn, 0.0, 1080.0)
+    check("inversion round-trips inside the monotone span",
+          float(np.max(np.abs(_rt - _true))) < 0.01,
+          "max %.4f px" % float(np.max(np.abs(_rt - _true))))
+    _beyond = float(np.polyval(_turn, 1375.0)) + 50.0
+    _nan = vstat.invert_poly(np.array([_beyond]), _turn, 0.0, 1080.0)
+    check("a value past the fold returns NaN, not the bracket edge",
+          bool(np.isnan(_nan[0])), "got %s" % _nan[0])
+    check("a value the mapping never attains returns NaN",
+          bool(np.isnan(vstat.invert_poly(np.array([1e6]), _turn,
+                                          0.0, 1080.0)[0])))
+    _fold_c = [-1e-3, 1.10, 10.0]        # turning point at y = 550
+    check("a correction folding ON-screen inverts to NaN everywhere",
+          bool(np.all(np.isnan(vstat.invert_poly(
+              np.array([100.0, 500.0]), _fold_c, 0.0, 1080.0)))))
+    _withnan = [{"tx": 100.0, "ty": 100.0, "mx": 160.0, "my": 100.0},
+                {"tx": 900.0, "ty": 900.0, "mx": float("nan"), "my": 900.0}]
+    _sn = vstat.signed_bias(_withnan)
+    check("a non-finite measurement is dropped, not averaged",
+          _sn["n_targets"] == 1 and _sn["mean_err_px"] == 60.0,
+          "n=%s mean=%s" % (_sn["n_targets"], _sn["mean_err_px"]))
+
+    # (l) THE FLAG MUST NOT BE DEFEATED BY ONE BAD TARGET. |mean bias| /
+    #     mean error is the obvious statistic and it fails exactly where
+    #     it is needed: an outlier inflates the denominator without
+    #     moving the numerator. Manuel_P2's post check is ~76 px of
+    #     almost pure displacement and scored 0.41 — under the bar —
+    #     because one target sat 634 px away. Reconstruct that shape.
+    #     The shape matters and is taken from the real record: the six
+    #     good targets carry a systematic (-60, -70) px offset, and the
+    #     seventh blows out in +x, i.e. AGAINST the offset it is masking.
+    #     Manuel_P2's dx ran -78, -57, -129, +649, +18, +11, -25 — the
+    #     six negatives cancelled most of the outlier, leaving a small
+    #     mean bias over a hugely inflated mean error.
+    _six = [{"tx": 500.0, "ty": 300.0 + 100 * i, "mx": 500.0 - 60.0,
+             "my": 300.0 + 100 * i - 70.0} for i in range(6)]
+    _six.append({"tx": 500.0, "ty": 900.0, "mx": 1150.0, "my": 900.0})
+    _od = vstat.signed_bias(_six)
+    check("the mean-based ratio alone would MISS a real offset",
+          _od["bias_ratio"] < 0.5,
+          "mean ratio %.2f (bias %.0f px over mean error %.0f px)"
+          % (_od["bias_ratio"], _od["bias_px"], _od["mean_err_px"]))
+    check("the median-based ratio catches it",
+          _od["bias_ratio_median"] > 0.5,
+          "median ratio %.2f" % _od["bias_ratio_median"])
+    check("...and the flag is raised on either basis",
+          _od["offset_dominated"] is True
+          and "median" in _od["offset_dominated_basis"],
+          _od["offset_dominated_basis"])
+    _iso = [{"tx": 960.0, "ty": 540.0, "mx": 960.0 + dx, "my": 540.0 + dy}
+            for dx, dy in ((70, 0), (-70, 0), (0, 70), (0, -70),
+                           (50, 50), (-50, -50))]
+    _is = vstat.signed_bias(_iso)
+    check("isotropic scatter is flagged on neither basis",
+          _is["offset_dominated"] is False,
+          "mean %.2f / median %.2f" % (_is["bias_ratio"],
+                                       _is["bias_ratio_median"]))
+
+    # (m) The bias in DEGREES must use the same ruler as the accuracy
+    #     printed beside it. The browser divides by a hardcoded 60 cm
+    #     (F21); the server recomputes from the iris. Two angles on one
+    #     line measured against two rulers is the fault class this
+    #     section exists to remove.
+    check("app.py rescales the bias with the MEASURED distance",
+          "bias_deg_basis" in _appsrc
+          and '_deg_m = record.get("mean_err_deg_measured")' in _appsrc)
+
+    # (n) THE DIAGNOSTICS MUST NOT BECOME THE RULE. Leave-one-out folds
+    #     share five of seven training targets, so the standard error is
+    #     optimistic by an unknown amount — there is no unbiased
+    #     estimator of cross-validation variance. A bootstrap interval
+    #     and a sign test are recorded beside it so a reader can see
+    #     whether all three agree, but the declared rule is the SE test
+    #     and it must stay the thing that decides.
+    _dg = next(c for c in _n["decision"]["candidates"]
+               if c["candidate"] == "affine")
+    check("the decision record carries a bootstrap interval",
+          isinstance(_dg.get("loo_bootstrap_ci_px"), list)
+          and len(_dg["loo_bootstrap_ci_px"]) == 2)
+    check("...and how many targets actually improved",
+          "/" in str(_dg.get("loo_targets_improved"))
+          and _dg.get("loo_sign_test_p") is not None)
+    check("the diagnostics are labelled corroborating, not decisive",
+          "corroborating" in _dg.get("diagnostics_note", ""))
+    check("the bootstrap is seeded, so a manifest is reproducible",
+          vstat.select_correction(_noise, _W7, _H7)["decision"]["candidates"]
+          [1]["loo_bootstrap_ci_px"] == _dg["loo_bootstrap_ci_px"])
+    # AT SEVEN TARGETS THE TWO CRITERIA ARE NOT INDEPENDENT, and the
+    # rule's documentation must not imply they are. For strictly positive
+    # paired differences the ratio mean / SE is bounded below by 1.0 —
+    # it is exactly 1.0 in the limiting case of six zeros and one spike,
+    # and above it otherwise — so a UNANIMOUS improvement can never fail
+    # the 1.0 SE bar. The sign test therefore adds nothing when it is
+    # unanimous; it earns its place only when it is not, which is
+    # precisely PILOT_02 (4/7, p = 1.00, bootstrap spanning zero).
+    def _ratio(a):
+        a = np.asarray(a, float)
+        return float(a.mean() / (a.std(ddof=1) / np.sqrt(len(a))))
+
+    _uni = [np.array([0.5, 0.4, 0.6, 0.5, 0.4, 0.6, 60.0]),
+            np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0e6]),
+            np.array([3.0, 9.0, 1.0, 40.0, 2.0, 5.0, 7.0])]
+    check("at n=7 a unanimous improvement always clears the 1.0 SE bar",
+          all(_ratio(a) >= 1.0 for a in _uni),
+          "ratios %s" % ["%.2f" % _ratio(a) for a in _uni])
+    check("...so the sign test only bites when it is NOT unanimous",
+          vstat._diagnostics(np.array(
+              [-20.0, 30.0, -15.0, 25.0, -10.0, 5.0, 8.0]
+          ))["loo_targets_improved"] == "4/7")
+
+    # (o) An implausible mapping is refused whatever its residual says.
+    _fold = _tg(lambda tx, ty: (tx * 0.05 + 900, ty * 0.05 + 500))
+    _f = vstat.select_correction(_fold, _W7, _H7)
+    check("a fold-over gain is refused however well it fits",
+          _f["decision"]["chosen"] == "none",
+          "chose %s" % _f["decision"]["chosen"])
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("correction selection", False, _blocked or repr(exc))
+
+# ── 7c. Re-deriving a recorded session under the rule ─────────────────
+# A rule that decides a session's correction should not have been applied
+# is worse than no rule at all if the recorded gaze keeps the correction:
+# the manifest then says one thing and the data says another. These guard
+# the tool that closes that gap.
+print("\n[7c] Re-derivation applies the decision to the recorded gaze")
+try:
+    import numpy as np
+    import pandas as pd
+
+    import rederive_session as rds
+    import validation_stats as vstat
+
+    # (a) THE SESSION ID. Finalisation derives it from the session CSV
+    #     basename and most manifests never store a `session_id` key at
+    #     all — only reconstructed ones do. Reading manifest["session_id"]
+    #     first matches nothing, and "no rows for this session" reads
+    #     like a clean result. A silent no-op on the one operation that
+    #     must not silently no-op.
+    check("the session id comes from the CSV basename, as finalise writes it",
+          rds.session_id_of({"session_csv": "P_2026-08-17_132902.csv",
+                             "session_id": "WRONG"}, "x_manifest.json")
+          == "P_2026-08-17_132902")
+    check("...and falls back to session_id only when there is no CSV",
+          rds.session_id_of({"session_id": "recon_1"}, "x_manifest.json")
+          == "recon_1")
+    check("app.py derives the same id the same way",
+          'session_id = os.path.splitext(os.path.basename(csv_path))[0]'
+          in _appsrc)
+
+    # (b) The video mapping must match finalisation EXACTLY. Two copies
+    #     of this arithmetic drifting apart would move every gaze point
+    #     relative to the stimulus — the precise error this whole
+    #     exercise is about.
+    check("finalise still maps gaze to video the way rederive does",
+          '((gx - vr["x"]) / vr["w"]).round(4)' in _appsrc
+          and '((gy - vr["y"]) / vr["h"]).round(4)' in _appsrc)
+    _rect = {"x": 0, "y": -8, "w": 1920, "h": 1080}
+    _nx, _ny = rds.video_coords(pd.Series([960.0]), pd.Series([532.0]),
+                                _rect)
+    check("video_coords reproduces the recorded mapping",
+          abs(float(_nx[0]) - 0.5) < 1e-9
+          and abs(float(_ny[0]) - 0.5) < 1e-9,
+          "got (%.4f, %.4f)" % (float(_nx[0]), float(_ny[0])))
+
+    # (c) ROUND TRIP on a real-shaped session: bake a correction into a
+    #     workbook exactly as finalisation would, then re-derive under a
+    #     rule that rejects it, and require the result to equal the
+    #     coordinates that would have been recorded with no correction at
+    #     all. Nothing is lost by applying a correction, because it is
+    #     applied downstream of the filtered columns — this asserts that
+    #     claim rather than assuming it.
+    import shutil
+    import tempfile
+
+    _tmp = tempfile.mkdtemp()
+    try:
+        _corr = {"px": [0.95, 13.5], "py": [0.96, -16.3], "cy": 540.0,
+                 "source": "test"}
+        _n = 200
+        _rng2 = np.random.default_rng(7)
+        _fx = _rng2.uniform(200, 1700, _n)
+        _fy = _rng2.uniform(150, 950, _n)
+        _gx = vstat.apply_axis(_fx, _corr["px"])
+        _gy = vstat.apply_axis(_fy, _corr["py"])
+        _wb = pd.DataFrame({
+            "session_id": "S_2026-08-17_120000",
+            "stimulus_name": "clip.mp4",
+            "filtered_gaze_position_x": _fx,
+            "filtered_gaze_position_y": _fy,
+            "corrected_gaze_position_x": np.round(_gx, 2),
+            "corrected_gaze_position_y": np.round(_gy, 2),
+            "gaze_video_nx": np.round((_gx - _rect["x"]) / _rect["w"], 4),
+            "gaze_video_ny": np.round((_gy - _rect["y"]) / _rect["h"], 4),
+        })
+        _wbp = os.path.join(_tmp, "data.xlsx")
+        _wb.to_excel(_wbp, index=False)
+
+        # Pure noise on the fit grid -> the rule must reject, so the
+        # session must come back to the uncorrected coordinates.
+        _rng3 = np.random.default_rng(20260817)
+        _tgts = [{"tx": float(a), "ty": float(b),
+                  "mx": float(a) + _rng3.normal(0, 70),
+                  "my": float(b) + _rng3.normal(0, 70)}
+                 for a, b in [(230, 130), (1690, 130), (960, 335),
+                              (288, 540), (1632, 540), (960, 745),
+                              (960, 950)]]
+        _man = {"session_csv": "S_2026-08-17_120000.csv",
+                "gain_correction": vstat.payload(_corr),
+                "stimuli": [{"stimulus": "clip.mp4", "video_rect": _rect}],
+                "validations": [{"phase": "pre_fit", "targets": _tgts,
+                                 "correction_active": {"active": False},
+                                 "screen": {"width_px": 1920,
+                                            "height_px": 1080}}]}
+        _mp = os.path.join(_tmp, "S_manifest.json")
+        with open(_mp, "w", encoding="utf-8") as _fh:
+            json.dump(_man, _fh)
+
+        # DRY RUN must change nothing on disk.
+        _before = open(_wbp, "rb").read()
+        _dry = rds.rederive(_mp, _wbp, apply=False)
+        check("a dry run reports the change and writes nothing",
+              _dry["changes"] == "removed"
+              and _dry["rows_rewritten"] == _n
+              and open(_wbp, "rb").read() == _before,
+              "changes=%s rows=%s" % (_dry["changes"],
+                                      _dry["rows_rewritten"]))
+
+        _res = rds.rederive(_mp, _wbp, apply=True)
+        _out = pd.read_excel(_wbp)
+        _want_ny = np.round((_fy - _rect["y"]) / _rect["h"], 4)
+        check("re-derivation recovers the uncorrected video coordinates",
+              float(np.max(np.abs(_out["gaze_video_ny"].to_numpy()
+                                  - _want_ny))) < 1e-9,
+              "max deviation %.2e"
+              % float(np.max(np.abs(_out["gaze_video_ny"].to_numpy()
+                                    - _want_ny))))
+        check("the corrected columns are cleared, not left stale",
+              bool(_out["corrected_gaze_position_y"].isna().all()))
+        with open(_mp, encoding="utf-8") as _fh:
+            _m2 = json.load(_fh)
+        check("the superseded correction is kept, not overwritten away",
+              (_m2.get("superseded_gain_correction") or {}).get("active")
+              is True)
+        check("the manifest marks everything derived from the gaze STALE",
+              (_m2.get("rederived") or {}).get("events_stale") is True
+              and bool(_m2["rederived"].get("stale")))
+        check("a backup of the workbook is written before any rewrite",
+              len(glob.glob(os.path.join(_tmp, "*pre-rederive*"))) == 2)
+
+        # (d) A session ALREADY matching the rule must be left alone.
+        _res2 = rds.rederive(_mp, _wbp, apply=True)
+        check("a session that already matches the rule is not rewritten",
+              _res2["changes"] is None and _res2["rows_rewritten"] == 0,
+              "changes=%s" % _res2["changes"])
+
+        # (e) No workbook = no manifest edit. A manifest that disagrees
+        #     with its data is worse than neither being updated.
+        with open(_mp, "w", encoding="utf-8") as _fh:
+            json.dump(_man, _fh)
+        _res3 = rds.rederive(_mp, os.path.join(_tmp, "nope.xlsx"),
+                             apply=True)
+        with open(_mp, encoding="utf-8") as _fh:
+            _m3 = json.load(_fh)
+        check("a missing workbook blocks the manifest edit too",
+              _res3["applied_to_disk"] is False
+              and "rederived" not in _m3
+              and (_m3.get("gain_correction") or {}).get("active") is True,
+              _res3.get("note", "")[:60])
+    finally:
+        shutil.rmtree(_tmp, ignore_errors=True)
+
+    # (f) A session with no per-target fit record cannot be decided, and
+    #     must say so rather than defaulting to "leave it as it is".
+    _und = rds.decide({"gain_correction": {"px": [1, 0], "py": [1, 0]},
+                       "validations": []})
+    check("an undecidable session is reported, not silently skipped",
+          _und["decidable"] is False and bool(_und.get("why")))
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("session re-derivation", False, _blocked or repr(exc))
 
 # ── 8. Quality-metric integrity ────────────────────────────────────────
 # These guard the 2026-07-31 fixes. The bugs they catch were all SILENT:
@@ -416,7 +866,8 @@ try:
                 and n.name == "_uncorrected_error"), None)
     check("_uncorrected_error is extractable", _fn is not None)
     if _fn:
-        _ns2 = {"np": np, "Any": object}
+        import validation_stats as _vs2
+        _ns2 = {"np": np, "Any": object, "validation_stats": _vs2}
         exec(compile(ast.Module(body=[_fn], type_ignores=[]), "x", "exec"),
              _ns2)
         _ue = _ns2["_uncorrected_error"]
@@ -441,10 +892,70 @@ try:
                                          float(np.mean(_raw))))
         check("no active correction → raw error passes through",
               _ue(_pl, None).get("mean_err_px_raw") == 100.0)
-        _q = _ue(_pl, {"px": [1, 0], "py": [1e-5, 1.0, 0.0], "source": "q"})
-        check("quadratic correction is refused, not approximated",
-              _q.get("raw_available") is False
-              and "mean_err_px_raw" not in _q)
+        # A QUADRATIC correction must be inverted too, not refused.
+        # Until 2026-08-17 this returned raw_available=False, and that
+        # gap was load bearing: the selection rule and the
+        # corrected-vs-uncorrected comparison both need a raw figure for
+        # EVERY session, so a session that happened to receive a
+        # quadratic fit dropped silently out of both. Build a genuine
+        # quadratic mapping, push known raw points through it, and
+        # require the recovered raw error back to sub-pixel.
+        _qc = {"px": [1.0, 0.0], "py": [8e-5, 0.9, 20.0], "cx": cx,
+               "cy": cy, "source": "q"}
+        _qtg, _qraw = [], []
+        for tx, ty in ((200, 150), (1700, 150), (960, 900), (300, 800)):
+            rmx, rmy = cx + (tx - cx) * 0.75, cy + (ty - cy) * 0.75
+            _qraw.append(float(np.hypot(rmx - tx, rmy - ty)))
+            _qtg.append({"tx": float(tx), "ty": float(ty),
+                         "mx": float(np.polyval(_qc["px"], rmx)),
+                         "my": float(np.polyval(_qc["py"], rmy))})
+        _q = _ue({"targets": _qtg, "mean_err_px": 100.0,
+                  "mean_err_deg": 1.7,
+                  "screen": {"width_px": 1920, "height_px": 1080}}, _qc)
+        check("quadratic correction is inverted, not refused",
+              _q.get("raw_available") is True
+              and abs(_q.get("mean_err_px_raw", -1)
+                      - float(np.mean(_qraw))) < 0.5,
+              "got %s, expected %.1f" % (_q.get("mean_err_px_raw"),
+                                         float(np.mean(_qraw))))
+
+        # ── The signed bias must travel with every error figure ──────
+        # A pure displacement and pure scatter of the same magnitude
+        # produce the SAME mean unsigned error. Only the signed bias
+        # separates them, and it is the separation this study needed.
+        _off = [{"tx": float(tx), "ty": float(ty),
+                 "mx": float(tx), "my": float(ty) - 60.0}
+                for tx, ty in ((200, 150), (1700, 150), (960, 900),
+                               (300, 800))]
+        _ob = _ue({"targets": _off, "mean_err_px": 60.0,
+                   "mean_err_deg": 1.03,
+                   "screen": {"width_px": 1920, "height_px": 1080}}, None)
+        check("a pure offset is reported as a signed bias",
+              abs(_ob.get("bias_y_px", 0) + 60.0) < 0.1
+              and abs(_ob.get("bias_x_px", 99)) < 0.1,
+              "bias = (%s, %s)" % (_ob.get("bias_x_px"),
+                                   _ob.get("bias_y_px")))
+        check("a pure offset is flagged offset-dominated",
+              _ob.get("offset_dominated") is True
+              and _ob.get("bias_ratio") == 1.0)
+        check("the direction is stated in words, not left to a sign",
+              "above" in (_ob.get("bias_direction") or ""),
+              _ob.get("bias_direction"))
+        # Scatter of the SAME mean magnitude must not be flagged.
+        _sc = [{"tx": 960.0, "ty": 540.0, "mx": 960.0 + dx,
+                "my": 540.0 + dy}
+               for dx, dy in ((60, 0), (-60, 0), (0, 60), (0, -60))]
+        _sb = _ue({"targets": _sc, "mean_err_px": 60.0,
+                   "mean_err_deg": 1.03,
+                   "screen": {"width_px": 1920, "height_px": 1080}}, None)
+        check("pure scatter of the same magnitude is NOT flagged",
+              _sb.get("offset_dominated") is False
+              and _sb.get("median_err_px") == _ob.get("median_err_px")
+              == 60.0,
+              "scatter bias %.1f px vs offset bias %.1f px, identical "
+              "%s px error either way" % (_sb.get("bias_px", -1),
+                                          _ob.get("bias_px", -1),
+                                          _sb.get("median_err_px")))
 
     # (e) Gain must be reported per axis — a single mean reads x1.0 when
     #     one axis is compressed and the other expanded.

@@ -276,6 +276,47 @@
                         ? '(' + v.mean_err_deg_raw + '° uncorrected) · ' : '')
                     + (v.passes_threshold ? 'PASS' : 'FAIL'),
                     v.passes_threshold ? 'pass' : 'fail');
+                // THE SIGNED BIAS. The accuracy above is a mean UNSIGNED
+                // distance: it reads the same for 60 px of scatter and
+                // for 60 px of uniform upward displacement. Scatter
+                // averages out of an aggregate; a displacement moves
+                // every gaze point the same way and every spatial claim
+                // inherits it. A participant reported this study's before
+                // any number on this page did (F30).
+                if (v.bias_px !== null && v.bias_px !== undefined) {
+                    row('  ↳ systematic offset:',
+                        v.bias_px + ' px'
+                        + (v.bias_deg ? ' ≈ ' + v.bias_deg + '°' : '')
+                        + ' — ' + (v.bias_direction || '')
+                        + ' (x ' + (v.bias_x_px > 0 ? '+' : '')
+                        + v.bias_x_px + ', y ' + (v.bias_y_px > 0 ? '+' : '')
+                        + v.bias_y_px + ' px)'
+                        + (v.offset_dominated ? ' — OFFSET-DOMINATED' : ''),
+                        v.offset_dominated ? 'fail' : '');
+                    if (v.offset_dominated) {
+                        row('', Math.round(100 * v.bias_ratio) + ' % of the '
+                            + 'error is a fixed displacement, not scatter. '
+                            + 'Scatter averages out of an aggregate; this '
+                            + 'does not — every gaze point in this '
+                            + 'recording is moved the same way, so region '
+                            + 'assignment and every claim checked against '
+                            + 'it carry the offset.', 'fail');
+                    }
+                }
+                // The seven-target MEAN has no rejection rule. One target
+                // 649 px from its mark took a real session's post check
+                // from 2.41° (median) to 3.52° (mean) — the difference
+                // between passing and failing the 3.0° bar.
+                if (v.median_err_px && v.mean_err_px
+                    && Math.abs(v.mean_err_px - v.median_err_px)
+                        > 0.25 * v.mean_err_px) {
+                    row('  ↳ one target carries the mean:',
+                        'mean ' + v.mean_err_px + ' px vs median '
+                        + v.median_err_px + ' px'
+                        + (v.max_err_px ? ' (worst ' + v.max_err_px + ' px)'
+                            : '')
+                        + ' — state which figure a claim uses', 'fail');
+                }
             });
             if (q.drift_deg !== undefined) {
                 row('Calibration drift (post − pre):',
@@ -303,6 +344,37 @@
                         + 'identity, so “corrected” columns equal the raw '
                         + 'ones. Check the pre-validation target spread.');
                 }
+            }
+            // WHY that correction, or why none. A session where the fit
+            // was made and then REJECTED and one where it was never
+            // attempted are different facts and must not look identical.
+            if (q.correction_decision) {
+                const d = q.correction_decision;
+                row('Correction decision:',
+                    d.chosen.toUpperCase() + ' — ' + (d.reason || ''),
+                    d.chosen === 'none' ? 'fail' : 'pass');
+                (d.candidates || []).forEach((c) => {
+                    row('', '· ' + c.candidate + ': '
+                        + (c.loo_mean_err_px !== undefined
+                            && c.loo_mean_err_px !== null
+                            ? 'leave-one-out ' + c.loo_mean_err_px + ' px, '
+                              + '|bias| ' + c.loo_bias_px + ' px'
+                              + (c.improvement_se_units !== undefined
+                                  ? ' (' + c.improvement_se_units
+                                    + ' SE vs none)' : '')
+                            : (c.status || '')));
+                });
+                row('', 'Selected by cross-validation on the FIT grid. '
+                    + 'Grid B is never consulted, so the pre_check figure '
+                    + 'above is still out of sample. Rule fixed '
+                    + (d.rule_fixed_on || '?') + '; it replaced: '
+                    + (d.previous_rule || '?'));
+            } else if ((q.validations || []).length) {
+                row('Correction decision:',
+                    'not recorded — this session pre-dates the '
+                    + 'cross-validated rule (2026-08-17) and its correction '
+                    + 'was applied unconditionally. Run correction_audit.py.',
+                    'fail');
             }
             if (q.rate_gate) {
                 const g = q.rate_gate;

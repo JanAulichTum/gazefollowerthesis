@@ -230,6 +230,76 @@ def check_session(manifest: dict, res: Result) -> None:
         res.add("RQ1", "accuracy_post_stimulus_deg", s, v,
                 "grid B after the stimuli")
 
+    # ── THE SIGNED BIAS ──────────────────────────────────────────────
+    # An accuracy figure is a mean UNSIGNED distance and cannot tell 60 px
+    # of scatter from 60 px of uniform upward displacement. Scatter
+    # averages out of any aggregate; a displacement moves every gaze point
+    # the same way, so region assignment, correspondence with the model's
+    # boxes and the ambiguity rate all inherit it. A participant reported
+    # this study's before any metric did (F30), because no quantity
+    # reported anywhere was signed.
+    #
+    # Only the grid-B phases are reported. On the fit grid the
+    # post-correction bias is zero by construction — least squares zeroes
+    # its own mean residual — and printing an algebraic identity next to
+    # measurements is how it gets mistaken for one.
+    for _v in (chk or []) + (post or []):
+        _ph = _v.get("phase")
+        if _v.get("bias_px") is None:
+            res.add("RQ1", "signed_bias_%s_px" % _ph, MISSING, "",
+                    "recorded before the signed bias was reported "
+                    "(2026-08-17) — re-derive with correction_audit.py")
+            continue
+        _dom = bool(_v.get("offset_dominated"))
+        res.add("RQ1", "signed_bias_%s_px" % _ph,
+                DEGENERATE if _dom else PRESENT,
+                "%.0f px (%+.0f, %+.0f)" % (_v["bias_px"],
+                                            _v.get("bias_x_px") or 0,
+                                            _v.get("bias_y_px") or 0),
+                ("OFFSET-DOMINATED: %.0f %% of the error is a fixed "
+                 "displacement — %s. Every spatial claim from this "
+                 "recording carries it."
+                 % (100 * (_v.get("bias_ratio") or 0),
+                    _v.get("bias_direction") or "direction unrecorded"))
+                if _dom else
+                "the error is mostly scatter, which averages out of an "
+                "aggregate")
+
+    # ── HOW MUCH ONE TARGET MOVED THE FIGURE ─────────────────────────
+    # Accuracy is a mean over seven targets with no rejection rule. One
+    # target measured 649 px from its mark took a real session's post
+    # check from 2.41 deg on the median to 3.52 deg on the mean — the
+    # difference between passing and failing the 3.0 deg bar. Both are
+    # reported so the leverage is visible rather than silent. No rule is
+    # applied here: which figure the inclusion criterion uses is a
+    # pre-registration decision, not something this report may make.
+    for _v in (chk or []) + (post or []):
+        _mean, _med = _v.get("mean_err_px"), _v.get("median_err_px")
+        if not (_mean and _med):
+            continue
+        _lev = abs(_mean - _med) / _mean
+        res.add("RQ1", "outlier_leverage_%s" % _v.get("phase"),
+                DEGENERATE if _lev > 0.25 else PRESENT,
+                "mean %.0f px vs median %.0f px" % (_mean, _med),
+                "one or two of the seven targets carry the mean, and there "
+                "is no rejection rule — state which figure a claim uses"
+                if _lev > 0.25 else
+                "mean and median agree; no single target dominates")
+
+    # ── WAS THE CORRECTION APPLIED, AND WHY ──────────────────────────
+    _dec = (manifest.get("correction_decision") or {})
+    if _dec:
+        res.add("RQ1", "correction_decision", PRESENT,
+                _dec.get("chosen", "?"),
+                "%s | rule fixed %s" % (_dec.get("reason", ""),
+                                        _dec.get("rule_fixed_on", "?")))
+    elif manifest.get("validations"):
+        res.add("RQ1", "correction_decision", MISSING, "",
+                "recorded before the correction was cross-validated "
+                "(2026-08-17). The correction on this session was applied "
+                "unconditionally — run correction_audit.py to see what the "
+                "current rule would have chosen and whether it differs.")
+
     # ── THE INCLUSION FIGURE ─────────────────────────────────────────
     # The mean of the two grid-B checks, one either side of the
     # recording.

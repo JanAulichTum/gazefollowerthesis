@@ -111,6 +111,42 @@ RQ1_QUALITY = [
     ("per_target_error_px", "session", "px", "collected",
      "Error at each of the 7 targets. Reveals spatially structured error "
      "(e.g. worse at the bottom of the screen) that a mean conceals."),
+    ("signed_bias_px", "session", "px", "collected",
+     "SIGNED mean of (measured - target), per axis and as a magnitude, on "
+     "the grid-B checks. Accuracy is a mean UNSIGNED distance and reads "
+     "identically for 60 px of scatter and 60 px of uniform upward "
+     "displacement. The two are not interchangeable: scatter averages out "
+     "of any aggregate, an offset moves every gaze point the same way, and "
+     "region assignment, correspondence with the model's boxes and the "
+     "ambiguity rate all inherit it. A participant reported this study's "
+     "before any metric did (F30). NOT reported on the fit grid, where "
+     "least squares zeroes its own mean residual and the answer is an "
+     "algebraic identity rather than a measurement."),
+    ("bias_ratio", "session", "-", "collected",
+     "|signed bias| / mean unsigned error. Above 0.5 the error is a "
+     "systematic displacement rather than scatter and the mean alone "
+     "misdescribes the recording. Both grid-B checks of both sessions "
+     "measured so far sit at 0.80-0.96."),
+    ("median_validation_error_px", "session", "px", "collected",
+     "Median of the 7 per-target errors, reported BESIDE the mean, not "
+     "instead of it. The mean has no outlier rule: one target measured "
+     "649 px from its mark took a session's post check from 2.41 deg on "
+     "the median to 3.52 deg on the mean, across the 3.0 deg inclusion "
+     "bar. Which figure the criterion uses is an open pre-registration "
+     "decision, deliberately not settled by this spec."),
+    ("correction_decision", "session", "json", "collected",
+     "Which of {none, affine, quadratic-vertical} was applied, the "
+     "leave-one-out figures for each, the criterion, the date the "
+     "criterion was fixed, and the rule it replaced. A session whose "
+     "correction was fitted and then REJECTED is otherwise "
+     "indistinguishable from one where none was ever fitted."),
+    ("bias_stability_px", "session", "px", "derived",
+     "Change in raw signed bias between consecutive validations, tested "
+     "against the target-to-target scatter each mean was estimated from "
+     "(correction_audit.py). Measured at 0.9-1.3 deg over 21-40 s in both "
+     "sessions carrying per-target records, which is why no session-wise "
+     "correction can remove the offset, and why the accuracy claim has to "
+     "carry an irreducible directional term (F30)."),
     ("sampling_hz_empirical", "stimulus", "Hz", "collected",
      "Median rate over the recorded segment. Every event metric's "
      "resolution derives from this; the nominal 30 Hz must never be used "
