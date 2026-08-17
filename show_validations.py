@@ -64,6 +64,24 @@ def _manifests() -> list:
     return sorted(out, key=_key)
 
 
+def _signed_bias(v: dict) -> "dict | None":
+    """Signed bias for one validation record, from its per-target rows.
+
+    Computed rather than read: the point of this tool is to see what the
+    per-target numbers say, and the sessions that most need looking at
+    are the ones recorded before the record carried a bias field.
+    """
+    targets = v.get("per_target") or v.get("targets") or []
+    px, deg = v.get("mean_err_px"), v.get("mean_err_deg")
+    dpp = (deg / px) if (px and deg) else None
+    try:
+        import validation_stats
+    except ImportError:
+        return None
+    out = validation_stats.signed_bias(targets, dpp)
+    return out if out.get("bias_available") else None
+
+
 def report(path: str) -> None:
     with open(path, encoding="utf-8") as fh:
         man = json.load(fh)
@@ -85,7 +103,7 @@ def report(path: str) -> None:
         if dist.get("source") and "iris" not in str(dist.get("source")):
             print()
             print("  *** The FALLBACK ruler produced this distance. Its")
-            print("      population spread is ~11 %% and it foreshortens")
+            print("      population spread is ~11 % and it foreshortens")
             print("      with head yaw. Every angle in this session is")
             print("      scaled by it. ***")
         print()
@@ -96,7 +114,9 @@ def report(path: str) -> None:
         print("  %-10s grid=%-3s corrected=%-5s n=%-3s mean_err_px=%s "
               "raw_deg=%s deg=%s"
               % (v.get("phase"), v.get("grid"), v.get("correction_active"),
-                 v.get("n_targets"), v.get("mean_err_px"),
+                 (v.get("n_targets") if v.get("n_targets") is not None
+                  else len(v.get("targets") or []) or None),
+                 v.get("mean_err_px"),
                  v.get("mean_err_deg_raw"), v.get("mean_err_deg")))
         per = v.get("per_target") or v.get("targets") or []
         errs = []
@@ -108,7 +128,52 @@ def report(path: str) -> None:
             print("      per-target px: %s"
                   % ", ".join("%.0f" % e for e in errs if e is not None))
             fingerprints.setdefault(tuple(errs), []).append(v.get("phase"))
-        print("      recorded_at  : %s" % v.get("recorded_at", "?"))
+        # ── The SIGNED bias ─────────────────────────────────────────
+        # Derived from the per-target numbers rather than read from the
+        # record, so sessions written before 2026-08-17 show it too. A
+        # mean unsigned error reads the same for 60 px of scatter and
+        # 60 px of uniform displacement; only this separates them, and
+        # this study had the second (F30).
+        _b = _signed_bias(v)
+        if _b:
+            print("      signed bias  : %.0f px (x %+.0f, y %+.0f) — %s"
+                  % (_b["bias_px"], _b["bias_x_px"], _b["bias_y_px"],
+                     _b["bias_direction"]))
+            print("      mean / median: %.0f px / %.0f px   worst target "
+                  "%.0f px" % (_b["mean_err_px"], _b["median_err_px"],
+                               _b["max_err_px"]))
+            if _b["offset_dominated"]:
+                print("      *** OFFSET-DOMINATED: %.0f %% of the error is "
+                      "a fixed displacement," % (100 * _b["bias_ratio"]))
+                print("          not scatter. Scatter averages out of an "
+                      "aggregate; this does not — every")
+                print("          gaze point in the recording is moved the "
+                      "same way. ***")
+        print("      recorded_at  : %s"
+              % (v.get("recorded_at_utc") or v.get("recorded_at", "?")))
+        print()
+
+    dec = man.get("correction_decision")
+    if dec:
+        print("  Correction decision: %s — %s"
+              % (str(dec.get("chosen")).upper(), dec.get("reason", "")))
+        for c in dec.get("candidates", []):
+            if c.get("loo_mean_err_px") is None:
+                print("    %-20s %s" % (c["candidate"], c.get("status", "")))
+                continue
+            print("    %-20s leave-one-out %7.1f px | |bias| %6.1f px%s"
+                  % (c["candidate"], c["loo_mean_err_px"], c["loo_bias_px"],
+                     ("   (%.1f SE vs none)" % c["improvement_se_units"])
+                     if c.get("improvement_se_units") is not None else ""))
+        print("    Rule fixed %s. It replaced: %s"
+              % (dec.get("rule_fixed_on"), dec.get("previous_rule")))
+        print()
+    elif any(v.get("targets") for v in vals):
+        print("  *** No correction decision recorded. This session pre-dates")
+        print("      the cross-validated rule (2026-08-17): its correction")
+        print("      was fitted on grid A and applied unconditionally, with")
+        print("      no check that it generalised. correction_audit.py shows")
+        print("      what the current rule would choose. ***")
         print()
 
     for errs, phases in fingerprints.items():
