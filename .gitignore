@@ -148,6 +148,12 @@ data/agreement/
 # audit trail. Same rule as data/study/.
 data/retired/
 
+# Transfer scratch and anything staged for manual deletion. This is not
+# session data and must never enter a commit — a set of transfer archives
+# was swept into one on 2026-08-17 and had to be amended out.
+_to_delete/
+_xfer/
+
 # Vendored wheels. Install from PyPI / upstream instead. The GazeFollower
 # wheel bundles the CC BY-NC-SA model weights (res/model_weights/base.mnn),
 # which are not ours to publish -- same rule as models/*.mnn above.
