@@ -5379,6 +5379,108 @@ except Exception as exc:  # noqa: BLE001
     check("full-affine correction candidate", False, _blocked or repr(exc))
 
 
+print("\n[23] The correction actually fixes a systematically offset point")
+# Every check up to here verifies the correction machinery in isolation:
+# fitting recovers known parameters, apply<->invert round-trips, payload
+# forms survive reconstruction. None of them ask the practical question a
+# participant actually asked: raw gaze reads BELOW the target — does the
+# fitted correction put a NEW, held-out point back where it belongs?
+# Parameter recovery and outcome correctness are not the same claim, and
+# nothing before this section tested the second one.
+try:
+    import numpy as np
+    import pandas as pd
+    import validation_stats as _vsmod2
+    import app as _app_mod2
+
+    _rng2 = np.random.default_rng(42)
+    _W2, _H2 = 1920.0, 1080.0
+    _cy2 = _H2 / 2.0
+    _OFFSET_Y = 80.0
+    _GAIN_Y = 0.85
+    _GRID_PCT = [(12, 12), (88, 12), (50, 31), (15, 50), (85, 50),
+                (50, 69), (50, 88)]
+
+    _fit_targets = []
+    for _px, _py in _GRID_PCT:
+        _tx, _ty = _px / 100.0 * _W2, _py / 100.0 * _H2
+        _my_true = _GAIN_Y * (_ty - _cy2) + _cy2 + _OFFSET_Y
+        _fit_targets.append({
+            "tx": _tx, "ty": _ty,
+            "mx": _tx + _rng2.normal(0, 4.0),
+            "my": _my_true + _rng2.normal(0, 4.0),
+        })
+
+    _raw_bias = np.mean([t["my"] - t["ty"] for t in _fit_targets])
+    check("scenario check: raw gaze IS systematically below target "
+          "before any correction (this test's own setup, not the "
+          "pipeline)", _raw_bias > 50, "mean raw dy = %.1f px" % _raw_bias)
+
+    _result2 = _vsmod2.select_correction(_fit_targets, _W2, _H2)
+    _corr2 = _result2["correction"]
+    check("select_correction (what app._auto_fit_correction calls) picks "
+          "a correction for an unambiguous systematic offset",
+          _corr2 is not None)
+
+    if _corr2:
+        # HELD-OUT points: same bias model, NOT in the fit grid.
+        _held_out = [(300.0, 200.0), (960.0, 540.0), (1600.0, 850.0),
+                    (960.0, 130.0)]
+        _resids = []
+        for _tx, _ty in _held_out:
+            _my_true = _GAIN_Y * (_ty - _cy2) + _cy2 + _OFFSET_Y
+            _cx, _cyy = _vsmod2.apply_point(_tx, _my_true, _corr2)
+            _resids.append(float(np.hypot(_cx - _tx, _cyy - _ty)))
+        check("apply_point puts every HELD-OUT biased point (not used to "
+              "fit) back within 15px of truth (started 60-95px off)",
+              all(r < 15 for r in _resids),
+              "residuals: %s" % [round(r, 1) for r in _resids])
+
+        # The full live path: _auto_fit_correction (real server code) then
+        # _apply_series (the real code that builds
+        # corrected_gaze_position_* for a session's CSV).
+        _fake_state2 = {}
+        _fake_record2 = {
+            "phase": "pre_fit", "targets": _fit_targets,
+            "mean_err_px": float(np.mean(
+                [np.hypot(t["mx"] - t["tx"], t["my"] - t["ty"])
+                 for t in _fit_targets])),
+            "screen": {"width_px": _W2, "height_px": _H2},
+        }
+        _app_mod2._auto_fit_correction(_fake_state2, _fake_record2,
+                                       sid="run-tests-offset-test")
+        _prod_corr = _fake_state2.get("correction")
+        check("app._auto_fit_correction (the real server path) also "
+              "selects a correction for this scenario", _prod_corr is not None)
+
+        if _prod_corr:
+            _n2 = 200
+            _true_x = _rng2.uniform(100, _W2 - 100, _n2)
+            _true_y = _rng2.uniform(100, _H2 - 100, _n2)
+            _raw_x = _true_x + _rng2.normal(0, 5, _n2)
+            _raw_y = (_GAIN_Y * (_true_y - _cy2) + _cy2 + _OFFSET_Y
+                     + _rng2.normal(0, 5, _n2))
+            _cx2, _cy3 = _app_mod2._apply_series(
+                pd.Series(_raw_x), pd.Series(_raw_y), _prod_corr)
+            _err_before = np.hypot(_raw_x - _true_x, _raw_y - _true_y)
+            _err_after = np.hypot(_cx2.to_numpy() - _true_x,
+                                  _cy3.to_numpy() - _true_y)
+            _dy_after = float(np.mean(_cy3.to_numpy() - _true_y))
+            check("on 200 simulated recorded samples the CSV correction "
+                  "path (_apply_series) removes the systematic bias, not "
+                  "just reduces it", abs(_dy_after) < 10,
+                  "%.1f px remains" % _dy_after)
+            check("mean error drops to well under a quarter of its raw "
+                  "value (this is what a participant would see: the dot "
+                  "moving onto the person, not staying above)",
+                  _err_after.mean() < 0.25 * _err_before.mean(),
+                  "%.1f -> %.1f px" % (_err_before.mean(), _err_after.mean()))
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("the correction fixes a systematically offset point", False,
+          _blocked or repr(exc))
+
+
 # ── The summary must be LAST ──────────────────────────────────────────
 # Section [20] was appended AFTER this block, so its failures printed as
 # [FAIL] and were never counted: the suite reported ALL TESTS PASSED and
