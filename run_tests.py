@@ -5296,6 +5296,33 @@ try:
           _corr is not None
           and np.allclose(np.array(_corr["A"]), _A_true, atol=0.05))
 
+    # THE GAP THAT LET A REAL BUG THROUGH: everything above calls
+    # _fit_candidate directly. select_correction is a SEPARATE code path
+    # (loo_errors -> _loo_summary -> the candidate-walk in
+    # select_correction) that used to dispatch full-affine's LOO
+    # eligibility through _degrees_for, which has no entry for
+    # "full-affine" — so loo_errors returned None UNCONDITIONALLY for
+    # it, regardless of n, and select_correction's fallback then
+    # reported "unstable under cross-validation" even when EVERY leave-
+    # one-out fold fit fine (0 of n unstable). full-affine could never
+    # be evaluated, let alone chosen, no matter how well it fit. Found
+    # on PILOT_06, the first real 13-target session, where this exact
+    # shear scenario occurs. Testing _fit_candidate alone never caught
+    # it because the bug was entirely in loo_errors's gate, one level up.
+    _sel16 = _vsmod.select_correction(_targets, _W, _H)
+    _row16 = next(c for c in _sel16["decision"]["candidates"]
+                 if c["candidate"] == "full-affine")
+    check("select_correction actually EVALUATES full-affine at n=16 "
+          "(status 'evaluated' with a real LOO figure, not 'unstable' "
+          "or 'not fittable' just because n >= FULL_AFFINE_MIN_TARGETS)",
+          _row16.get("status") == "evaluated"
+          and _row16.get("loo_mean_err_px") is not None,
+          str(_row16))
+    check("select_correction CHOOSES full-affine when it clearly beats "
+          "every other candidate (strong synthetic shear, n=16)",
+          _sel16["decision"]["chosen"] == "full-affine",
+          "chosen=%s" % _sel16["decision"]["chosen"])
+
     _corr7 = _vsmod._fit_candidate(_m_arr[:7], _t_arr[:7], "full-affine",
                                    _W, _H)
     check("full-affine is refused outright below FULL_AFFINE_MIN_TARGETS "

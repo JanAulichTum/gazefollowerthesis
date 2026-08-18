@@ -760,9 +760,24 @@ def loo_errors(m: np.ndarray, t: np.ndarray, candidate: str,
     n = len(m)
     if candidate == "none":
         return np.hypot(m[:, 0] - t[:, 0], m[:, 1] - t[:, 1])
-    degs = _degrees_for(candidate)
-    if degs is None or n < max(degs) + 2:
-        return None
+    if candidate == "full-affine":
+        # NOT _degrees_for: that dict has no entry for full-affine (it
+        # is not a per-axis polynomial degree pair), and "no entry" used
+        # to mean "return None here unconditionally" — so full-affine
+        # could NEVER reach the loop below, no matter how well it fit,
+        # and select_correction's fallback then mislabelled a fit with
+        # ZERO failed leave-one-out folds as "unstable under
+        # cross-validation" only because loo_errors had already bailed.
+        # Found on PILOT_06, the first real 13-target session: full-
+        # affine reported "0 of 13 folds produce a local gain outside
+        # [...]" and STILL showed as unstable, because that status was
+        # never actually informed by evaluating this candidate.
+        if n < FULL_AFFINE_MIN_TARGETS:
+            return None
+    else:
+        degs = _degrees_for(candidate)
+        if degs is None or n < max(degs) + 2:
+            return None
     errs = np.empty((n, 2), float)
     for i in range(n):
         keep = np.arange(n) != i
