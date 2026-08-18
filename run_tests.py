@@ -5102,6 +5102,144 @@ except Exception as exc:  # noqa: BLE001
     check("end-to-end and invariants", False, _blocked or repr(exc))
 
 
+print("\n[21] Automatic head-position capture")
+# F33/F36: head_position was null in all nine manifests recorded so far
+# — the ONLY thing that ever wrote it was an opt-in pre-calibration
+# guide nobody had opened. This calls the REAL app.py functions
+# (imported, not reimplemented) against a fake but IMPERFECT
+# position_info() reply — distance drifting between phases, a lost face
+# on one phase, the tracker subprocess raising — the way a real run
+# actually looks, not a clean synthetic one.
+try:
+    import app as _app_mod
+
+    def _fake_pos(available=True, face=True, distance=55.0, **extra):
+        if not (available and face):
+            return {"ok": True, "available": available, "face": face}
+        out = {"ok": True, "available": True, "face": True, "ready": True,
+               "guidance": ["Good position — hold still and calibrate."],
+               "assumed_hfov_deg": 60.0, "est_distance_cm": distance,
+               "distance_source": "iris", "roll_deg": 1.5,
+               "face_center_x": 0.5, "face_center_y": 0.42}
+        out.update(extra)
+        return out
+
+    _st = {}
+    _snap_cal = _app_mod._capture_head_position(
+        _st, "calibration", pos=_fake_pos(distance=56.0))
+    _snap_pf = _app_mod._capture_head_position(
+        _st, "pre_fit", pos=_fake_pos(distance=53.0))
+    _snap_pc = _app_mod._capture_head_position(
+        _st, "pre_check", pos=_fake_pos(available=True, face=False))
+    _snap_po = _app_mod._capture_head_position(
+        _st, "post", pos=_fake_pos(distance=52.0))
+
+    check("calibration snapshot captured with geometry",
+          _snap_cal.get("available") is True
+          and _snap_cal.get("est_distance_cm") == 56.0)
+    check("a lost-face poll is recorded as unavailable, not dropped",
+          _snap_pc.get("available") is False
+          and "est_distance_cm" not in _snap_pc)
+    check("state.head_position_log has one entry per phase",
+          len(_st.get("head_position_log", [])) == 4,
+          "got %d" % len(_st.get("head_position_log", [])))
+
+    _manifest_hp = _app_mod._head_position_manifest(_st)
+    check("manifest head_position has by_phase for all four phases",
+          set((_manifest_hp or {}).get("by_phase", {})) ==
+          {"calibration", "pre_fit", "pre_check", "post"})
+    check("by_phase.pre_check keeps the unavailable flag",
+          _manifest_hp["by_phase"]["pre_check"].get("available") is False)
+    check("top-level mirror is the LAST AVAILABLE snapshot (post, "
+          "skipping the unavailable pre_check)",
+          _manifest_hp.get("est_distance_cm") == 52.0)
+
+    # Tracker subprocess hiccup: position_info() itself raises. Must not
+    # propagate — head position is instrumentation, never a reason to
+    # lose a calibration or validation result.
+    def _boom(*_a, **_k):
+        raise RuntimeError("tracker pipe closed")
+
+    _orig_pos_info = _app_mod.gaze_service.position_info
+    _app_mod.gaze_service.position_info = _boom
+    try:
+        _snap_err = _app_mod._capture_head_position({}, "calibration")
+        check("position_info() raising yields an unavailable snapshot, "
+              "not an exception", _snap_err.get("available") is False)
+    finally:
+        _app_mod.gaze_service.position_info = _orig_pos_info
+
+    # The optional guide's old snapshot shape must still fold in
+    # (back-compat) if someone opens it, alongside the automatic phases.
+    _st2 = {"position_snapshot": {"est_distance_cm": 61.0}}
+    _app_mod._capture_head_position(_st2, "pre_fit", pos=_fake_pos())
+    _hp2 = _app_mod._head_position_manifest(_st2)
+    check("the optional guide's snapshot still folds in as phase "
+          "'guide' alongside the automatic ones",
+          "guide" in (_hp2 or {}).get("by_phase", {})
+          and "pre_fit" in _hp2["by_phase"])
+
+    # Downstream readers must not choke on a POPULATED head_position —
+    # every manifest either of them has ever seen had it null.
+    import correction_audit as _ca_mod
+    import verify_metrics as _vm_mod
+
+    _fake_manifest = {
+        "session_id": "RUNTESTS_FAKE_HEADPOS",
+        "validations": [
+            {"phase": "pre_fit", "mean_err_deg": 1.5, "mean_err_px": 90.0,
+             "targets": [{"err_px": e} for e in
+                        (80, 85, 90, 95, 100, 88, 92)],
+             "head_position": _snap_pf},
+            {"phase": "pre_check", "mean_err_deg": 1.6, "mean_err_px": 95.0,
+             "targets": [{"err_px": e} for e in
+                        (85, 90, 95, 100, 105, 93, 97)],
+             "head_position": _snap_pc},
+            {"phase": "post", "mean_err_deg": 1.7, "mean_err_px": 100.0,
+             "targets": [{"err_px": e} for e in
+                        (90, 95, 100, 105, 110, 98, 102)],
+             "head_position": _snap_po},
+        ],
+        "head_position": _manifest_hp,
+        "gain_correction": {},
+        "correction_decision": None,
+        "distance": {"cm": 52.0, "source": "iris", "measured": True},
+    }
+    try:
+        _res = _vm_mod.Result()
+        _vm_mod.check_session(_fake_manifest, _res)
+        check("verify_metrics.check_session tolerates populated "
+              "head_position", True)
+    except Exception as exc:  # noqa: BLE001
+        check("verify_metrics.check_session tolerates populated "
+              "head_position", False, "%s: %s" % (type(exc).__name__, exc))
+
+    import io as _io
+    import contextlib as _cl
+    import json as _js2
+    import os as _os2
+    import tempfile as _tf2
+
+    with _tf2.NamedTemporaryFile("w", suffix="_manifest.json",
+                                 delete=False) as _fh:
+        _js2.dump(_fake_manifest, _fh)
+        _tmp_manifest = _fh.name
+    try:
+        _a = _ca_mod.audit(_tmp_manifest)
+        check("correction_audit.audit() picks up the head-position block",
+              bool(_a and _a.get("head_position")))
+        _buf = _io.StringIO()
+        with _cl.redirect_stdout(_buf):
+            _ca_mod.render(_a)
+        check("correction_audit.render() prints the lost-face phase",
+              "pre_check   no face geometry at capture time" in
+              _buf.getvalue())
+    finally:
+        _os2.unlink(_tmp_manifest)
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("automatic head-position capture", False, _blocked or repr(exc))
+
 
 # ── The summary must be LAST ──────────────────────────────────────────
 # Section [20] was appended AFTER this block, so its failures printed as

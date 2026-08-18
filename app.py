@@ -2409,10 +2409,12 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
         # then REJECTED is indistinguishable from one where it was never
         # fitted unless this is written down (F30).
         "correction_decision": state.get("correction_decision"),
-        # Head-position snapshot from the pre-calibration guide. OPTIONAL
-        # — the guide is a convenience for seating the participant, and
-        # in most sessions nobody opens it, so this is usually null.
-        "head_position": state.get("position_snapshot"),
+        # Head-position/geometry snapshots, one per phase (calibration,
+        # pre_fit, pre_check, post — see _capture_head_position), taken
+        # AUTOMATICALLY, not from the optional pre-calibration guide.
+        # Was null in all nine sessions recorded before this because the
+        # guide is opt-in and nobody had opened it (F33/F36).
+        "head_position": _head_position_manifest(state),
         # ── THE VIEWING DISTANCE, from the MANDATORY validation ───────
         # Every degree figure in this study divides by this number, so it
         # cannot depend on whether someone happened to open an optional
@@ -3021,6 +3023,12 @@ def handle_validation_result(payload: dict):
     # differ, that difference is exactly the error the assumption caused.
     try:
         pos = gaze_service.position_info() or {}
+        # Same reply the distance conversion below uses — logged as this
+        # phase's head-position snapshot too, so the geometry at THIS
+        # validation (not just the distance derived from it) is on
+        # record. Mandatory: every validation runs this block already.
+        record["head_position"] = _capture_head_position(
+            state, record["phase"], pos=pos)
         dist = pos.get("est_distance_cm")
         scr = payload.get("screen") or {}
         if dist and 25 < float(dist) < 120 and record.get("mean_err_px"):
@@ -3664,6 +3672,86 @@ def _persist_llm_result(session: str, stimulus: str, block: dict) -> None:
         logger.exception("Could not persist the LLM result")
 
 
+#: Protocol/guidance keys `position_info` replies carry that are not
+#: head-geometry measurements (UI text, envelope fields). Excluded when
+#: a reply is folded into a head-position snapshot so the snapshot is
+#: exactly the geometry, nothing else.
+_POSITION_GUIDANCE_KEYS = frozenset((
+    "ok", "cmd", "error", "guidance", "ready", "face", "available",
+    "warming", "reason",
+))
+
+
+def _capture_head_position(state: dict, phase: str,
+                           pos: "dict | None" = None) -> dict:
+    """Take one head-position/geometry snapshot and log it under `phase`.
+
+    F33/F36: `head_position` was null in all nine manifests recorded so
+    far because the ONLY thing that ever wrote it was the pre-calibration
+    guide, which is opt-in behind a button nobody clicked. That made the
+    leading hypothesis for the measured shear (an off-centre head, or a
+    head pose that differs between calibration and validation) untestable
+    on every session recorded to date.
+
+    This makes the measurement automatic and mandatory instead of
+    optional: called once right after calibration succeeds, and again at
+    every validation (which already runs `position_info()` for the
+    distance-in-degrees conversion — `pos`, if given, is that same reply,
+    so this costs no extra tracker round-trip there). Never blocks or
+    fails the caller; `position_info()` itself never raises by contract,
+    but this still guards, because losing head-position data must never
+    cost a calibration or a validation.
+    """
+    try:
+        info = pos if pos is not None else (gaze_service.position_info() or {})
+    except Exception:  # noqa: BLE001 — head position is instrumentation,
+        logger.exception("head-position capture failed for phase %s", phase)
+        info = {}
+    snap = {"phase": phase,
+            "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
+            "available": bool(info and info.get("available")
+                              and info.get("face"))}
+    if snap["available"]:
+        snap.update({k: v for k, v in info.items()
+                     if k not in _POSITION_GUIDANCE_KEYS and v is not None})
+    state.setdefault("head_position_log", []).append(snap)
+    return snap
+
+
+def _head_position_manifest(state: dict) -> "dict | None":
+    """Fold every automatic head-position snapshot into one manifest field.
+
+    `_capture_head_position` appends one entry per phase (calibration,
+    pre_fit, pre_check, post — whichever ran) to
+    `state["head_position_log"]`, in the order they happened; the
+    optional pre-calibration guide, if someone did open it, contributes
+    one more under phase "guide". `by_phase` keeps all of them, keyed by
+    phase, which is what F33's question needs: does the shear or the
+    signed bias track head placement ACROSS PHASES within a session, not
+    just across sessions.
+
+    The most recent available snapshot's fields are also mirrored at the
+    top level, for the one existing reader (`verify_metrics.py`'s
+    distance fallback) that pre-dates per-phase capture and expects
+    `head_position.<field>` directly — a fallback that rarely fires,
+    since `_session_distance` already prefers the mandatory validation's
+    own distance, but kept working rather than silently orphaned.
+    """
+    guide = state.get("position_snapshot")
+    log = ([{"phase": "guide", **guide}] if guide else []) + list(
+        state.get("head_position_log") or [])
+    if not log:
+        return None
+    by_phase = {snap.get("phase", "unknown"): snap for snap in log}
+    out: dict = {"by_phase": by_phase}
+    last_available = next((s for s in reversed(log) if s.get("available")),
+                          None)
+    if last_available:
+        out.update({k: v for k, v in last_available.items()
+                    if k not in ("phase", "recorded_at_utc", "available")})
+    return out
+
+
 def _session_distance(state: dict) -> dict:
     """The viewing distance in force for this session, and its provenance.
 
@@ -3743,6 +3831,12 @@ def handle_start_native_calibration(_payload=None):
         _telemetry_event(sid, "calibration_finished",
                          success=bool((result or {}).get("success")),
                          error=(result or {}).get("error"))
+        if (result or {}).get("success"):
+            # Automatic head-position snapshot at the moment calibration
+            # succeeded — the participant's pose the tracker's mapping
+            # was actually fit to. See _capture_head_position: this used
+            # to depend on someone opening the optional guide first.
+            _capture_head_position(_get_session_state(sid), "calibration")
         # The rate gate needs a calibration model, so it runs here —
         # never before calibration (see _run_rate_gate).
         if result.get("success"):

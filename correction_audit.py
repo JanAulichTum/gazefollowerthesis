@@ -214,6 +214,21 @@ def audit(path: str) -> "dict | None":
             }
         stab.append(entry)
     out["stability"] = stab
+
+    # ── 4. Head position per phase, if this session has it ───────────
+    # F33's leading hypothesis for the shear (an off-centre head, or a
+    # head pose that differs between calibration and validation) was
+    # untestable on every session recorded before the automatic capture
+    # landed — head_position was null in all nine manifests because the
+    # only thing that ever wrote it was an opt-in guide nobody opened.
+    # Surfaced here, next to the shear it might explain, rather than as
+    # a separate report — reported, not yet interpreted: nine sessions
+    # is not enough to say whether it correlates with anything.
+    hp = man.get("head_position") or {}
+    by_phase = hp.get("by_phase") or {}
+    if by_phase:
+        out["head_position"] = {ph: by_phase[ph] for ph in
+                                ("calibration",) + PHASES if ph in by_phase}
     return out
 
 
@@ -355,6 +370,36 @@ def render(a: dict) -> None:
                          if d.get("p") is not None else "",
                          "   CHANGED" if d["changed"] else ""))
         print()
+
+    hp = a.get("head_position") or {}
+    if hp:
+        print("  Head position per phase (automatic capture)")
+        for ph, snap in hp.items():
+            if not snap.get("available"):
+                print("    %-11s no face geometry at capture time" % ph)
+                continue
+            bits = []
+            if snap.get("est_distance_cm") is not None:
+                bits.append("dist %.1f cm (%s)"
+                            % (snap["est_distance_cm"],
+                               snap.get("distance_source") or "?"))
+            if snap.get("roll_deg") is not None:
+                bits.append("roll %+.1f deg" % snap["roll_deg"])
+            if snap.get("face_center_x") is not None:
+                bits.append("face_x %.2f" % snap["face_center_x"])
+            if snap.get("face_center_y") is not None:
+                bits.append("face_y %.2f" % snap["face_center_y"])
+            print("    %-11s %s" % (ph, ", ".join(bits) or "(no geometry "
+                                                            "fields)"))
+        print()
+    elif a.get("spatial"):
+        # Only worth saying when the session HAS something head position
+        # could explain — printing this on every session would be noise.
+        if any(v.get("shear_large") for v in a["spatial"].values()):
+            print("  Head position: not recorded for this session "
+                  "(pre-dates automatic capture) — cannot test whether "
+                  "head placement explains the shear above.")
+            print()
 
 
 def render_markdown(audits: list) -> None:
