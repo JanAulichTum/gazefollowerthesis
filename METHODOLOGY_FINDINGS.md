@@ -1935,6 +1935,106 @@ Analysis only — no source file changed. Reproducible from
 session's `pre_fit` phase, filtered to targets within 5 px of `ty = 0.12
 * screen_height`.
 
+---
+
+## F38 · PILOT_06, the first 13-target session, and the bug it exposed in full-affine
+**2026-08-18 · Methods — full-affine (this same day's F33/brief-item-2 work) could never actually be selected, for any session, at any sample size**
+
+PILOT_06 is the first session recorded under the extended grid A (13
+targets) and with automatic head-position capture — both landed earlier
+today. It is therefore the first real test of whether the full-affine
+candidate could fire in production at all. It could not, for any
+session, regardless of how well it fit.
+
+### 1. `loo_errors` never learned about full-affine
+
+`loo_errors` dispatches a candidate's leave-one-out eligibility through
+`_degrees_for(candidate)`, a lookup with entries for `"none"`, `"affine"`
+and `"quadratic-vertical"` — not `"full-affine"`, which is not a per-axis
+polynomial degree pair. `_degrees_for("full-affine")` returns `None`, and
+`loo_errors` read that as "cannot be tried" and returned `None`
+**unconditionally**, before the fitting loop ever ran, independent of
+sample size. `select_correction`'s fallback then had to explain that
+`None` and picked "unstable under cross-validation" — even when the
+candidate fit fine.
+
+PILOT_06's manifest shows the fault directly: `full-affine ... unstable
+under cross-validation — fits all 13 targets, but 0 of 13 leave-one-out
+folds produce a local gain outside [0.5, 3.0]`. Zero failed folds, and
+still labelled unstable, because the status came from being in that
+fallback branch at all, never from actually evaluating the candidate.
+
+**What it cost this specific session.** PILOT_06 has real shear (`m_yx`
+95% CI `[-0.164, -0.040]` at `pre_fit`, excludes zero). Re-run with the
+fix: affine LOO 112.0 px → full-affine LOO 97.1 px, a genuine 13%
+improvement the rule could never credit or select. The session was
+recorded with `affine` applied.
+
+**Why nothing written earlier today caught it.** Every full-affine test
+called `_fit_candidate` directly (bypassing `loo_errors` entirely) or
+called `select_correction` only at `n=7` (the below-gate "not fittable"
+path). None exercised `select_correction` at `n >= 12` — the only path
+that goes through the broken gate. Parameter-recovery tests and a
+selection-rule test are different claims; this gap was between them.
+
+**Fix**: `loo_errors` gates full-affine on `FULL_AFFINE_MIN_TARGETS`
+directly instead of falling through `_degrees_for`. Verified
+byte-identical `correction_audit.py` output on all nine pre-existing
+sessions (11 lines added — exactly PILOT_06's new block — zero changed).
+Mutation-tested: reverted to the bug, confirmed a strong synthetic
+`n=13` shear case reports "unstable" with a 0-failed-folds reason and is
+never selected, restored. `run_tests.py` [22] now calls
+`select_correction` at `n=16` directly (not just `_fit_candidate`) and
+asserts full-affine is evaluated and chosen when it wins.
+
+### 2. The re-derive flag didn't know either
+
+`correction_audit.py`'s `rule_changes_this_session` compared only
+`(chosen == "none")` against `(not applied)` — a session with `affine`
+applied and the current rule now saying `full-affine` read as **no
+change**, because both sides are simply "a correction exists". PILOT_06
+hit this immediately once (1) was fixed: applied=affine, rule=full-affine,
+a real improvement, flag silent.
+
+Fixed to use `corrections_equal` — the same kind-aware function
+`rederive_session.py` already used for this exact decision (built
+earlier today for the `from_payload` reconstruction bug), so the two
+tools cannot disagree about whether a session needs re-deriving. PILOT_06
+now correctly shows `*** This DIFFERS from what was applied. The session
+must be re-derived. ***`.
+
+### 3. What this is, honestly
+
+Two real bugs, both in code written earlier the same day, both caught
+before evaluation collection, both because a new session's real data
+exercised a code path nine synthetic-and-existing-data tests had not.
+This is not the F32/F34/F35 pattern of introspective review catching its
+own mistakes before anything real happened — this reached a recorded
+manifest (PILOT_06's `affine` correction, applied by the buggy rule) —
+which is why it is logged rather than treated as ordinary same-session
+churn.
+
+**Still open**: PILOT_06 has not been re-derived. Its recorded gaze
+carries the `affine` correction the buggy rule chose; the current rule
+says `full-affine`. That is a decision for Jan (whether to re-derive a
+brand-new pilot session), not made here.
+
+### 4. Head position, for the first time on a real session
+
+PILOT_06 also carries the first real `head_position` data:  roll drifts
++2.0° → +0.5° → −2.0° across `pre_fit`/`pre_check`/`post`; face position
+and measured distance (63.8 → 63.8 → 63.4 cm) stay essentially fixed.
+The `calibration` phase itself shows `available: false` — a single-shot
+capture immediately after calibration succeeded found no face at that
+exact instant, which is a real limitation of a one-shot poll (as opposed
+to the old opt-in guide's repeated polling) worth watching across more
+sessions rather than a bug to fix from n=1.
+
+Whether `m_yx` tracks head placement (F33's open question) needs more
+than three phases in one session to answer — a single session's
+within-session n=3 is not evidence either way, and is not treated as any
+here.
+
 ## Open items before evaluation collection
 
 - ~~`EVALUATION_FROM_DATE`~~ **SET to 2026-08-11T14:00** (F17).
@@ -1958,3 +2058,7 @@ session's `pre_fit` phase, filtered to targets within 5 px of `ty = 0.12
   0.77°–5.62°.** Whether AOI analysis excludes a top band, and how wide,
   is undecided and should be fixed before evaluation collection rather
   than chosen per-session after seeing which one it rescues.
+- **PILOT_06 has not been re-derived (F38).** It was recorded with the
+  `affine` correction the pre-fix rule chose; the current rule says
+  `full-affine` should have been applied instead. Whether to re-derive a
+  brand-new pilot session is Jan's call, not made here.
