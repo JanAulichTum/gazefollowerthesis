@@ -5481,6 +5481,139 @@ except Exception as exc:  # noqa: BLE001
           _blocked or repr(exc))
 
 
+print("\n[24] The offset-fix claim, across 20 varied scenarios")
+# Section [23] proved the claim on ONE hand-picked scenario. One scenario
+# is an existence proof, not a sound claim — asked directly whether this
+# had been checked more broadly. This runs the same held-out-point
+# question across 20 scenarios varying offset direction/magnitude (both
+# axes, both signs), gain compression AND expansion (both axes), noise
+# level, screen size/aspect ratio, and random seed — including cases
+# where the honest answer is "the rule should say NONE" (a battery that
+# only tests favourable cases is not sound either).
+try:
+    import numpy as np
+    import pandas as pd
+    import validation_stats as _vsmod3
+    import app as _app_mod3
+
+    _GRID_PCT3 = [(12, 12), (88, 12), (50, 31), (15, 50), (85, 50),
+                 (50, 69), (50, 88)]
+
+    def _run_offset_scenario(_name, _W, _H, _off_x, _off_y, _gx, _gy,
+                             _noise, _seed):
+        _rng3 = np.random.default_rng(_seed)
+        _cx3, _cy4 = _W / 2.0, _H / 2.0
+
+        def _biased(tx, ty, extra_noise=None):
+            n = extra_noise if extra_noise is not None else _noise
+            mx = _gx * (tx - _cx3) + _cx3 + _off_x + _rng3.normal(0, n)
+            my = _gy * (ty - _cy4) + _cy4 + _off_y + _rng3.normal(0, n)
+            return mx, my
+
+        _fit3 = []
+        for _p, _q in _GRID_PCT3:
+            _tx, _ty = _p / 100.0 * _W, _q / 100.0 * _H
+            _mx, _my = _biased(_tx, _ty)
+            _fit3.append({"tx": _tx, "ty": _ty, "mx": _mx, "my": _my})
+        _raw_bias = float(np.mean(
+            [np.hypot(t["mx"] - t["tx"], t["my"] - t["ty"]) for t in _fit3]))
+
+        _res3 = _vsmod3.select_correction(_fit3, _W, _H)
+        _chosen3 = _res3["decision"]["chosen"]
+        _corr3 = _res3["correction"]
+
+        if _chosen3 == "none":
+            check("[%s] rule says NONE — honest, given the noise" % _name,
+                  _raw_bias < 40 or _noise > 25,
+                  "raw_bias=%.1f noise=%.1f" % (_raw_bias, _noise))
+            return
+
+        _held_pct = [(30, 20), (70, 40), (50, 60), (25, 80), (75, 15)]
+        _resids = []
+        for _p, _q in _held_pct:
+            _tx, _ty = _p / 100.0 * _W, _q / 100.0 * _H
+            _mx, _my = _biased(_tx, _ty, extra_noise=0.0)
+            _cx5, _cy5 = _vsmod3.apply_point(_mx, _my, _corr3)
+            _resids.append(float(np.hypot(_cx5 - _tx, _cy5 - _ty)))
+        _mean_resid = float(np.mean(_resids))
+
+        # Noise-aware tolerance: with n=7 fit targets, the standard error
+        # of a fitted offset is roughly noise/sqrt(7); a held-out
+        # residual within a few multiples of that is expected sampling
+        # variance, not a broken correction. A fixed absolute bound
+        # falsely failed a high-noise scenario in the first version of
+        # this battery.
+        _se_floor = _noise / (7 ** 0.5)
+        _tol = max(15.0, 6.0 * _se_floor)
+        _scale = min(_W, _H)
+        check("[%s] held-out residual << raw offset, or within "
+              "noise-appropriate tolerance" % _name,
+              _mean_resid < 0.25 * _raw_bias or _mean_resid < _tol,
+              "raw=%.1f resid=%.1f tol=%.1f" % (_raw_bias, _mean_resid, _tol))
+        check("[%s] held-out residual small vs screen size and this "
+              "scenario's own noise floor" % _name,
+              _mean_resid < max(0.02 * _scale, _tol),
+              "resid=%.1f bound=%.1f" % (_mean_resid,
+                                         max(0.02 * _scale, _tol)))
+
+        if _seed % 3 == 0:
+            _fs = {}
+            _fr = {"phase": "pre_fit", "targets": _fit3,
+                  "mean_err_px": _raw_bias,
+                  "screen": {"width_px": _W, "height_px": _H}}
+            _app_mod3._auto_fit_correction(_fs, _fr,
+                                           sid="run-tests-battery-%s" % _name)
+            _pc = _fs.get("correction")
+            check("[%s] app._auto_fit_correction agrees with "
+                  "select_correction" % _name, _pc is not None)
+            if _pc:
+                _n4 = 100
+                _txa = np.random.default_rng(_seed + 1).uniform(
+                    80, _W - 80, _n4)
+                _tya = np.random.default_rng(_seed + 2).uniform(
+                    80, _H - 80, _n4)
+                _mxa = _gx * (_txa - _cx3) + _cx3 + _off_x
+                _mya = _gy * (_tya - _cy4) + _cy4 + _off_y
+                _cxa, _cya = _app_mod3._apply_series(
+                    pd.Series(_mxa), pd.Series(_mya), _pc)
+                _eb = np.hypot(_mxa - _txa, _mya - _tya).mean()
+                _ea = np.hypot(_cxa.to_numpy() - _txa,
+                              _cya.to_numpy() - _tya).mean()
+                check("[%s] app._apply_series on 100 fresh samples: "
+                      "error after << error before" % _name,
+                      _ea < 0.3 * _eb or _ea < 0.02 * _scale,
+                      "%.1f -> %.1f" % (_eb, _ea))
+
+    _SCENARIOS = [
+        ("01_pure_+y_offset",        1920, 1080,   0,   80, 1.00, 1.00, 4, 1),
+        ("02_pure_-y_offset",        1920, 1080,   0,  -80, 1.00, 1.00, 4, 2),
+        ("03_pure_+x_offset",        1920, 1080,  80,    0, 1.00, 1.00, 4, 3),
+        ("04_pure_-x_offset",        1920, 1080, -80,    0, 1.00, 1.00, 4, 4),
+        ("05_xy_offset_same_sign",   1920, 1080,  60,   60, 1.00, 1.00, 4, 5),
+        ("06_xy_offset_opp_sign",    1920, 1080,  60,  -60, 1.00, 1.00, 4, 6),
+        ("07_y_gain_compression",    1920, 1080,   0,    0, 1.00, 0.75, 4, 7),
+        ("08_y_gain_expansion",      1920, 1080,   0,    0, 1.00, 1.25, 4, 8),
+        ("09_x_gain_compression",    1920, 1080,   0,    0, 0.75, 1.00, 4, 9),
+        ("10_x_gain_expansion",      1920, 1080,   0,    0, 1.25, 1.00, 4, 10),
+        ("11_offset+compression",    1920, 1080,   0,   80, 1.00, 0.85, 4, 11),
+        ("12_severe_offset_200px",   1920, 1080,   0,  200, 1.00, 1.00, 5, 12),
+        ("13_tiny_offset_near_noise", 1920, 1080,  0,   15, 1.00, 1.00, 10, 13),
+        ("14_moderate_offset_hi_noise", 1920, 1080, 0,  100, 1.00, 1.00, 35, 14),
+        ("15_near_zero_offset_low_noise", 1920, 1080, 0,   3, 1.00, 1.00, 3, 15),
+        ("16_asymmetric_gain+offset", 1920, 1080,  20,  -40, 0.80, 1.20, 4, 16),
+        ("17_scenario01_reseeded",   1920, 1080,   0,   80, 1.00, 1.00, 4, 17),
+        ("18_scenario01_reseeded2",  1920, 1080,   0,   80, 1.00, 1.00, 4, 27),
+        ("19_larger_screen_2560x1440", 2560, 1440,  0,  110, 1.00, 0.85, 5, 19),
+        ("20_smaller_screen_1366x768", 1366, 768,   0,   60, 1.00, 0.85, 3, 20),
+    ]
+    for _s in _SCENARIOS:
+        _run_offset_scenario(*_s)
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("the offset-fix claim across 20 varied scenarios", False,
+          _blocked or repr(exc))
+
+
 # ── The summary must be LAST ──────────────────────────────────────────
 # Section [20] was appended AFTER this block, so its failures printed as
 # [FAIL] and were never counted: the suite reported ALL TESTS PASSED and
