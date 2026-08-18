@@ -5401,6 +5401,26 @@ try:
             check("_auto_fit_correction runs end-to-end with an ACTIVE "
                   "full-affine correction on the input", False,
                   "%s: %s" % (type(exc).__name__, exc))
+
+    # correction_audit.py's "DIFFERS from what was applied" flag used to
+    # compare only (chosen == "none") against (not applied) -- a session
+    # with an AFFINE correction applied and a current rule of FULL-AFFINE
+    # read as "no change" (both sides are simply "a correction exists"),
+    # exactly the case PILOT_06 hit (applied=affine, rule now says
+    # full-affine, a real 13% LOO improvement never flagged). Fixed to
+    # use corrections_equal, the same kind-aware function
+    # rederive_session.py already used for this decision.
+    _ca_src = read("correction_audit.py")
+    check("correction_audit's rule-changed flag is kind-aware "
+          "(corrections_equal, not a bare none-vs-something comparison)",
+          "vs.corrections_equal(\n            sel[\"correction\"], applied)"
+          in _ca_src or "not vs.corrections_equal(" in _ca_src)
+    check("full-affine WON at n=16, so it must differ from an affine "
+          "correction recorded earlier -- and corrections_equal must say "
+          "so, not read both as \"a correction exists\"",
+          not _vsmod.corrections_equal(
+              _corr, {"px": [1.0, 0.0], "py": [1.0, 0.0], "kind": "affine",
+                      "cx": _W / 2, "cy": _H / 2}))
 except Exception as exc:  # noqa: BLE001
     _blocked = environment_block(exc)
     check("full-affine correction candidate", False, _blocked or repr(exc))

@@ -141,8 +141,18 @@ def audit(path: str) -> "dict | None":
         out["selection"] = sel["decision"]
         out["would_choose"] = sel["decision"]["chosen"]
         out["was_applied"] = bool(applied)
-        out["rule_changes_this_session"] = bool(
-            (sel["decision"]["chosen"] == "none") != (not applied))
+        # corrections_equal, not a bare none-vs-something comparison:
+        # the old check only caught "a correction was applied and now
+        # none is chosen" or vice versa — it read "affine was applied,
+        # the rule now says full-affine" as NO change, because both
+        # sides are simply "a correction exists". PILOT_06 hit exactly
+        # this: applied=affine, current rule=full-affine (a real 13%
+        # LOO improvement, not a rounding difference), and the flag
+        # stayed silent. corrections_equal is kind-aware (same function
+        # rederive_session.py already uses for this exact decision, so
+        # the two tools cannot disagree about whether a session changed).
+        out["rule_changes_this_session"] = not vs.corrections_equal(
+            sel["correction"], applied)
         # In-sample refit vs LOO: the size of the overfit.
         m, t = vs._pairs(raw["pre_fit"])
         refit = vs._fit_candidate(m, t, "affine", W, H)
