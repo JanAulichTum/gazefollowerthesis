@@ -89,7 +89,11 @@ def audit(path: str) -> "dict | None":
                        "(reconstructed or pre-dates the two-grid protocol)"}
 
     gc = man.get("gain_correction") or {}
-    applied = {"px": gc.get("px"), "py": gc.get("py")} if gc.get("px") else None
+    # from_payload, not a hand-built {"px", "py"} dict: a full-affine
+    # correction's payload has neither key, so that shape silently
+    # reconstructed an empty correction for it, and every raw_targets /
+    # corrected_targets call below would then invert or apply nothing.
+    applied = vs.from_payload(gc)
     scr = (vals.get("pre_fit") or next(iter(vals.values()))).get("screen") or {}
     W = float(scr.get("width_px") or 1920)
     H = float(scr.get("height_px") or 1080)
@@ -105,7 +109,8 @@ def audit(path: str) -> "dict | None":
         "session": man.get("session_id") or os.path.basename(path),
         "usable": True,
         "applied": {"kind": gc.get("kind"), "px": gc.get("px"),
-                    "py": gc.get("py"), "source": gc.get("source")},
+                    "py": gc.get("py"), "A": gc.get("A"), "b": gc.get("b"),
+                    "source": gc.get("source")},
         "deg_per_px": dpp,
         "phases": {},
         "recorded_at": {ph: v.get("recorded_at_utc") for ph, v in vals.items()},
@@ -270,8 +275,12 @@ def render(a: dict) -> None:
         print("  %s\n" % a["why"])
         return
     ap = a["applied"]
-    print("  applied correction : %s  px=%s  py=%s"
-          % (ap.get("kind") or "none", ap.get("px"), ap.get("py")))
+    if ap.get("kind") == "full-affine":
+        print("  applied correction : full-affine  A=%s  b=%s"
+              % (ap.get("A"), ap.get("b")))
+    else:
+        print("  applied correction : %s  px=%s  py=%s"
+              % (ap.get("kind") or "none", ap.get("px"), ap.get("py")))
     dpp = a.get("deg_per_px")
     print()
     for ph in PHASES:

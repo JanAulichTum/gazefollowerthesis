@@ -2630,25 +2630,28 @@ def _slope(coeffs: list, at: float) -> float:
 
 
 def _apply_point(x: float, y: float, corr: "dict | None") -> "tuple":
-    import numpy as np
-
-    if not corr:
-        return x, y
-    px, py = corr.get("px"), corr.get("py")
-    return (float(np.polyval(px, x)) if px else x,
-            float(np.polyval(py, y)) if py else y)
+    """Delegates to validation_stats.apply_point — see _apply_series for
+    why this must not be a second, independent implementation."""
+    return validation_stats.apply_point(x, y, corr)
 
 
 def _apply_series(x_series, y_series, corr):
-    """Vectorized correction for pandas Series → (Series, Series)."""
-    import numpy as np
+    """Vectorized correction for pandas Series -> (Series, Series).
 
-    px, py = corr.get("px"), corr.get("py")
-    gx = pd.Series(np.polyval(px, x_series.to_numpy()),
-                   index=x_series.index) if px else x_series
-    gy = pd.Series(np.polyval(py, y_series.to_numpy()),
-                   index=y_series.index) if py else y_series
-    return gx, gy
+    Delegates to ``validation_stats.apply_points``, the one place a
+    correction is applied. This used to be a second, independent
+    per-axis implementation (``np.polyval(px, ...)`` / ``np.polyval(py,
+    ...)`` duplicated from validation_stats.apply_point) — exactly the
+    failure class F30 exists to prevent, two copies of "apply the
+    correction" that could silently disagree. It also could not have
+    represented a full-affine correction at all: that kind mixes both
+    axes by construction, so applying x and y independently would have
+    silently applied only the diagonal part of it.
+    """
+    gx, gy = validation_stats.apply_points(x_series.to_numpy(),
+                                           y_series.to_numpy(), corr)
+    return (pd.Series(gx, index=x_series.index),
+            pd.Series(gy, index=y_series.index))
 
 
 def _correction_payload(corr: "dict | None") -> dict:
@@ -2686,9 +2689,12 @@ def _auto_fit_correction(state: dict, record: dict, sid: str) -> None:
     Fitting on recovered raw avoids composing corrections, so repeated
     checks can only improve — never double-apply.
     """
-    active = record.get("correction_active") or {}
-    corr_active = {"px": active.get("px"), "py": active.get("py")} \
-        if active.get("active") else None
+    # validation_stats.from_payload, not a hand-built {"px", "py"} dict:
+    # a full-affine correction's payload has neither key, and rebuilding
+    # only those two here would silently reconstruct an empty
+    # correction for it (see that function's docstring).
+    corr_active = validation_stats.from_payload(
+        record.get("correction_active"))
     width = float((record.get("screen") or {}).get("width_px") or 0) or 1920.0
     height = float((record.get("screen") or {}).get("height_px") or 0) or 1080.0
 
@@ -2718,10 +2724,16 @@ def _auto_fit_correction(state: dict, record: dict, sid: str) -> None:
 
     state["correction"] = corr
     state["auto_correction"] = dict(corr)     # restorable via "Auto"
+    # gain_x/gain_y come from the payload, not corr["px"]/corr["py"]
+    # directly: a full-affine correction has neither key (its two axes
+    # cannot be separated into independent polynomials), and payload()
+    # already computes the right local-gain figure for every kind this
+    # pipeline can produce, in one place, for the log line and the
+    # manifest to agree.
+    _gains = _correction_payload(corr)
     logger.info("Gain correction applied (%s): gain_x %.2f, gain_y "
-                "(centre) %.2f — %s", decision["chosen"], corr["px"][0],
-                _slope(corr["py"], corr.get("cy", 0.0)),
-                decision.get("reason"))
+                "(centre) %.2f — %s", decision["chosen"],
+                _gains["gain_x"], _gains["gain_y"], decision.get("reason"))
     socketio.emit("gain_correction", _correction_payload(corr), to=sid)
 
 
@@ -2865,7 +2877,14 @@ def _uncorrected_error(payload: dict, corr: "dict | None") -> "dict":
         raw_stats = validation_stats.signed_bias(targets, deg_per_px)
     else:
         px, py = corr.get("px"), corr.get("py")
-        if not (px and py):
+        # A full-affine correction has neither px nor py (its axes are
+        # not separable), but it IS invertible — validation_stats.
+        # raw_targets already knows how (a 2x2 matrix solve, not a
+        # per-axis one). Refusing it here would silently drop every
+        # full-affine session out of the raw/corrected comparison and
+        # the selection rule both, the exact gap this function's
+        # docstring says was already fixed once for quadratic-vertical.
+        if not (px and py) and corr.get("kind") != "full-affine":
             return out
         raw = validation_stats.raw_targets(targets, corr, width, height)
         raw_stats = validation_stats.signed_bias(raw, deg_per_px)

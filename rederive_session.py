@@ -109,7 +109,12 @@ def decide(manifest: dict) -> dict:
     vals = {v.get("phase"): v for v in (manifest.get("validations") or [])
             if v.get("targets")}
     gc = manifest.get("gain_correction") or {}
-    applied = {"px": gc.get("px"), "py": gc.get("py")} if gc.get("px") else None
+    # from_payload, not {"px": gc.get("px"), "py": gc.get("py")}: a
+    # full-affine correction's payload has neither key, so that hand
+    # -built shape silently reconstructed an empty correction for it —
+    # every full-affine session would have read as "nothing applied"
+    # regardless of what was actually recorded.
+    applied = vs.from_payload(gc)
     out = {"applied": applied, "applied_kind": gc.get("kind")}
     fit = vals.get("pre_fit") or vals.get("pre")
     if not fit:
@@ -131,11 +136,14 @@ def decide(manifest: dict) -> dict:
     now = sel["correction"] is not None
     if was != now:
         out["changes"] = "applied" if now else "removed"
-    elif now and applied and (
-            [round(c, 6) for c in sel["correction"]["px"]] != [
-                round(c, 6) for c in applied["px"]]
-            or [round(c, 6) for c in sel["correction"]["py"]] != [
-                round(c, 6) for c in applied["py"]]):
+    elif now and applied and not vs.corrections_equal(
+            sel["correction"], applied):
+        # corrections_equal, not a bare px/py comparison: a full-affine
+        # correction has neither key, so that comparison read every pair
+        # of full-affine corrections as identical (both [None, None])
+        # regardless of what A/b actually were, and a session whose
+        # full-affine fit had genuinely changed would report "nothing to
+        # do".
         out["changes"] = "refitted"
     else:
         out["changes"] = None
@@ -188,10 +196,16 @@ def rederive(manifest_path: str, workbook: str, apply: bool) -> dict:
         gy = pd.to_numeric(df.loc[sel, "filtered_gaze_position_y"],
                            errors="coerce")
         if corr:
-            gx = pd.Series(vs.apply_axis(gx.to_numpy(), corr.get("px")),
-                           index=gx.index)
-            gy = pd.Series(vs.apply_axis(gy.to_numpy(), corr.get("py")),
-                           index=gy.index)
+            # apply_points, not two independent apply_axis calls: a
+            # full-affine correction's two axes cannot be computed
+            # independently (that is the entire point of it), so
+            # applying x and y separately would silently apply only its
+            # diagonal part — and corr.get("px") is None for it besides,
+            # which apply_axis treats as "no correction on this axis".
+            gx_arr, gy_arr = vs.apply_points(gx.to_numpy(), gy.to_numpy(),
+                                             corr)
+            gx = pd.Series(gx_arr, index=gx.index)
+            gy = pd.Series(gy_arr, index=gy.index)
             df.loc[sel, "corrected_gaze_position_x"] = gx.round(2)
             df.loc[sel, "corrected_gaze_position_y"] = gy.round(2)
         else:

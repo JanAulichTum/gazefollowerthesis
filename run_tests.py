@@ -5241,6 +5241,126 @@ except Exception as exc:  # noqa: BLE001
     check("automatic head-position capture", False, _blocked or repr(exc))
 
 
+print("\n[22] full-affine correction candidate")
+# F33: a per-axis correction is structurally incapable of representing
+# m_yx (vertical error from HORIZONTAL position — the shear). Simulated
+# independently against the nine recorded sessions, pooling grid A and
+# grid B to ~14 targets: full-affine beats the diagonal model by 15-28%
+# on the two sheared sessions (PILOT_03, PILOT_04) and loses by 1-6% on
+# every other session — reproducing F33's own table. "Do not ship a
+# 6-parameter model on 7 targets": FULL_AFFINE_MIN_TARGETS gates it out
+# below 12 measured targets, so it changes nothing on any of the nine
+# recorded (7-target) sessions today.
+try:
+    import numpy as np
+    import pandas as pd
+    import validation_stats as _vsmod
+
+    _rng = np.random.default_rng(2026)
+    _A_true = np.array([[0.95, 0.12], [0.08, 1.05]])   # off-diagonal = shear
+    _b_true = np.array([15.0, -8.0])
+    _W, _H = 1920.0, 1080.0
+    _cx, _cy = _W / 2, _H / 2
+    _n = 16
+    _t_xy = _rng.uniform([100, 100], [_W - 100, _H - 100], size=(_n, 2))
+    _A_inv_true = np.linalg.inv(_A_true)
+    _m_xy = np.array([_A_inv_true @ (_t_xy[i] - _b_true) + [_cx, _cy]
+                      for i in range(_n)])
+    _m_xy += _rng.normal(0, 3.0, size=_m_xy.shape)
+    _targets = [{"tx": float(t[0]), "ty": float(t[1]),
+                "mx": float(m[0]), "my": float(m[1])}
+               for t, m in zip(_t_xy, _m_xy)]
+    _m_arr = np.array([[t["mx"], t["my"]] for t in _targets])
+    _t_arr = np.array([[t["tx"], t["ty"]] for t in _targets])
+
+    _corr = _vsmod._fit_candidate(_m_arr, _t_arr, "full-affine", _W, _H)
+    check("full-affine fits at n=16 and recovers the known shear",
+          _corr is not None
+          and np.allclose(np.array(_corr["A"]), _A_true, atol=0.05))
+
+    _corr7 = _vsmod._fit_candidate(_m_arr[:7], _t_arr[:7], "full-affine",
+                                   _W, _H)
+    check("full-affine is refused outright below FULL_AFFINE_MIN_TARGETS "
+          "(never even attempted at n=7)", _corr7 is None)
+
+    _sel7 = _vsmod.select_correction(_targets[:7], _W, _H)
+    _row7 = next(c for c in _sel7["decision"]["candidates"]
+                if c["candidate"] == "full-affine")
+    check("select_correction reports WHY it was not fittable (the "
+          "target-count floor, not a generic gain excuse — F36)",
+          _row7["status"] == "not fittable"
+          and "12" in _row7["why"] and "7" in _row7["why"])
+    check("full-affine never changes the chosen candidate at n=7 (the "
+          "nine recorded sessions are unaffected today)",
+          _sel7["decision"]["chosen"]
+          in ("none", "affine", "quadratic-vertical"))
+
+    if _corr:
+        _rt = _vsmod.raw_targets([{"mx": 555.0, "my": 321.0}], _corr, _W, _H)
+        _back = _vsmod.apply_point(_rt[0]["mx"], _rt[0]["my"], _corr)
+        check("apply_point <-> raw_targets round-trips exactly (linear, "
+              "no bisection needed)",
+              abs(_back[0] - 555.0) < 1e-6 and abs(_back[1] - 321.0) < 1e-6)
+
+        _pl = _vsmod.payload(_corr)
+        check("payload() has no px/py for full-affine (explicit None, "
+              "not a missing key that a .get('px') call reads the same "
+              "as 'no correction')",
+              "px" in _pl and _pl["px"] is None
+              and "py" in _pl and _pl["py"] is None)
+        check("payload() still carries gain_x/gain_y (the diagonal of A) "
+              "for the one existing UI/log reader that expects them",
+              abs(_pl["gain_x"] - _corr["A"][0][0]) < 1e-3)
+
+        # THE bug this session found: reconstructing {"px", "py"} by hand
+        # from a full-affine payload silently builds an empty correction.
+        _naive = {"px": _pl.get("px"), "py": _pl.get("py")}
+        _nx, _ny = _vsmod.apply_points(np.array([400.0]), np.array([300.0]),
+                                       _naive)
+        check("the naive {'px','py'} reconstruction IS a silent no-op "
+              "for full-affine (demonstrates the bug from_payload fixes)",
+              abs(_nx[0] - 400.0) < 1e-9 and abs(_ny[0] - 300.0) < 1e-9)
+
+        _reconstructed = _vsmod.from_payload(_pl)
+        check("from_payload reconstructs a correction that actually "
+              "applies (not the naive no-op)",
+              _reconstructed is not None
+              and _vsmod.corrections_equal(_corr, _reconstructed))
+
+        # app.py's live paths must not silently drop a full-affine
+        # correction either — the same class of bug, three more places.
+        _apx, _apy = _app_mod._apply_point(400.0, 300.0, _corr)
+        check("app._apply_point delegates to validation_stats (matches)",
+              abs(_apx - _vsmod.apply_point(400.0, 300.0, _corr)[0]) < 1e-9)
+
+        _sx = pd.Series([100.0, 500.0], index=[5, 6])
+        _sy = pd.Series([200.0, 400.0], index=[5, 6])
+        _gx, _gy = _app_mod._apply_series(_sx, _sy, _corr)
+        check("app._apply_series applies a full-affine correction (not a "
+              "silent no-op) and preserves the index",
+              list(_gx.index) == [5, 6]
+              and (abs(_gx.iloc[0] - 100.0) > 1.0
+                   or abs(_gy.iloc[0] - 200.0) > 1.0))
+
+        _active_payload = _app_mod._correction_payload(_corr)
+        _fake_state = {}
+        _fake_record = {"targets": _targets,
+                        "correction_active": _active_payload,
+                        "screen": {"width_px": _W, "height_px": _H}}
+        try:
+            _app_mod._auto_fit_correction(_fake_state, _fake_record,
+                                          sid="run-tests-fake-sid")
+            check("_auto_fit_correction runs end-to-end with an ACTIVE "
+                  "full-affine correction on the input", True)
+        except Exception as exc:  # noqa: BLE001
+            check("_auto_fit_correction runs end-to-end with an ACTIVE "
+                  "full-affine correction on the input", False,
+                  "%s: %s" % (type(exc).__name__, exc))
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("full-affine correction candidate", False, _blocked or repr(exc))
+
+
 # ── The summary must be LAST ──────────────────────────────────────────
 # Section [20] was appended AFTER this block, so its failures printed as
 # [FAIL] and were never counted: the suite reported ALL TESTS PASSED and

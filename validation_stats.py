@@ -92,15 +92,29 @@ import numpy as np
 # making every downstream spatial claim worse.
 #
 # Ties and near-ties go to the simpler model, in the order
-# none < affine < quadratic-vertical, because the failure being guarded
-# against is a flexible model fitting session-moment noise.
+# none < affine < quadratic-vertical < full-affine, because the failure
+# being guarded against is a flexible model fitting session-moment noise.
 SELECT_SE_MARGIN = 1.0
-CANDIDATE_ORDER = ("none", "affine", "quadratic-vertical")
+CANDIDATE_ORDER = ("none", "affine", "quadratic-vertical", "full-affine")
 
 # A correction whose local gain leaves this band anywhere on the screen
 # is rejected regardless of its cross-validated error: it is fold-over
 # or runaway magnification, not a calibration.
 GAIN_MIN, GAIN_MAX = 0.5, 3.0
+
+# full-affine has SIX free parameters (a 2x2 matrix plus an offset) where
+# every other candidate has two. F33 measured what that costs at n=7:
+# leave-one-out gain of 4-7% on the two sheared sessions, indistinguishable
+# from noise at that sample size and worse everywhere else — while pooling
+# grid A and grid B to simulate FOURTEEN targets gave 15-28% on exactly
+# those two sessions and a loss on the rest (independently re-verified,
+# 2026-08-18, against the nine recorded sessions). Below this many
+# measured targets, full-affine is not even attempted: fitting it at n=7
+# would repeat F30's overfitting mistake with more parameters, and
+# "not fittable" (rather than a silent skip) is what select_correction
+# already reports for a candidate that cannot be tried at this sample
+# size.
+FULL_AFFINE_MIN_TARGETS = 12
 
 # Flag threshold: when |bias| exceeds this share of the mean unsigned
 # error, the error is dominated by a systematic offset rather than by
@@ -485,6 +499,8 @@ def _degrees_for(candidate: str) -> "tuple[int, int] | None":
 
 def _fit_candidate(m: np.ndarray, t: np.ndarray, candidate: str,
                    width: float, height: float) -> "dict | None":
+    if candidate == "full-affine":
+        return _fit_full_affine(m, t, width, height)
     degs = _degrees_for(candidate)
     if degs is None:
         return None
@@ -502,18 +518,101 @@ def _fit_candidate(m: np.ndarray, t: np.ndarray, candidate: str,
             "kind": candidate}
 
 
+def _fit_full_affine(m: np.ndarray, t: np.ndarray,
+                     width: float, height: float) -> "dict | None":
+    """Fit ``target = A . (measured - centre) + b`` — a genuine 2x2 map.
+
+    Every other candidate is a polynomial per axis: it cannot represent
+    ``m_yx`` (vertical error caused by HORIZONTAL position — F33's
+    shear) at any degree, because a per-axis fit never sees the other
+    axis. This is the only candidate that can, and it needs
+    FULL_AFFINE_MIN_TARGETS measured targets before it is even attempted
+    (see that constant for why).
+    """
+    n = len(m)
+    if n < FULL_AFFINE_MIN_TARGETS:
+        return None
+    cx, cy = width / 2.0 if width else 0.0, height / 2.0 if height else 0.0
+    X = np.c_[m[:, 0] - cx, m[:, 1] - cy, np.ones(n)]
+    try:
+        sol, *_ = np.linalg.lstsq(X, t, rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+    A = np.array([[sol[0, 0], sol[1, 0]], [sol[0, 1], sol[1, 1]]])
+    b = [float(sol[2, 0]), float(sol[2, 1])]
+    # Gain sanity on the diagonal, same band every other candidate is
+    # held to. The off-diagonal (the whole point of this candidate) is
+    # deliberately NOT bounded the same way — a real shear can be large.
+    if not (GAIN_MIN <= A[0, 0] <= GAIN_MAX
+            and GAIN_MIN <= A[1, 1] <= GAIN_MAX):
+        return None
+    # Singular (or near it): raw_targets could not invert this back to a
+    # measurement, so a correction that cannot be inverted is refused
+    # the same way a folded quadratic is (F32).
+    if abs(np.linalg.det(A)) < 1e-6:
+        return None
+    return {"kind": "full-affine", "A": A.tolist(), "b": b,
+            "cx": cx, "cy": cy, "source": "auto-fit (full-affine)"}
+
+
+def _is_full_affine(corr: "dict | None") -> bool:
+    return bool(corr) and corr.get("kind") == "full-affine"
+
+
 def apply_point(x: float, y: float, corr: "dict | None") -> "tuple":
     if not corr:
         return x, y
+    if _is_full_affine(corr):
+        xs, ys = apply_points([x], [y], corr)
+        return float(xs[0]), float(ys[0])
     px, py = corr.get("px"), corr.get("py")
     return (float(np.polyval(px, x)) if px else x,
             float(np.polyval(py, y)) if py else y)
 
 
 def apply_axis(values, coeffs: "list | None"):
-    """Apply one axis of a correction to an array of measurements."""
+    """Apply one axis of a correction to an array of measurements.
+
+    Only meaningful for a DIAGONAL correction (affine / quadratic-
+    vertical / none), where the two axes are independent. A full-affine
+    correction mixes both axes by construction — that is the entire
+    point of it (F33's shear, m_yx, is off-diagonal) — so there is no
+    single-axis form of it to apply here. Callers that may see either
+    kind must use ``apply_points`` instead, which both derives from and
+    dispatches to this for the diagonal case.
+    """
     v = np.asarray(values, float)
     return np.polyval(coeffs, v) if coeffs else v
+
+
+def apply_points(xs, ys, corr: "dict | None"):
+    """Vectorized correction for two ALIGNED arrays -> (xs', ys').
+
+    THE canonical bulk-application path. app.py's per-sample gaze
+    correction and rederive_session.py's offline re-derivation both call
+    this instead of each independently deciding how to apply a
+    correction — two implementations of "apply the correction" that
+    could silently disagree is exactly F30's failure class, and it is
+    also the only correct way to apply a full-affine correction: its two
+    axes cannot be computed independently, so a per-axis ``apply_axis``
+    call on x and then y separately is not merely inconvenient for this
+    kind, it is wrong.
+    """
+    xs_arr = np.asarray(xs, dtype=float)
+    ys_arr = np.asarray(ys, dtype=float)
+    if not corr:
+        return xs_arr, ys_arr
+    if _is_full_affine(corr):
+        A = np.asarray(corr["A"], float)
+        b = np.asarray(corr["b"], float)
+        cx, cy = corr.get("cx", 0.0), corr.get("cy", 0.0)
+        m = np.c_[xs_arr - cx, ys_arr - cy]
+        out = m @ A.T + b
+        return out[:, 0], out[:, 1]
+    px, py = corr.get("px"), corr.get("py")
+    gx = apply_axis(xs_arr, px) if px else xs_arr
+    gy = apply_axis(ys_arr, py) if py else ys_arr
+    return gx, gy
 
 
 def payload(corr: "dict | None") -> dict:
@@ -526,6 +625,31 @@ def payload(corr: "dict | None") -> dict:
     """
     if not corr:
         return {"active": False}
+    if _is_full_affine(corr):
+        A = corr.get("A") or [[1.0, 0.0], [0.0, 1.0]]
+        b = corr.get("b") or [0.0, 0.0]
+        return {
+            "active": True,
+            "kind": "full-affine",
+            # No per-axis polynomial exists for this kind — explicit
+            # None rather than an absent key, so a reader checking
+            # `corr.get("px")` sees "there is none" rather than a
+            # KeyError two calls later.
+            "px": None, "py": None,
+            "A": [[round(float(v), 6) for v in row] for row in A],
+            "b": [round(float(v), 6) for v in b],
+            "cx": round(float(corr.get("cx", 0.0)), 1),
+            "cy": round(float(corr.get("cy", 0.0)), 1),
+            "gain_x": round(float(A[0][0]), 3),
+            "gain_y": round(float(A[1][1]), 3),
+            "gain_mean": round((float(A[0][0]) + float(A[1][1])) / 2, 2),
+            # What a diagonal correction cannot represent at all —
+            # reported here so the same field that carries gain_x/gain_y
+            # also carries the reason this candidate exists.
+            "shear_yx": round(float(A[1][0]), 4),
+            "shear_xy": round(float(A[0][1]), 4),
+            "source": corr.get("source", "unknown"),
+        }
     px, py = corr.get("px", [1, 0]), corr.get("py", [1, 0])
     cy = corr.get("cy", 0.0)
     gx = px[0] if len(px) == 2 else local_gain(px, corr.get("cx", 0.0))
@@ -544,9 +668,77 @@ def payload(corr: "dict | None") -> dict:
     }
 
 
+def from_payload(gc: "dict | None") -> "dict | None":
+    """Reconstruct an APPLIABLE correction from its manifest/UI form.
+
+    The inverse of ``payload()``. app.py (recovering the correction that
+    was ACTIVE while a validation was measured) and rederive_session.py
+    (recovering the one recorded in ``gain_correction``) both need this,
+    and both used to rebuild ``{"px": gc.get("px"), "py": gc.get("py")}``
+    by hand — which is a second, independent reconstruction of the exact
+    kind ``payload()``'s own docstring warns about, and it silently
+    produced a truthy-but-empty correction for full-affine, whose
+    payload form has neither key. `raw_targets`/`apply_points` would
+    then see a dict with no ``kind`` and no ``A``/``b``, fall through to
+    the diagonal path, and invert or apply NOTHING — a session recorded
+    under an active full-affine correction treated as though none had
+    been applied.
+    """
+    if not gc or not gc.get("active"):
+        return None
+    if gc.get("kind") == "full-affine":
+        return {"kind": "full-affine", "A": gc.get("A"), "b": gc.get("b"),
+                "cx": gc.get("cx", 0.0), "cy": gc.get("cy", 0.0)}
+    return {"px": gc.get("px"), "py": gc.get("py"),
+            "cx": gc.get("cx", 0.0), "cy": gc.get("cy", 0.0),
+            "kind": gc.get("kind")}
+
+
+def corrections_equal(a: "dict | None", b: "dict | None",
+                      tol: float = 1e-6) -> bool:
+    """Do two FIT-form corrections (from select_correction / from_payload)
+    describe the same mapping?
+
+    Kind-aware: a full-affine correction has no px/py to compare, so a
+    comparison written only against those two keys silently treats every
+    full-affine correction as unchanged (both sides read as
+    ``[None, None]`` equal) regardless of what it actually recovered —
+    the same fault ``from_payload`` exists to remove, in the one place
+    that DECIDES whether a session needs re-deriving.
+    """
+    if bool(a) != bool(b):
+        return False
+    if not a:
+        return True
+    if (a.get("kind") == "full-affine") or (b.get("kind") == "full-affine"):
+        if a.get("kind") != b.get("kind"):
+            return False
+        Aa, Ab, ba, bb = a.get("A"), b.get("A"), a.get("b"), b.get("b")
+        if Aa is None or Ab is None or ba is None or bb is None:
+            return False
+        return bool(np.allclose(Aa, Ab, atol=tol)
+                   and np.allclose(ba, bb, atol=tol))
+    pa, pb = a.get("px"), b.get("px")
+    qa, qb = a.get("py"), b.get("py")
+    if (pa is None) != (pb is None) or (qa is None) != (qb is None):
+        return False
+    if pa is None and qa is None:
+        return True
+    ok_x = pa is None or (len(pa) == len(pb)
+                          and np.allclose(pa, pb, atol=tol))
+    ok_y = qa is None or (len(qa) == len(qb)
+                          and np.allclose(qa, qb, atol=tol))
+    return bool(ok_x and ok_y)
+
+
 def _predict(m: np.ndarray, corr: "dict | None") -> np.ndarray:
     if not corr:
         return m.copy()
+    if _is_full_affine(corr):
+        A = np.asarray(corr["A"], float)
+        b = np.asarray(corr["b"], float)
+        cx, cy = corr.get("cx", 0.0), corr.get("cy", 0.0)
+        return (m - np.array([cx, cy])) @ A.T + b
     px, py = corr.get("px"), corr.get("py")
     out = m.copy()
     if px:
@@ -695,6 +887,19 @@ def select_correction(targets: "list[dict]", width: float,
             # quadratic fitted the seven targets with a sane gain
             # everywhere and produced a FOLD-OVER (local gain -3.3) in
             # three of its seven folds (F36).
+            # full-affine has its own floor, checked separately from the
+            # generic "not fittable" path below: below FULL_AFFINE_MIN_
+            # TARGETS it was never attempted at all, which is a different
+            # fact from "attempted and degenerate" — the exact distinction
+            # this whole block exists to preserve (F36).
+            if cand == "full-affine" and len(m) < FULL_AFFINE_MIN_TARGETS:
+                rows.append({"candidate": cand, "status": "not fittable",
+                             "why": ("needs at least %d measured targets "
+                                     "for six free parameters; this grid "
+                                     "has %d"
+                                     % (FULL_AFFINE_MIN_TARGETS, len(m))),
+                             "unstable_folds": 0, "_per_target": None})
+                continue
             full = _fit_candidate(m, t, cand, width, height)
             bad = []
             for i in range(len(m)):
@@ -896,9 +1101,35 @@ def raw_targets(targets: "list[dict]", corr: "dict | None",
 
     ``corr`` is the correction that was ACTIVE while these targets were
     measured. Pass ``None`` when nothing was applied.
+
+    A full-affine correction's two axes cannot be inverted independently
+    (that is the point of it), so it is inverted as one 2x2 matrix solve
+    per point rather than through ``invert_poly``'s per-axis bisection.
+    Unlike a folded quadratic, a full-affine map with a non-zero
+    determinant (already required by ``_fit_full_affine``, or it would
+    not have been accepted as a correction) is invertible everywhere —
+    no monotone-span clipping, no off-screen NaN.
     """
     if not corr:
         return [dict(t) for t in (targets or [])]
+    if _is_full_affine(corr):
+        A = np.asarray(corr["A"], float)
+        b = np.asarray(corr["b"], float)
+        cx, cy = corr.get("cx", 0.0), corr.get("cy", 0.0)
+        det = np.linalg.det(A)
+        A_inv = np.linalg.inv(A) if abs(det) >= 1e-9 else None
+        out = []
+        for t in targets or []:
+            r = dict(t)
+            if t.get("mx") is not None and t.get("my") is not None:
+                if A_inv is None:
+                    r["mx"], r["my"] = float("nan"), float("nan")
+                else:
+                    corrected = np.array([float(t["mx"]), float(t["my"])])
+                    raw = A_inv @ (corrected - b) + np.array([cx, cy])
+                    r["mx"], r["my"] = float(raw[0]), float(raw[1])
+            out.append(r)
+        return out
     px, py = corr.get("px"), corr.get("py")
     out = []
     for t in targets or []:
