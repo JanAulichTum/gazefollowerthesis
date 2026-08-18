@@ -225,9 +225,14 @@ Watch for:
 
 1. Rate gate passes at ~29 Hz.
 2. Position guide: face centred, roll < 6°, openness ratio < 1.5.
-3. Pre-validation shows **7 targets**, post-validation shows **7 targets**
-   in the same positions. This is what makes drift a like-for-like
-   comparison — it used to be 7 vs 3.
+3. Pre-validation runs TWO checks as one action: `pre_fit` shows
+   **13 targets** (grid A, the fit set), then `pre_check` shows
+   **7 targets** (grid B). Post-validation shows **7 targets** in the
+   SAME grid-B positions as `pre_check`. Identical grid-B positions
+   pre/post is what makes drift a like-for-like comparison — it used to
+   be 7 vs 3, and before that pre_fit and post shared one 7-target grid
+   (grid A grew to 13 on 2026-08-18; grid B, the one drift compares, did
+   not change).
 4. After the pre-check, the gain auto-fit fires. The panel should report
    `x ×… · y ×…` **separately**. If both read ≈1.00 you get an explicit
    warning that the fit is the identity — meaning "corrected" columns

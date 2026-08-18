@@ -1202,7 +1202,11 @@ try:
         _n = len(re.findall(r"\[\s*\d+\s*,\s*\d+\s*\]", _grid.group(1)))
         _ys = {m[1] for m in re.findall(r"\[\s*(\d+)\s*,\s*(\d+)\s*\]",
                                         _grid.group(1))}
-        check("grid has 7 targets", _n == 7, "got %d" % _n)
+        # 13, not 7, since grid A grew 2026-08-18 (F33/brief item 2, see
+        # section [17] for the full two-grid protocol assertions —
+        # this earlier check pre-dates that section and just confirms
+        # the grid is still a well-formed single source of truth).
+        check("grid has 13 targets", _n == 13, "got %d" % _n)
         check("grid spans 5 vertical elevations (quadratic y fit needs >=3)",
               len(_ys) >= 5, "got %d" % len(_ys))
     _pos = re.search(r"const VALIDATION_POSITIONS = \{(.*?)\};", _js, re.S)
@@ -3385,8 +3389,22 @@ try:
     _B = _grid("VALIDATION_CHECK_GRID")
     _ecc = lambda g, i: sum(abs(p[i] - 50) for p in g) / len(g)
 
-    check("both grids exist and have the same number of targets",
-          len(_A) == 7 and len(_B) == 7, "A=%d B=%d" % (len(_A), len(_B)))
+    # Grid A grew from 7 to 13 targets 2026-08-18 (F33/brief item 2) so a
+    # full-affine correction has enough leave-one-out headroom to be
+    # more than noise (validation_stats.FULL_AFFINE_MIN_TARGETS = 12).
+    # Grid B stays at 7 — it is never fitted to, only checked against,
+    # and post pairs with pre_check on it for drift, which must not
+    # change size out from under that comparison.
+    check("grid A has THIRTEEN targets, grid B still has seven",
+          len(_A) == 13 and len(_B) == 7, "A=%d B=%d" % (len(_A), len(_B)))
+    check("grid A has at least FULL_AFFINE_MIN_TARGETS targets — the "
+          "whole reason it was extended",
+          len(_A) >= importlib.import_module(
+              "validation_stats").FULL_AFFINE_MIN_TARGETS,
+          "A=%d, needs >= %d" % (len(_A),
+                                 importlib.import_module(
+                                     "validation_stats"
+                                 ).FULL_AFFINE_MIN_TARGETS))
     check("the grids share NO target position",
           not (set(_A) & set(_B)), "shared: %s" % sorted(set(_A) & set(_B)))
     check("horizontal eccentricity is matched (B is not an easier grid)",
