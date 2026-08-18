@@ -2892,6 +2892,53 @@ def _uncorrected_error(payload: dict, corr: "dict | None") -> "dict":
     return out
 
 
+def _degree_fields(record: dict) -> dict:
+    """Convert every pixel figure in a validation record to degrees.
+
+    THE CONVENTION, which this code broke once and now follows: a PLAIN
+    degree field is on the browser's ruler, exactly like ``mean_err_deg``;
+    a ``_measured`` field is on the distance measured at validation time,
+    exactly like ``mean_err_deg_measured``. The two never mix under
+    similar names.
+
+    The first version rescaled ``bias_deg`` in place while leaving
+    ``mean_err_deg`` alone, so one record held a bias and an accuracy on
+    different rulers — dividing one by the other gave 0.686 where
+    ``bias_ratio`` says 0.759 — and ``bias_deg`` sat beside
+    ``bias_deg_raw`` describing the same pixels through two different
+    conversions. Fixing the ruler broke the naming instead. Both hold
+    now, and this is a named function so the invariant can be tested by
+    calling it rather than by reading it (F36).
+
+    Mutates and returns ``record``.
+    """
+    px = record.get("mean_err_px")
+    deg_b, deg_m = record.get("mean_err_deg"), record.get(
+        "mean_err_deg_measured")
+    dpp_b = (deg_b / px) if (px and deg_b) else None
+    dpp_m = (deg_m / px) if (px and deg_m) else None
+    for src in ("bias_px", "bias_x_px", "bias_y_px", "median_err_px",
+                "max_err_px", "bias_px_raw", "bias_x_px_raw",
+                "bias_y_px_raw", "median_err_px_raw", "max_err_px_raw"):
+        val = record.get(src)
+        if val is None:
+            continue
+        # "bias_px" -> "bias_" ; "bias_px_raw" -> "bias_"
+        stem = src[:-6] if src.endswith("_raw") else src[:-2]
+        suf = "_raw" if src.endswith("_raw") else ""
+        if dpp_b:
+            record[stem + "deg" + suf] = round(val * dpp_b, 2)
+        if dpp_m:
+            record[stem + "deg_measured" + suf] = round(val * dpp_m, 2)
+    record["bias_deg_basis"] = (
+        "plain fields use the browser's assumed distance, as mean_err_deg "
+        "does; *_deg_measured use the measured distance (%s)"
+        % ((record.get("distance") or {}).get("source"))
+        if dpp_m else
+        "browser assumption only — no measured distance at validation time")
+    return record
+
+
 @socketio.on("validation_result")
 def handle_validation_result(payload: dict):
     """Store a mandatory accuracy-validation result (pre or post).
@@ -3058,30 +3105,8 @@ def handle_validation_result(payload: dict):
     except Exception:  # noqa: BLE001 — never lose a validation over stats
         logger.exception("Could not compute the spatial terms")
 
-    # ── THE BIAS IN DEGREES USES THE MEASURED DISTANCE TOO ───────────
-    # _uncorrected_error runs before the block above and can only use the
-    # browser's px→degree scale, which divides by window.measuredDistanceCm
-    # and in practice by a hardcoded 60 cm (F21). The authoritative scale
-    # is the one just computed from the iris. Leaving the bias on the
-    # browser's scale would have reported it 6 % low on PILOT_02 while the
-    # accuracy beside it was right — two angles on the same line, measured
-    # against two different rulers, which is precisely the class of fault
-    # this whole session set out to remove.
-    _px = record.get("mean_err_px")
-    _deg_m = record.get("mean_err_deg_measured")
-    if _px and _deg_m:
-        _dpp = _deg_m / _px
-        for _f, _src in (("bias_deg", "bias_px"),
-                         ("bias_x_deg", "bias_x_px"),
-                         ("bias_y_deg", "bias_y_px"),
-                         ("median_err_deg", "median_err_px")):
-            if record.get(_src) is not None:
-                record[_f] = round(record[_src] * _dpp, 2)
-        record["bias_deg_basis"] = "measured distance (%s)" % (
-            (record.get("distance") or {}).get("source") or "unknown")
-    elif record.get("bias_deg") is not None:
-        record["bias_deg_basis"] = ("browser assumption — no measured "
-                                    "distance at validation time")
+    # ── DEGREES, ON BOTH RULERS, UNDER STABLE NAMES ──────────────────
+    _degree_fields(record)
 
     # ── WHICH CHECK IS WHICH, decided here and recorded ──────────────
     # pre_fit    grid A, uncorrected. Native accuracy AND the fit set.

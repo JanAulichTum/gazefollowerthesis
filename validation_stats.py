@@ -338,6 +338,20 @@ def spatial_terms(targets: "list[dict]", width: float = 1920.0,
         shear=round(float(shear), 3),
         rotation_deg=round(rot, 2),
         residual_px=round(float(np.sqrt((resid ** 2).sum(axis=1).mean())), 1),
+        # HOW MUCH OF THE ERROR NO AFFINE MAP CAN REACH. The residual of
+        # the best possible 2-D linear fit — six parameters, more than
+        # any correction here applies — against the raw mean error. Near
+        # 1.0 means the error has no linear structure at all and no
+        # recalibration of any form will help; near 0 means it is almost
+        # entirely gain, offset and shear.
+        #
+        # It separates two very different sessions that a mean cannot:
+        # PILOT_00 reads 1.16 (nothing linear to remove) while Manuel_P2
+        # reads 0.27 (almost all of it linear). Both were reported only
+        # as an accuracy in degrees.
+        residual_ratio=(round(float(np.sqrt((resid ** 2).sum(axis=1).mean())
+                                    / np.hypot(*(m - t).T).mean()), 2)
+                        if np.hypot(*(m - t).T).mean() > 0 else None),
         # What the off-diagonal actually costs, in the units a reader
         # cares about: vertical displacement from one edge of the screen
         # to the other, caused by horizontal position alone.
@@ -671,10 +685,38 @@ def select_correction(targets: "list[dict]", width: float,
         if s is None:
             # Recorded, not dropped. "This model was refused" and "this
             # model was never tried" are different facts about a session.
-            rows.append({"candidate": cand, "status": "not fittable",
-                         "why": "too few distinct measured levels, or a "
-                                "local gain outside [%.1f, %.1f] somewhere "
-                                "on the screen" % (GAIN_MIN, GAIN_MAX),
+            #
+            # And WHICH refusal matters. A candidate that cannot be fitted
+            # to the full grid is a different finding from one that fits
+            # the full grid but collapses when a single target is held
+            # out — the second says the model is unstable at this sample
+            # size, which is exactly what the rule exists to detect, and
+            # reporting it as "not fittable" hides that. PILOT_05's
+            # quadratic fitted the seven targets with a sane gain
+            # everywhere and produced a FOLD-OVER (local gain -3.3) in
+            # three of its seven folds (F36).
+            full = _fit_candidate(m, t, cand, width, height)
+            bad = []
+            for i in range(len(m)):
+                keep = np.arange(len(m)) != i
+                if _fit_candidate(m[keep], t[keep], cand,
+                                  width, height) is None:
+                    bad.append(i)
+            rows.append({"candidate": cand,
+                         "status": ("unstable under cross-validation"
+                                    if full is not None else "not fittable"),
+                         "why": (("fits all %d targets, but %d of %d "
+                                  "leave-one-out folds produce a local gain "
+                                  "outside [%.1f, %.1f] — the model is not "
+                                  "supported at this sample size"
+                                  % (len(m), len(bad), len(m),
+                                     GAIN_MIN, GAIN_MAX))
+                                 if full is not None else
+                                 ("cannot be fitted to the full grid: too "
+                                  "few distinct measured levels, or a local "
+                                  "gain outside [%.1f, %.1f]"
+                                  % (GAIN_MIN, GAIN_MAX))),
+                         "unstable_folds": len(bad),
                          "_per_target": None})
             continue
         s["status"] = "evaluated"

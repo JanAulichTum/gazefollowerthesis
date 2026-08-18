@@ -574,9 +574,63 @@ try:
     #     (F21); the server recomputes from the iris. Two angles on one
     #     line measured against two rulers is the fault class this
     #     section exists to remove.
-    check("app.py rescales the bias with the MEASURED distance",
-          "bias_deg_basis" in _appsrc
-          and '_deg_m = record.get("mean_err_deg_measured")' in _appsrc)
+    check("app.py converts degrees through one named, testable function",
+          "def _degree_fields(" in _appsrc
+          and "_degree_fields(record)" in _appsrc
+          and "bias_deg_basis" in _appsrc)
+    # ...AND KEEPS ONE RULER PER NAMING PATTERN. The codebase's
+    # convention is: a plain degree field is on the browser's assumed
+    # distance (as `mean_err_deg` is), a `_measured` field is on the
+    # distance measured at validation time (as `mean_err_deg_measured`
+    # is). F34's fix rescaled `bias_deg` in place and left `mean_err_deg`
+    # alone, so one record carried a bias and an accuracy on different
+    # rulers — bias_deg / mean_err_deg read 0.686 where bias_ratio said
+    # 0.759 — and `bias_deg` sat next to `bias_deg_raw` describing the
+    # same pixels two ways. Assert the invariant on a real record shape
+    # rather than on the source text (F36).
+    # Exercise app.py's OWN function. The first version of this check
+    # rebuilt the conversion inside the test and passed while the real
+    # code was mutated back to the F34 bug — a test that re-implements
+    # what it is checking verifies nothing.
+    _dfn = next(n for n in ast.parse(_appsrc).body
+                if isinstance(n, ast.FunctionDef)
+                and n.name == "_degree_fields")
+    _ns3 = {}
+    exec(compile(ast.Module(body=[_dfn], type_ignores=[]), "x", "exec"),
+         _ns3)
+    _rec = _ns3["_degree_fields"]({
+        "mean_err_px": 191.2, "mean_err_deg": 3.28,
+        "mean_err_deg_measured": 2.96, "bias_px": 145.1,
+        "median_err_px": 201.1, "max_err_px": 330.1,
+        "bias_px_raw": 145.1, "median_err_px_raw": 201.1,
+        "distance": {"source": "iris"}})
+    check("a plain degree field shares mean_err_deg's ruler",
+          abs(_rec["bias_deg"] / _rec["mean_err_deg"]
+              - _rec["bias_px"] / _rec["mean_err_px"]) < 0.005,
+          "bias_deg/mean_err_deg = %.3f, bias_px/mean_err_px = %.3f"
+          % (_rec["bias_deg"] / _rec["mean_err_deg"],
+             _rec["bias_px"] / _rec["mean_err_px"]))
+    check("...and a _measured field shares mean_err_deg_measured's",
+          abs(_rec["bias_deg_measured"] / _rec["mean_err_deg_measured"]
+              - _rec["bias_px"] / _rec["mean_err_px"]) < 0.005,
+          "%.3f" % (_rec["bias_deg_measured"]
+                    / _rec["mean_err_deg_measured"]))
+    check("the same pixels never differ between deg and deg_raw",
+          _rec["median_err_deg"] == _rec["median_err_deg_raw"]
+          and _rec["bias_deg"] == _rec["bias_deg_raw"],
+          "%.2f vs %.2f" % (_rec["median_err_deg"],
+                            _rec["median_err_deg_raw"]))
+    check("...and the two rulers are both present, and differ",
+          _rec["bias_deg"] != _rec["bias_deg_measured"]
+          and "measured distance (iris)" in _rec["bias_deg_basis"],
+          "%.2f browser vs %.2f measured"
+          % (_rec["bias_deg"], _rec["bias_deg_measured"]))
+    check("no field name is mangled by the stem slicing",
+          all(k in _rec for k in ("bias_deg", "bias_deg_measured",
+                                  "median_err_deg", "max_err_deg",
+                                  "bias_deg_raw")),
+          ", ".join(sorted(k for k in _rec if k.endswith("deg")
+                           or "deg_" in k)[:6]))
     # ...and the INCLUSION figure is still computed on the browser's
     # ruler, which differs from the measured one by -22 % to +15 % across
     # the recorded sessions. The two have not yet disagreed about the
@@ -629,6 +683,69 @@ try:
     _rr = next(r for r in _res.rows if "accuracy_ruler" in str(r[1]))
     check("...and grades a >5 % gap between the rulers as degenerate",
           _rr[2] == "DEGENERATE", "%s — %s" % (_rr[2], _rr[3]))
+
+    # (n0) A REFUSED CANDIDATE MUST SAY WHICH REFUSAL. "Cannot be fitted
+    #      to the grid" and "fits the grid but collapses when one target
+    #      is held out" are different findings; the second says the model
+    #      is unstable at this sample size, which is what the rule exists
+    #      to detect. Both were reported as "not fittable" until PILOT_05
+    #      produced a quadratic that fitted all seven targets with a sane
+    #      gain and folded over (local gain −3.3) in three of seven folds
+    #      (F36).
+    _unstable = _tg(lambda tx, ty: (
+        tx, ty + (260.0 if ty < 200 else (-40.0 if ty < 400 else 0.0))))
+    _u = vstat.select_correction(_unstable, _W7, _H7)
+    _uq = next((c for c in _u["decision"]["candidates"]
+                if c["candidate"] == "quadratic-vertical"), None)
+    check("a candidate refused by its FOLDS says so, not 'not fittable'",
+          _uq is not None and _uq.get("status")
+          == "unstable under cross-validation"
+          and _uq.get("unstable_folds", 0) > 0,
+          "status %r, %s folds" % ((_uq or {}).get("status"),
+                                   (_uq or {}).get("unstable_folds")))
+    check("...and names how many folds of how many failed",
+          "leave-one-out folds" in (_uq or {}).get("why", ""),
+          (_uq or {}).get("why", "")[:70])
+    # A model that genuinely cannot be fitted must still say THAT.
+    _flat = [{"tx": 100.0 + 200 * i, "ty": 500.0, "mx": 100.0 + 200 * i,
+              "my": 500.0} for i in range(7)]
+    _f2 = vstat.select_correction(_flat, _W7, _H7)
+    _fq = next((c for c in _f2["decision"]["candidates"]
+                if c["candidate"] == "quadratic-vertical"), None)
+    check("a model that cannot be fitted at all is still called that",
+          (_fq or {}).get("status") == "not fittable",
+          (_fq or {}).get("status"))
+
+    # (n1) HOW MUCH OF THE ERROR IS BEYOND ANY AFFINE MAP. The residual of
+    #      the best possible 2-D linear fit against the raw mean error.
+    #      A pure gain+offset+shear must read near zero; unstructured
+    #      scatter must read near one. Without it, a session whose error
+    #      is entirely correctable and one whose error no recalibration
+    #      can touch report the same accuracy in degrees.
+    _pure = _tg(lambda tx, ty: (_W7 / 2 + 0.85 * (tx - _W7 / 2) + 20,
+                                _H7 / 2 + 0.9 * (ty - _H7 / 2)
+                                + 0.15 * (tx - _W7 / 2) - 30))
+    check("a purely affine error leaves almost nothing behind",
+          vstat.spatial_terms(_pure, _W7, _H7)["residual_ratio"] < 0.02,
+          "ratio %.3f" % vstat.spatial_terms(_pure, _W7,
+                                             _H7)["residual_ratio"])
+    _rng4 = np.random.default_rng(4)
+    _noise2 = _tg(lambda tx, ty: (tx + _rng4.normal(0, 80),
+                                  ty + _rng4.normal(0, 80)))
+    check("...and unstructured scatter leaves most of it behind",
+          vstat.spatial_terms(_noise2, _W7, _H7)["residual_ratio"] > 0.5,
+          "ratio %.2f" % vstat.spatial_terms(_noise2, _W7,
+                                             _H7)["residual_ratio"])
+    # It is a RATIO, so it must not move when the whole error is scaled.
+    # Asserting only "small for affine, large for noise" passes for the
+    # bare residual in pixels too, which is not the same quantity.
+    _big = [{"tx": t["tx"], "ty": t["ty"],
+             "mx": t["tx"] + 10 * (t["mx"] - t["tx"]),
+             "my": t["ty"] + 10 * (t["my"] - t["ty"])} for t in _noise2]
+    _r1 = vstat.spatial_terms(_noise2, _W7, _H7)["residual_ratio"]
+    _r2 = vstat.spatial_terms(_big, _W7, _H7)["residual_ratio"]
+    check("residual_ratio is dimensionless — 10x the error, same ratio",
+          abs(_r1 - _r2) < 0.02, "%.2f vs %.2f" % (_r1, _r2))
 
     # (n) THE DIAGNOSTICS MUST NOT BECOME THE RULE. Leave-one-out folds
     #     share five of seven training targets, so the standard error is

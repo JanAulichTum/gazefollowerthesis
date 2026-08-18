@@ -1730,6 +1730,135 @@ inversion, any cross-validation figure, or any interval. The three faults
 above are one mislabelled list, one mis-rounded digit, and one
 overstated statistical name.
 
+---
+
+## F36 · PILOT_05, the first session recorded with the full instrumentation — and two faults it exposed in it
+**2026-08-18 · Methods, Results — the new fields found their first real session, and two of them were wrong**
+
+PILOT_05 is the first recording carrying `spatial`, the signed bias, the
+correction decision and the measured-distance conversion. The
+instrumentation worked. Two things it wrote were wrong, and the session's
+own data exposed both.
+
+### 1. The same pixels, in two rulers, under adjacent keys
+
+F34 rescaled the bias to the measured distance. It rescaled only the
+UNSUFFIXED fields. PILOT_05 has **no correction applied**, so raw and
+corrected are the same measurement — and the record says:
+
+```
+median_err_px      201.1      median_err_px_raw      201.1     identical, as they must be
+median_err_deg      3.11      median_err_deg_raw      3.45     NOT identical
+```
+
+201.1 px is 3.11° on the measured ruler and 3.45° on the browser's. Both
+are in the record, adjacent, describing one measurement. That is the
+exact fault F34 was written about, reintroduced by F34's own fix.
+
+Worse, and less visible: `bias_deg` was on the measured ruler while
+`mean_err_deg` beside it stayed on the browser's, so a reader dividing
+one by the other gets **0.686** where `bias_ratio` says **0.759**.
+
+The repair is not "use the measured ruler everywhere" — it is to follow
+the convention the codebase already had and F34 broke: **a plain degree
+field is on the browser's assumed distance, exactly as `mean_err_deg` is;
+a `_measured` field is on the distance measured at validation time,
+exactly as `mean_err_deg_measured` is.** Every pixel figure now emits
+both, `bias_deg_basis` says which is which, and the two never appear
+under similar names meaning different things.
+
+### 2. "Not fittable" hid the thing worth knowing
+
+The decision record reported `quadratic-vertical: not fittable — too few
+distinct measured levels, or a local gain outside [0.5, 3.0]`.
+
+Neither was true. The quadratic fits all seven targets with a local gain
+between 0.95 and 1.36 across the whole screen. It was dropped because
+**three of its seven leave-one-out folds** produce an implausible gain —
+one of them a fold-over, local gain running −3.32 to +6.66.
+
+"Cannot be fitted" and "fits, but collapses when one target is held out"
+are different findings, and the second is precisely what the rule exists
+to detect. The status now distinguishes them and names how many folds of
+how many failed.
+
+The refusal itself was right, and by a wide margin. Leave-one-out on the
+vertical axis alone: **no correction 105 px, linear 148 px, quadratic
+328 px.**
+
+### 3. What PILOT_05 actually measured
+
+**Canonical accuracy 2.66°** (measured ruler; 2.82° browser) — passes the
+3.0° bar. `pre_fit` alone reads 2.96°/3.28° and is flagged
+`passes_threshold: false`, correctly, since it is not the canonical
+figure.
+
+**The vertical error is almost entirely the top row.** Drop the two
+targets at `ty = 130` from grid A and the mean vertical error falls from
+its headline value to **+2.6 px**:
+
+| phase | dy at ty = 130 | dy everywhere else |
+|---|---|---|
+| pre_fit | +325, +243 px | **+3 px** |
+| pre_check | +134 px | +28 px |
+| post | +142 px | +81 px |
+
+Fitted as a vertical gain this reads `m_yy = 0.671` on grid A — a 33 %
+compression — which is an artefact of two targets. It is not a gain
+error, and modelling it as one spreads a local failure across the whole
+screen, which is why every candidate lost to no-correction. **The tracker
+does not resolve the top ~12 % of the screen for this participant and is
+accurate elsewhere.** A mean over seven targets cannot express that, and
+neither can any correction this pipeline applies.
+
+**The bias is horizontal here**, unlike every previous session:
+`(+112, +43) px` on `pre_check`, **1.95°**, offset-dominated at 0.73 —
+the second largest of any session after PILOT_03. Shear 0.135, flagged;
+`m_yx` interval spans zero.
+
+### 4. A new diagnostic: how much of the error is beyond any affine map
+
+`residual_ratio` — the residual of the best possible 2-D linear fit, six
+parameters, more than any correction here applies, over the raw mean
+error. Near 1 means no recalibration of any form can help.
+
+| session | residual / error |
+|---|---|
+| Manuel_P2 | 0.25 |
+| PILOT_04 | 0.35 |
+| PILOT_00 | 0.39 |
+| PILOT_03 | 0.46 |
+| PILOT_02 | 0.52 |
+| **PILOT_05** | **0.55** |
+| PILOT_01 | 0.84 |
+
+PILOT_01 and Manuel_P2 were reported only as accuracies in degrees — 1.57°
+and 2.31° — and the second's error is almost entirely removable structure
+while the first's is almost none. That difference decides whether a
+session is worth correcting at all, and nothing reported it.
+
+### 5. Two of the three tests written for this entry verified nothing
+
+The ruler test rebuilt the conversion inside the test and asserted
+against its own arithmetic. Mutating `app.py` back to the F34 bug left it
+**passing**. The `residual_ratio` test asserted "small for affine, large
+for noise", which is equally true of the un-normalised residual in
+pixels, so deleting the division left it **passing** too.
+
+Both are the same fault as F34's fourth: a test that re-implements what
+it checks, or checks a property too weak to separate the fix from the
+bug. The conversion is now a named function, `app._degree_fields`, and
+the test **calls it** — mutating the ruler back now fails with exactly
+the 0.686-against-0.759 signature that identified the bug in PILOT_05's
+record. The ratio test is now a scale invariance: multiply every error by
+ten and the ratio must not move.
+
+### 6. Still open
+
+`head_position` is null in all **nine** manifests. Nine sessions, and the
+measurement that would test whether the shear comes from head placement
+has never been taken.
+
 ## Open items before evaluation collection
 
 - ~~`EVALUATION_FROM_DATE`~~ **SET to 2026-08-11T14:00** (F17).
