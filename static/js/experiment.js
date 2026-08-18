@@ -640,10 +640,36 @@ class NativeCalibration {
 // nonlinear, and extra elevations let the quadratic vertical correction
 // characterize and remove it. Post keeps three targets for a quick
 // drift check.
-// Seven targets across FIVE vertical elevations: enough distinct y-levels
-// for the quadratic vertical fit that corrects the up-gaze overshoot.
+//
+// THIRTEEN targets across FIVE vertical elevations, not seven
+// (extended 2026-08-18, F33/brief item 2). A per-axis correction cannot
+// represent m_yx — vertical error caused by HORIZONTAL position, the
+// shear a participant reported before any metric did ("when looking
+// right the y axis behaves weirdly") — at any polynomial degree. A full
+// 2x2 affine candidate can, but six free parameters need more than
+// seven targets can support under leave-one-out: F33 measured 4-7% gain
+// at n=7 (indistinguishable from noise) against 15-28% pooling to ~14
+// targets, on exactly the two sessions that show shear and nowhere
+// else. That gate was re-verified independently against the nine
+// sessions recorded under the 7-target protocol before this grid was
+// extended — see validation_stats.FULL_AFFINE_MIN_TARGETS and the
+// commit that added the full-affine candidate.
+//
+// The extra six targets add x-DIVERSITY at elevations that previously
+// had only one x value each (12/31/69 had a single x besides the
+// corners), which is what lets m_yx be estimated at more than one
+// height instead of only inferred from the two 12%-elevation corners.
+// Costs ~15 s of extra validation time per session. Keep this grid and
+// VALIDATION_CHECK_GRID DISJOINT (run_tests.py [17] asserts it) and the
+// two grids' eccentricity matched (also asserted) — a check grid that
+// is easier than the fit grid would turn "the correction generalises"
+// into "the second grid was nearer the centre".
 const VALIDATION_GRID = [
-    [12, 12], [88, 12], [50, 31], [15, 50], [85, 50], [50, 69], [50, 88],
+    [12, 12], [88, 12], [35, 12], [65, 12],
+    [50, 31], [20, 31], [80, 31],
+    [15, 50], [85, 50],
+    [50, 69], [30, 69], [70, 69],
+    [50, 88],
 ];
 
 // ── The CHECK grid: different points, same eccentricity ─────────────
@@ -660,10 +686,16 @@ const VALIDATION_GRID = [
 // measures, so the two accuracies are comparable rather than merely
 // different:
 //
-//     mean |x − 50|   A 20.9    B 20.7
-//     mean |y − 50|   A 21.7    B 21.7
+//     mean |x − 50|   A 21.2    B 20.7
+//     mean |y − 50|   A 23.4    B 21.7
 //     distinct y      A 5       B 5      (12/31/50/69/88)
 //     shared points   0
+//
+// Grid A grew from 7 to 13 targets (2026-08-18, F33/brief item 2); the
+// figures above are grid A's post-extension eccentricity, still within
+// run_tests.py [17]'s 2.0 tolerance of grid B's — grid B itself did NOT
+// change and stays at 7, so drift (which pairs pre_check with post,
+// both grid B) is unaffected.
 //
 // Same difficulty, no overlap. The error measured here is out of sample
 // in BOTH space and time, which is the figure a corrected accuracy

@@ -1730,6 +1730,311 @@ inversion, any cross-validation figure, or any interval. The three faults
 above are one mislabelled list, one mis-rounded digit, and one
 overstated statistical name.
 
+---
+
+## F36 · PILOT_05, the first session recorded with the full instrumentation — and two faults it exposed in it
+**2026-08-18 · Methods, Results — the new fields found their first real session, and two of them were wrong**
+
+PILOT_05 is the first recording carrying `spatial`, the signed bias, the
+correction decision and the measured-distance conversion. The
+instrumentation worked. Two things it wrote were wrong, and the session's
+own data exposed both.
+
+### 1. The same pixels, in two rulers, under adjacent keys
+
+F34 rescaled the bias to the measured distance. It rescaled only the
+UNSUFFIXED fields. PILOT_05 has **no correction applied**, so raw and
+corrected are the same measurement — and the record says:
+
+```
+median_err_px      201.1      median_err_px_raw      201.1     identical, as they must be
+median_err_deg      3.11      median_err_deg_raw      3.45     NOT identical
+```
+
+201.1 px is 3.11° on the measured ruler and 3.45° on the browser's. Both
+are in the record, adjacent, describing one measurement. That is the
+exact fault F34 was written about, reintroduced by F34's own fix.
+
+Worse, and less visible: `bias_deg` was on the measured ruler while
+`mean_err_deg` beside it stayed on the browser's, so a reader dividing
+one by the other gets **0.686** where `bias_ratio` says **0.759**.
+
+The repair is not "use the measured ruler everywhere" — it is to follow
+the convention the codebase already had and F34 broke: **a plain degree
+field is on the browser's assumed distance, exactly as `mean_err_deg` is;
+a `_measured` field is on the distance measured at validation time,
+exactly as `mean_err_deg_measured` is.** Every pixel figure now emits
+both, `bias_deg_basis` says which is which, and the two never appear
+under similar names meaning different things.
+
+### 2. "Not fittable" hid the thing worth knowing
+
+The decision record reported `quadratic-vertical: not fittable — too few
+distinct measured levels, or a local gain outside [0.5, 3.0]`.
+
+Neither was true. The quadratic fits all seven targets with a local gain
+between 0.95 and 1.36 across the whole screen. It was dropped because
+**three of its seven leave-one-out folds** produce an implausible gain —
+one of them a fold-over, local gain running −3.32 to +6.66.
+
+"Cannot be fitted" and "fits, but collapses when one target is held out"
+are different findings, and the second is precisely what the rule exists
+to detect. The status now distinguishes them and names how many folds of
+how many failed.
+
+The refusal itself was right, and by a wide margin. Leave-one-out on the
+vertical axis alone: **no correction 105 px, linear 148 px, quadratic
+328 px.**
+
+### 3. What PILOT_05 actually measured
+
+**Canonical accuracy 2.66°** (measured ruler; 2.82° browser) — passes the
+3.0° bar. `pre_fit` alone reads 2.96°/3.28° and is flagged
+`passes_threshold: false`, correctly, since it is not the canonical
+figure.
+
+**The vertical error is almost entirely the top row.** Drop the two
+targets at `ty = 130` from grid A and the mean vertical error falls from
+its headline value to **+2.6 px**:
+
+| phase | dy at ty = 130 | dy everywhere else |
+|---|---|---|
+| pre_fit | +325, +243 px | **+3 px** |
+| pre_check | +134 px | +28 px |
+| post | +142 px | +81 px |
+
+Fitted as a vertical gain this reads `m_yy = 0.671` on grid A — a 33 %
+compression — which is an artefact of two targets. It is not a gain
+error, and modelling it as one spreads a local failure across the whole
+screen, which is why every candidate lost to no-correction. **The tracker
+does not resolve the top ~12 % of the screen for this participant and is
+accurate elsewhere.** A mean over seven targets cannot express that, and
+neither can any correction this pipeline applies.
+
+**The bias is horizontal here**, unlike every previous session:
+`(+112, +43) px` on `pre_check`, **1.95°**, offset-dominated at 0.73 —
+the second largest of any session after PILOT_03. Shear 0.135, flagged;
+`m_yx` interval spans zero.
+
+### 4. A new diagnostic: how much of the error is beyond any affine map
+
+`residual_ratio` — the residual of the best possible 2-D linear fit, six
+parameters, more than any correction here applies, over the raw mean
+error. Near 1 means no recalibration of any form can help.
+
+| session | residual / error |
+|---|---|
+| Manuel_P2 | 0.25 |
+| PILOT_04 | 0.35 |
+| PILOT_00 | 0.39 |
+| PILOT_03 | 0.46 |
+| PILOT_02 | 0.52 |
+| **PILOT_05** | **0.55** |
+| PILOT_01 | 0.84 |
+
+PILOT_01 and Manuel_P2 were reported only as accuracies in degrees — 1.57°
+and 2.31° — and the second's error is almost entirely removable structure
+while the first's is almost none. That difference decides whether a
+session is worth correcting at all, and nothing reported it.
+
+### 5. Two of the three tests written for this entry verified nothing
+
+The ruler test rebuilt the conversion inside the test and asserted
+against its own arithmetic. Mutating `app.py` back to the F34 bug left it
+**passing**. The `residual_ratio` test asserted "small for affine, large
+for noise", which is equally true of the un-normalised residual in
+pixels, so deleting the division left it **passing** too.
+
+Both are the same fault as F34's fourth: a test that re-implements what
+it checks, or checks a property too weak to separate the fix from the
+bug. The conversion is now a named function, `app._degree_fields`, and
+the test **calls it** — mutating the ruler back now fails with exactly
+the 0.686-against-0.759 signature that identified the bug in PILOT_05's
+record. The ratio test is now a scale invariance: multiply every error by
+ten and the ratio must not move.
+
+### 6. Still open
+
+`head_position` is null in all **nine** manifests. Nine sessions, and the
+measurement that would test whether the shear comes from head placement
+has never been taken.
+
+---
+
+## F37 · The top validation row undershoots in EVERY session — universal direction, session-variable magnitude
+**2026-08-18 · Methods, Results — extends F36's PILOT_05 observation to all seven sessions with per-target records**
+
+F36 found PILOT_05's vertical error was almost entirely its two `ty = 130`
+(12 % elevation) targets. Asked whether that is one participant or the
+instrument: pooled RAW (uncorrected) `pre_fit` per-target dy against
+target y, at the same nominal elevations (12/31/50/69/88 %), across all
+seven sessions carrying per-target records — the two `_uncorrected`
+top-row targets, before any correction and before any confound from a
+correction fitted partly on them.
+
+**Every one of the 14 measurements (two top-row targets x seven
+sessions) has POSITIVE dy** — the tracker undershoots (measures BELOW)
+the top-row target every single time, in every session, on a shared
+1080 px screen:
+
+| session | left corner (px / deg) | right corner (px / deg) |
+|---|---|---|
+| Manuel_P2 | +54 / 1.01° | +84 / 1.57° |
+| PILOT_00 | +218 / 3.31° | +370 / 5.62° |
+| PILOT_01 | +99 / 1.40° | +230 / 3.25° |
+| PILOT_02 | +75 / 1.21° | +77 / 1.24° |
+| PILOT_03 | +52 / 0.77° | +172 / 2.55° |
+| PILOT_04 | +256 / 3.81° | +75 / 1.12° |
+| PILOT_05 | +325 / 5.03° | +243 / 3.76° |
+
+14/14 positive, mean 166 px (≈2.7°), median 136 px, range 52–370 px
+(0.77°–5.62°), n = 40–46 samples per target — not a sampling artefact.
+
+**This is not simply "positive dy everywhere"**: the SAME analysis at
+the next elevation down (31 %, one target per session, `n=7`) gives mean
++36 px, median **−13 px**, only 3/7 positive — indistinguishable from
+noise. The 50/69/88 % elevations run 71–100 % positive at smaller,
+less consistent magnitudes than the top row. The top row is the one
+elevation where the direction is unanimous across every participant,
+every session, every corner.
+
+**Verdict on the three candidate explanations (brief item 3):**
+unanimous direction across seven independent participants argues
+strongly against "the participant's gaze" (no reason seven different
+people would all undershoot the same way) and for **the tracker's
+vertical range** — consistent with what `CLAUDE.md` already documents
+("vertical accuracy is the weak axis (gain compression)") and what the
+calibration instructions already warn participants about ("the upper
+edge is the hardest for a webcam"). This is the first measurement that
+puts a number on that known qualitative weakness, across every session
+recorded so far, not just PILOT_05.
+
+**But the magnitude is not fixed** — 0.77° to 5.62°, a 7x range across
+otherwise-identical setups (same screen, same protocol). Camera
+geometry (height, angle, distance) is the obvious candidate for what
+modulates it, and it is exactly the untested hypothesis from item 1:
+`head_position` is null in all nine manifests, so nothing here can
+attribute the session-to-session spread to head placement specifically
+— only the direction and existence of the effect, not its cause.
+
+**What this does NOT support:** a hard "cannot resolve" claim, or a
+specific stimulus-design exclusion threshold. Two sessions (Manuel_P2,
+PILOT_02) show a mild ~1.0–1.6° effect; two (PILOT_00, PILOT_05) show a
+severe 3.3–5.6° one. Any single top-band exclusion width would be
+correct for some sessions and wrong for others without more data to
+explain the spread — which is why none is implemented here. **This is
+reported, not encoded as a rule**: the ruler-choice and outlier-rule
+precedent applies (F31/F34) — a new stimulus-design threshold is a
+pre-registration decision for Jan to make, dated, once there is a basis
+for the magnitude, not a number this analysis should invent.
+
+### Code
+
+Analysis only — no source file changed. Reproducible from
+`data/study/*_manifest.json` via `validation_stats.raw_targets` on each
+session's `pre_fit` phase, filtered to targets within 5 px of `ty = 0.12
+* screen_height`.
+
+---
+
+## F38 · PILOT_06, the first 13-target session, and the bug it exposed in full-affine
+**2026-08-18 · Methods — full-affine (this same day's F33/brief-item-2 work) could never actually be selected, for any session, at any sample size**
+
+PILOT_06 is the first session recorded under the extended grid A (13
+targets) and with automatic head-position capture — both landed earlier
+today. It is therefore the first real test of whether the full-affine
+candidate could fire in production at all. It could not, for any
+session, regardless of how well it fit.
+
+### 1. `loo_errors` never learned about full-affine
+
+`loo_errors` dispatches a candidate's leave-one-out eligibility through
+`_degrees_for(candidate)`, a lookup with entries for `"none"`, `"affine"`
+and `"quadratic-vertical"` — not `"full-affine"`, which is not a per-axis
+polynomial degree pair. `_degrees_for("full-affine")` returns `None`, and
+`loo_errors` read that as "cannot be tried" and returned `None`
+**unconditionally**, before the fitting loop ever ran, independent of
+sample size. `select_correction`'s fallback then had to explain that
+`None` and picked "unstable under cross-validation" — even when the
+candidate fit fine.
+
+PILOT_06's manifest shows the fault directly: `full-affine ... unstable
+under cross-validation — fits all 13 targets, but 0 of 13 leave-one-out
+folds produce a local gain outside [0.5, 3.0]`. Zero failed folds, and
+still labelled unstable, because the status came from being in that
+fallback branch at all, never from actually evaluating the candidate.
+
+**What it cost this specific session.** PILOT_06 has real shear (`m_yx`
+95% CI `[-0.164, -0.040]` at `pre_fit`, excludes zero). Re-run with the
+fix: affine LOO 112.0 px → full-affine LOO 97.1 px, a genuine 13%
+improvement the rule could never credit or select. The session was
+recorded with `affine` applied.
+
+**Why nothing written earlier today caught it.** Every full-affine test
+called `_fit_candidate` directly (bypassing `loo_errors` entirely) or
+called `select_correction` only at `n=7` (the below-gate "not fittable"
+path). None exercised `select_correction` at `n >= 12` — the only path
+that goes through the broken gate. Parameter-recovery tests and a
+selection-rule test are different claims; this gap was between them.
+
+**Fix**: `loo_errors` gates full-affine on `FULL_AFFINE_MIN_TARGETS`
+directly instead of falling through `_degrees_for`. Verified
+byte-identical `correction_audit.py` output on all nine pre-existing
+sessions (11 lines added — exactly PILOT_06's new block — zero changed).
+Mutation-tested: reverted to the bug, confirmed a strong synthetic
+`n=13` shear case reports "unstable" with a 0-failed-folds reason and is
+never selected, restored. `run_tests.py` [22] now calls
+`select_correction` at `n=16` directly (not just `_fit_candidate`) and
+asserts full-affine is evaluated and chosen when it wins.
+
+### 2. The re-derive flag didn't know either
+
+`correction_audit.py`'s `rule_changes_this_session` compared only
+`(chosen == "none")` against `(not applied)` — a session with `affine`
+applied and the current rule now saying `full-affine` read as **no
+change**, because both sides are simply "a correction exists". PILOT_06
+hit this immediately once (1) was fixed: applied=affine, rule=full-affine,
+a real improvement, flag silent.
+
+Fixed to use `corrections_equal` — the same kind-aware function
+`rederive_session.py` already used for this exact decision (built
+earlier today for the `from_payload` reconstruction bug), so the two
+tools cannot disagree about whether a session needs re-deriving. PILOT_06
+now correctly shows `*** This DIFFERS from what was applied. The session
+must be re-derived. ***`.
+
+### 3. What this is, honestly
+
+Two real bugs, both in code written earlier the same day, both caught
+before evaluation collection, both because a new session's real data
+exercised a code path nine synthetic-and-existing-data tests had not.
+This is not the F32/F34/F35 pattern of introspective review catching its
+own mistakes before anything real happened — this reached a recorded
+manifest (PILOT_06's `affine` correction, applied by the buggy rule) —
+which is why it is logged rather than treated as ordinary same-session
+churn.
+
+**Still open**: PILOT_06 has not been re-derived. Its recorded gaze
+carries the `affine` correction the buggy rule chose; the current rule
+says `full-affine`. That is a decision for Jan (whether to re-derive a
+brand-new pilot session), not made here.
+
+### 4. Head position, for the first time on a real session
+
+PILOT_06 also carries the first real `head_position` data:  roll drifts
++2.0° → +0.5° → −2.0° across `pre_fit`/`pre_check`/`post`; face position
+and measured distance (63.8 → 63.8 → 63.4 cm) stay essentially fixed.
+The `calibration` phase itself shows `available: false` — a single-shot
+capture immediately after calibration succeeded found no face at that
+exact instant, which is a real limitation of a one-shot poll (as opposed
+to the old opt-in guide's repeated polling) worth watching across more
+sessions rather than a bug to fix from n=1.
+
+Whether `m_yx` tracks head placement (F33's open question) needs more
+than three phases in one session to answer — a single session's
+within-session n=3 is not evidence either way, and is not treated as any
+here.
+
 ## Open items before evaluation collection
 
 - ~~`EVALUATION_FROM_DATE`~~ **SET to 2026-08-11T14:00** (F17).
@@ -1749,3 +2054,11 @@ overstated statistical name.
   or whether rate enters the analysis as a covariate, and pre-specify it
   in `config.py` with the other thresholds. Comparing fixation counts or
   durations across rate bands is not defensible as things stand.
+- **The top ~12 % of the screen undershoots in every session (F37),
+  0.77°–5.62°.** Whether AOI analysis excludes a top band, and how wide,
+  is undecided and should be fixed before evaluation collection rather
+  than chosen per-session after seeing which one it rescues.
+- **PILOT_06 has not been re-derived (F38).** It was recorded with the
+  `affine` correction the pre-fix rule chose; the current rule says
+  `full-affine` should have been applied instead. Whether to re-derive a
+  brand-new pilot session is Jan's call, not made here.

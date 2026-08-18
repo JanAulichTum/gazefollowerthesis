@@ -72,6 +72,10 @@ __pycache__/
 # ══════════════════════════════════════════════════════════════════
 data/server.log
 data/tracker_service.log
+# ad-hoc server-log backups (e.g. server_<name>_backup.log) can contain
+# real participant names typed at login, not the P01-style pseudonym —
+# never track these
+data/*backup*.log
 data/run_all_*.log
 data/run_all_*.md
 data/setup_check_*.log

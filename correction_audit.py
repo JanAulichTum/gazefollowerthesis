@@ -89,7 +89,11 @@ def audit(path: str) -> "dict | None":
                        "(reconstructed or pre-dates the two-grid protocol)"}
 
     gc = man.get("gain_correction") or {}
-    applied = {"px": gc.get("px"), "py": gc.get("py")} if gc.get("px") else None
+    # from_payload, not a hand-built {"px", "py"} dict: a full-affine
+    # correction's payload has neither key, so that shape silently
+    # reconstructed an empty correction for it, and every raw_targets /
+    # corrected_targets call below would then invert or apply nothing.
+    applied = vs.from_payload(gc)
     scr = (vals.get("pre_fit") or next(iter(vals.values()))).get("screen") or {}
     W = float(scr.get("width_px") or 1920)
     H = float(scr.get("height_px") or 1080)
@@ -105,7 +109,8 @@ def audit(path: str) -> "dict | None":
         "session": man.get("session_id") or os.path.basename(path),
         "usable": True,
         "applied": {"kind": gc.get("kind"), "px": gc.get("px"),
-                    "py": gc.get("py"), "source": gc.get("source")},
+                    "py": gc.get("py"), "A": gc.get("A"), "b": gc.get("b"),
+                    "source": gc.get("source")},
         "deg_per_px": dpp,
         "phases": {},
         "recorded_at": {ph: v.get("recorded_at_utc") for ph, v in vals.items()},
@@ -136,8 +141,18 @@ def audit(path: str) -> "dict | None":
         out["selection"] = sel["decision"]
         out["would_choose"] = sel["decision"]["chosen"]
         out["was_applied"] = bool(applied)
-        out["rule_changes_this_session"] = bool(
-            (sel["decision"]["chosen"] == "none") != (not applied))
+        # corrections_equal, not a bare none-vs-something comparison:
+        # the old check only caught "a correction was applied and now
+        # none is chosen" or vice versa — it read "affine was applied,
+        # the rule now says full-affine" as NO change, because both
+        # sides are simply "a correction exists". PILOT_06 hit exactly
+        # this: applied=affine, current rule=full-affine (a real 13%
+        # LOO improvement, not a rounding difference), and the flag
+        # stayed silent. corrections_equal is kind-aware (same function
+        # rederive_session.py already uses for this exact decision, so
+        # the two tools cannot disagree about whether a session changed).
+        out["rule_changes_this_session"] = not vs.corrections_equal(
+            sel["correction"], applied)
         # In-sample refit vs LOO: the size of the overfit.
         m, t = vs._pairs(raw["pre_fit"])
         refit = vs._fit_candidate(m, t, "affine", W, H)
@@ -214,6 +229,21 @@ def audit(path: str) -> "dict | None":
             }
         stab.append(entry)
     out["stability"] = stab
+
+    # ── 4. Head position per phase, if this session has it ───────────
+    # F33's leading hypothesis for the shear (an off-centre head, or a
+    # head pose that differs between calibration and validation) was
+    # untestable on every session recorded before the automatic capture
+    # landed — head_position was null in all nine manifests because the
+    # only thing that ever wrote it was an opt-in guide nobody opened.
+    # Surfaced here, next to the shear it might explain, rather than as
+    # a separate report — reported, not yet interpreted: nine sessions
+    # is not enough to say whether it correlates with anything.
+    hp = man.get("head_position") or {}
+    by_phase = hp.get("by_phase") or {}
+    if by_phase:
+        out["head_position"] = {ph: by_phase[ph] for ph in
+                                ("calibration",) + PHASES if ph in by_phase}
     return out
 
 
@@ -255,8 +285,12 @@ def render(a: dict) -> None:
         print("  %s\n" % a["why"])
         return
     ap = a["applied"]
-    print("  applied correction : %s  px=%s  py=%s"
-          % (ap.get("kind") or "none", ap.get("px"), ap.get("py")))
+    if ap.get("kind") == "full-affine":
+        print("  applied correction : full-affine  A=%s  b=%s"
+              % (ap.get("A"), ap.get("b")))
+    else:
+        print("  applied correction : %s  px=%s  py=%s"
+              % (ap.get("kind") or "none", ap.get("px"), ap.get("py")))
     dpp = a.get("deg_per_px")
     print()
     for ph in PHASES:
@@ -355,6 +389,36 @@ def render(a: dict) -> None:
                          if d.get("p") is not None else "",
                          "   CHANGED" if d["changed"] else ""))
         print()
+
+    hp = a.get("head_position") or {}
+    if hp:
+        print("  Head position per phase (automatic capture)")
+        for ph, snap in hp.items():
+            if not snap.get("available"):
+                print("    %-11s no face geometry at capture time" % ph)
+                continue
+            bits = []
+            if snap.get("est_distance_cm") is not None:
+                bits.append("dist %.1f cm (%s)"
+                            % (snap["est_distance_cm"],
+                               snap.get("distance_source") or "?"))
+            if snap.get("roll_deg") is not None:
+                bits.append("roll %+.1f deg" % snap["roll_deg"])
+            if snap.get("face_center_x") is not None:
+                bits.append("face_x %.2f" % snap["face_center_x"])
+            if snap.get("face_center_y") is not None:
+                bits.append("face_y %.2f" % snap["face_center_y"])
+            print("    %-11s %s" % (ph, ", ".join(bits) or "(no geometry "
+                                                            "fields)"))
+        print()
+    elif a.get("spatial"):
+        # Only worth saying when the session HAS something head position
+        # could explain — printing this on every session would be noise.
+        if any(v.get("shear_large") for v in a["spatial"].values()):
+            print("  Head position: not recorded for this session "
+                  "(pre-dates automatic capture) — cannot test whether "
+                  "head placement explains the shear above.")
+            print()
 
 
 def render_markdown(audits: list) -> None:

@@ -574,9 +574,63 @@ try:
     #     (F21); the server recomputes from the iris. Two angles on one
     #     line measured against two rulers is the fault class this
     #     section exists to remove.
-    check("app.py rescales the bias with the MEASURED distance",
-          "bias_deg_basis" in _appsrc
-          and '_deg_m = record.get("mean_err_deg_measured")' in _appsrc)
+    check("app.py converts degrees through one named, testable function",
+          "def _degree_fields(" in _appsrc
+          and "_degree_fields(record)" in _appsrc
+          and "bias_deg_basis" in _appsrc)
+    # ...AND KEEPS ONE RULER PER NAMING PATTERN. The codebase's
+    # convention is: a plain degree field is on the browser's assumed
+    # distance (as `mean_err_deg` is), a `_measured` field is on the
+    # distance measured at validation time (as `mean_err_deg_measured`
+    # is). F34's fix rescaled `bias_deg` in place and left `mean_err_deg`
+    # alone, so one record carried a bias and an accuracy on different
+    # rulers — bias_deg / mean_err_deg read 0.686 where bias_ratio said
+    # 0.759 — and `bias_deg` sat next to `bias_deg_raw` describing the
+    # same pixels two ways. Assert the invariant on a real record shape
+    # rather than on the source text (F36).
+    # Exercise app.py's OWN function. The first version of this check
+    # rebuilt the conversion inside the test and passed while the real
+    # code was mutated back to the F34 bug — a test that re-implements
+    # what it is checking verifies nothing.
+    _dfn = next(n for n in ast.parse(_appsrc).body
+                if isinstance(n, ast.FunctionDef)
+                and n.name == "_degree_fields")
+    _ns3 = {}
+    exec(compile(ast.Module(body=[_dfn], type_ignores=[]), "x", "exec"),
+         _ns3)
+    _rec = _ns3["_degree_fields"]({
+        "mean_err_px": 191.2, "mean_err_deg": 3.28,
+        "mean_err_deg_measured": 2.96, "bias_px": 145.1,
+        "median_err_px": 201.1, "max_err_px": 330.1,
+        "bias_px_raw": 145.1, "median_err_px_raw": 201.1,
+        "distance": {"source": "iris"}})
+    check("a plain degree field shares mean_err_deg's ruler",
+          abs(_rec["bias_deg"] / _rec["mean_err_deg"]
+              - _rec["bias_px"] / _rec["mean_err_px"]) < 0.005,
+          "bias_deg/mean_err_deg = %.3f, bias_px/mean_err_px = %.3f"
+          % (_rec["bias_deg"] / _rec["mean_err_deg"],
+             _rec["bias_px"] / _rec["mean_err_px"]))
+    check("...and a _measured field shares mean_err_deg_measured's",
+          abs(_rec["bias_deg_measured"] / _rec["mean_err_deg_measured"]
+              - _rec["bias_px"] / _rec["mean_err_px"]) < 0.005,
+          "%.3f" % (_rec["bias_deg_measured"]
+                    / _rec["mean_err_deg_measured"]))
+    check("the same pixels never differ between deg and deg_raw",
+          _rec["median_err_deg"] == _rec["median_err_deg_raw"]
+          and _rec["bias_deg"] == _rec["bias_deg_raw"],
+          "%.2f vs %.2f" % (_rec["median_err_deg"],
+                            _rec["median_err_deg_raw"]))
+    check("...and the two rulers are both present, and differ",
+          _rec["bias_deg"] != _rec["bias_deg_measured"]
+          and "measured distance (iris)" in _rec["bias_deg_basis"],
+          "%.2f browser vs %.2f measured"
+          % (_rec["bias_deg"], _rec["bias_deg_measured"]))
+    check("no field name is mangled by the stem slicing",
+          all(k in _rec for k in ("bias_deg", "bias_deg_measured",
+                                  "median_err_deg", "max_err_deg",
+                                  "bias_deg_raw")),
+          ", ".join(sorted(k for k in _rec if k.endswith("deg")
+                           or "deg_" in k)[:6]))
     # ...and the INCLUSION figure is still computed on the browser's
     # ruler, which differs from the measured one by -22 % to +15 % across
     # the recorded sessions. The two have not yet disagreed about the
@@ -629,6 +683,69 @@ try:
     _rr = next(r for r in _res.rows if "accuracy_ruler" in str(r[1]))
     check("...and grades a >5 % gap between the rulers as degenerate",
           _rr[2] == "DEGENERATE", "%s — %s" % (_rr[2], _rr[3]))
+
+    # (n0) A REFUSED CANDIDATE MUST SAY WHICH REFUSAL. "Cannot be fitted
+    #      to the grid" and "fits the grid but collapses when one target
+    #      is held out" are different findings; the second says the model
+    #      is unstable at this sample size, which is what the rule exists
+    #      to detect. Both were reported as "not fittable" until PILOT_05
+    #      produced a quadratic that fitted all seven targets with a sane
+    #      gain and folded over (local gain −3.3) in three of seven folds
+    #      (F36).
+    _unstable = _tg(lambda tx, ty: (
+        tx, ty + (260.0 if ty < 200 else (-40.0 if ty < 400 else 0.0))))
+    _u = vstat.select_correction(_unstable, _W7, _H7)
+    _uq = next((c for c in _u["decision"]["candidates"]
+                if c["candidate"] == "quadratic-vertical"), None)
+    check("a candidate refused by its FOLDS says so, not 'not fittable'",
+          _uq is not None and _uq.get("status")
+          == "unstable under cross-validation"
+          and _uq.get("unstable_folds", 0) > 0,
+          "status %r, %s folds" % ((_uq or {}).get("status"),
+                                   (_uq or {}).get("unstable_folds")))
+    check("...and names how many folds of how many failed",
+          "leave-one-out folds" in (_uq or {}).get("why", ""),
+          (_uq or {}).get("why", "")[:70])
+    # A model that genuinely cannot be fitted must still say THAT.
+    _flat = [{"tx": 100.0 + 200 * i, "ty": 500.0, "mx": 100.0 + 200 * i,
+              "my": 500.0} for i in range(7)]
+    _f2 = vstat.select_correction(_flat, _W7, _H7)
+    _fq = next((c for c in _f2["decision"]["candidates"]
+                if c["candidate"] == "quadratic-vertical"), None)
+    check("a model that cannot be fitted at all is still called that",
+          (_fq or {}).get("status") == "not fittable",
+          (_fq or {}).get("status"))
+
+    # (n1) HOW MUCH OF THE ERROR IS BEYOND ANY AFFINE MAP. The residual of
+    #      the best possible 2-D linear fit against the raw mean error.
+    #      A pure gain+offset+shear must read near zero; unstructured
+    #      scatter must read near one. Without it, a session whose error
+    #      is entirely correctable and one whose error no recalibration
+    #      can touch report the same accuracy in degrees.
+    _pure = _tg(lambda tx, ty: (_W7 / 2 + 0.85 * (tx - _W7 / 2) + 20,
+                                _H7 / 2 + 0.9 * (ty - _H7 / 2)
+                                + 0.15 * (tx - _W7 / 2) - 30))
+    check("a purely affine error leaves almost nothing behind",
+          vstat.spatial_terms(_pure, _W7, _H7)["residual_ratio"] < 0.02,
+          "ratio %.3f" % vstat.spatial_terms(_pure, _W7,
+                                             _H7)["residual_ratio"])
+    _rng4 = np.random.default_rng(4)
+    _noise2 = _tg(lambda tx, ty: (tx + _rng4.normal(0, 80),
+                                  ty + _rng4.normal(0, 80)))
+    check("...and unstructured scatter leaves most of it behind",
+          vstat.spatial_terms(_noise2, _W7, _H7)["residual_ratio"] > 0.5,
+          "ratio %.2f" % vstat.spatial_terms(_noise2, _W7,
+                                             _H7)["residual_ratio"])
+    # It is a RATIO, so it must not move when the whole error is scaled.
+    # Asserting only "small for affine, large for noise" passes for the
+    # bare residual in pixels too, which is not the same quantity.
+    _big = [{"tx": t["tx"], "ty": t["ty"],
+             "mx": t["tx"] + 10 * (t["mx"] - t["tx"]),
+             "my": t["ty"] + 10 * (t["my"] - t["ty"])} for t in _noise2]
+    _r1 = vstat.spatial_terms(_noise2, _W7, _H7)["residual_ratio"]
+    _r2 = vstat.spatial_terms(_big, _W7, _H7)["residual_ratio"]
+    check("residual_ratio is dimensionless — 10x the error, same ratio",
+          abs(_r1 - _r2) < 0.02, "%.2f vs %.2f" % (_r1, _r2))
 
     # (n) THE DIAGNOSTICS MUST NOT BECOME THE RULE. Leave-one-out folds
     #     share five of seven training targets, so the standard error is
@@ -1085,7 +1202,11 @@ try:
         _n = len(re.findall(r"\[\s*\d+\s*,\s*\d+\s*\]", _grid.group(1)))
         _ys = {m[1] for m in re.findall(r"\[\s*(\d+)\s*,\s*(\d+)\s*\]",
                                         _grid.group(1))}
-        check("grid has 7 targets", _n == 7, "got %d" % _n)
+        # 13, not 7, since grid A grew 2026-08-18 (F33/brief item 2, see
+        # section [17] for the full two-grid protocol assertions —
+        # this earlier check pre-dates that section and just confirms
+        # the grid is still a well-formed single source of truth).
+        check("grid has 13 targets", _n == 13, "got %d" % _n)
         check("grid spans 5 vertical elevations (quadratic y fit needs >=3)",
               len(_ys) >= 5, "got %d" % len(_ys))
     _pos = re.search(r"const VALIDATION_POSITIONS = \{(.*?)\};", _js, re.S)
@@ -3268,8 +3389,22 @@ try:
     _B = _grid("VALIDATION_CHECK_GRID")
     _ecc = lambda g, i: sum(abs(p[i] - 50) for p in g) / len(g)
 
-    check("both grids exist and have the same number of targets",
-          len(_A) == 7 and len(_B) == 7, "A=%d B=%d" % (len(_A), len(_B)))
+    # Grid A grew from 7 to 13 targets 2026-08-18 (F33/brief item 2) so a
+    # full-affine correction has enough leave-one-out headroom to be
+    # more than noise (validation_stats.FULL_AFFINE_MIN_TARGETS = 12).
+    # Grid B stays at 7 — it is never fitted to, only checked against,
+    # and post pairs with pre_check on it for drift, which must not
+    # change size out from under that comparison.
+    check("grid A has THIRTEEN targets, grid B still has seven",
+          len(_A) == 13 and len(_B) == 7, "A=%d B=%d" % (len(_A), len(_B)))
+    check("grid A has at least FULL_AFFINE_MIN_TARGETS targets — the "
+          "whole reason it was extended",
+          len(_A) >= importlib.import_module(
+              "validation_stats").FULL_AFFINE_MIN_TARGETS,
+          "A=%d, needs >= %d" % (len(_A),
+                                 importlib.import_module(
+                                     "validation_stats"
+                                 ).FULL_AFFINE_MIN_TARGETS))
     check("the grids share NO target position",
           not (set(_A) & set(_B)), "shared: %s" % sorted(set(_A) & set(_B)))
     check("horizontal eccentricity is matched (B is not an easier grid)",
@@ -4984,6 +5119,546 @@ except Exception as exc:  # noqa: BLE001
     _blocked = environment_block(exc)
     check("end-to-end and invariants", False, _blocked or repr(exc))
 
+
+print("\n[21] Automatic head-position capture")
+# F33/F36: head_position was null in all nine manifests recorded so far
+# — the ONLY thing that ever wrote it was an opt-in pre-calibration
+# guide nobody had opened. This calls the REAL app.py functions
+# (imported, not reimplemented) against a fake but IMPERFECT
+# position_info() reply — distance drifting between phases, a lost face
+# on one phase, the tracker subprocess raising — the way a real run
+# actually looks, not a clean synthetic one.
+try:
+    import app as _app_mod
+
+    def _fake_pos(available=True, face=True, distance=55.0, **extra):
+        if not (available and face):
+            return {"ok": True, "available": available, "face": face}
+        out = {"ok": True, "available": True, "face": True, "ready": True,
+               "guidance": ["Good position — hold still and calibrate."],
+               "assumed_hfov_deg": 60.0, "est_distance_cm": distance,
+               "distance_source": "iris", "roll_deg": 1.5,
+               "face_center_x": 0.5, "face_center_y": 0.42}
+        out.update(extra)
+        return out
+
+    _st = {}
+    _snap_cal = _app_mod._capture_head_position(
+        _st, "calibration", pos=_fake_pos(distance=56.0))
+    _snap_pf = _app_mod._capture_head_position(
+        _st, "pre_fit", pos=_fake_pos(distance=53.0))
+    _snap_pc = _app_mod._capture_head_position(
+        _st, "pre_check", pos=_fake_pos(available=True, face=False))
+    _snap_po = _app_mod._capture_head_position(
+        _st, "post", pos=_fake_pos(distance=52.0))
+
+    check("calibration snapshot captured with geometry",
+          _snap_cal.get("available") is True
+          and _snap_cal.get("est_distance_cm") == 56.0)
+    check("a lost-face poll is recorded as unavailable, not dropped",
+          _snap_pc.get("available") is False
+          and "est_distance_cm" not in _snap_pc)
+    check("state.head_position_log has one entry per phase",
+          len(_st.get("head_position_log", [])) == 4,
+          "got %d" % len(_st.get("head_position_log", [])))
+
+    _manifest_hp = _app_mod._head_position_manifest(_st)
+    check("manifest head_position has by_phase for all four phases",
+          set((_manifest_hp or {}).get("by_phase", {})) ==
+          {"calibration", "pre_fit", "pre_check", "post"})
+    check("by_phase.pre_check keeps the unavailable flag",
+          _manifest_hp["by_phase"]["pre_check"].get("available") is False)
+    check("top-level mirror is the LAST AVAILABLE snapshot (post, "
+          "skipping the unavailable pre_check)",
+          _manifest_hp.get("est_distance_cm") == 52.0)
+
+    # Tracker subprocess hiccup: position_info() itself raises. Must not
+    # propagate — head position is instrumentation, never a reason to
+    # lose a calibration or validation result.
+    def _boom(*_a, **_k):
+        raise RuntimeError("tracker pipe closed")
+
+    _orig_pos_info = _app_mod.gaze_service.position_info
+    _app_mod.gaze_service.position_info = _boom
+    try:
+        _snap_err = _app_mod._capture_head_position({}, "calibration")
+        check("position_info() raising yields an unavailable snapshot, "
+              "not an exception", _snap_err.get("available") is False)
+    finally:
+        _app_mod.gaze_service.position_info = _orig_pos_info
+
+    # The optional guide's old snapshot shape must still fold in
+    # (back-compat) if someone opens it, alongside the automatic phases.
+    _st2 = {"position_snapshot": {"est_distance_cm": 61.0}}
+    _app_mod._capture_head_position(_st2, "pre_fit", pos=_fake_pos())
+    _hp2 = _app_mod._head_position_manifest(_st2)
+    check("the optional guide's snapshot still folds in as phase "
+          "'guide' alongside the automatic ones",
+          "guide" in (_hp2 or {}).get("by_phase", {})
+          and "pre_fit" in _hp2["by_phase"])
+
+    # Downstream readers must not choke on a POPULATED head_position —
+    # every manifest either of them has ever seen had it null.
+    import correction_audit as _ca_mod
+    import verify_metrics as _vm_mod
+
+    _fake_manifest = {
+        "session_id": "RUNTESTS_FAKE_HEADPOS",
+        "validations": [
+            {"phase": "pre_fit", "mean_err_deg": 1.5, "mean_err_px": 90.0,
+             "targets": [{"err_px": e} for e in
+                        (80, 85, 90, 95, 100, 88, 92)],
+             "head_position": _snap_pf},
+            {"phase": "pre_check", "mean_err_deg": 1.6, "mean_err_px": 95.0,
+             "targets": [{"err_px": e} for e in
+                        (85, 90, 95, 100, 105, 93, 97)],
+             "head_position": _snap_pc},
+            {"phase": "post", "mean_err_deg": 1.7, "mean_err_px": 100.0,
+             "targets": [{"err_px": e} for e in
+                        (90, 95, 100, 105, 110, 98, 102)],
+             "head_position": _snap_po},
+        ],
+        "head_position": _manifest_hp,
+        "gain_correction": {},
+        "correction_decision": None,
+        "distance": {"cm": 52.0, "source": "iris", "measured": True},
+    }
+    try:
+        _res = _vm_mod.Result()
+        _vm_mod.check_session(_fake_manifest, _res)
+        check("verify_metrics.check_session tolerates populated "
+              "head_position", True)
+    except Exception as exc:  # noqa: BLE001
+        check("verify_metrics.check_session tolerates populated "
+              "head_position", False, "%s: %s" % (type(exc).__name__, exc))
+
+    import io as _io
+    import contextlib as _cl
+    import json as _js2
+    import os as _os2
+    import tempfile as _tf2
+
+    with _tf2.NamedTemporaryFile("w", suffix="_manifest.json",
+                                 delete=False) as _fh:
+        _js2.dump(_fake_manifest, _fh)
+        _tmp_manifest = _fh.name
+    try:
+        _a = _ca_mod.audit(_tmp_manifest)
+        check("correction_audit.audit() picks up the head-position block",
+              bool(_a and _a.get("head_position")))
+        _buf = _io.StringIO()
+        with _cl.redirect_stdout(_buf):
+            _ca_mod.render(_a)
+        check("correction_audit.render() prints the lost-face phase",
+              "pre_check   no face geometry at capture time" in
+              _buf.getvalue())
+    finally:
+        _os2.unlink(_tmp_manifest)
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("automatic head-position capture", False, _blocked or repr(exc))
+
+
+print("\n[22] full-affine correction candidate")
+# F33: a per-axis correction is structurally incapable of representing
+# m_yx (vertical error from HORIZONTAL position — the shear). Simulated
+# independently against the nine recorded sessions, pooling grid A and
+# grid B to ~14 targets: full-affine beats the diagonal model by 15-28%
+# on the two sheared sessions (PILOT_03, PILOT_04) and loses by 1-6% on
+# every other session — reproducing F33's own table. "Do not ship a
+# 6-parameter model on 7 targets": FULL_AFFINE_MIN_TARGETS gates it out
+# below 12 measured targets, so it changes nothing on any of the nine
+# recorded (7-target) sessions today.
+try:
+    import numpy as np
+    import pandas as pd
+    import validation_stats as _vsmod
+
+    _rng = np.random.default_rng(2026)
+    _A_true = np.array([[0.95, 0.12], [0.08, 1.05]])   # off-diagonal = shear
+    _b_true = np.array([15.0, -8.0])
+    _W, _H = 1920.0, 1080.0
+    _cx, _cy = _W / 2, _H / 2
+    _n = 16
+    _t_xy = _rng.uniform([100, 100], [_W - 100, _H - 100], size=(_n, 2))
+    _A_inv_true = np.linalg.inv(_A_true)
+    _m_xy = np.array([_A_inv_true @ (_t_xy[i] - _b_true) + [_cx, _cy]
+                      for i in range(_n)])
+    _m_xy += _rng.normal(0, 3.0, size=_m_xy.shape)
+    _targets = [{"tx": float(t[0]), "ty": float(t[1]),
+                "mx": float(m[0]), "my": float(m[1])}
+               for t, m in zip(_t_xy, _m_xy)]
+    _m_arr = np.array([[t["mx"], t["my"]] for t in _targets])
+    _t_arr = np.array([[t["tx"], t["ty"]] for t in _targets])
+
+    _corr = _vsmod._fit_candidate(_m_arr, _t_arr, "full-affine", _W, _H)
+    check("full-affine fits at n=16 and recovers the known shear",
+          _corr is not None
+          and np.allclose(np.array(_corr["A"]), _A_true, atol=0.05))
+
+    # THE GAP THAT LET A REAL BUG THROUGH: everything above calls
+    # _fit_candidate directly. select_correction is a SEPARATE code path
+    # (loo_errors -> _loo_summary -> the candidate-walk in
+    # select_correction) that used to dispatch full-affine's LOO
+    # eligibility through _degrees_for, which has no entry for
+    # "full-affine" — so loo_errors returned None UNCONDITIONALLY for
+    # it, regardless of n, and select_correction's fallback then
+    # reported "unstable under cross-validation" even when EVERY leave-
+    # one-out fold fit fine (0 of n unstable). full-affine could never
+    # be evaluated, let alone chosen, no matter how well it fit. Found
+    # on PILOT_06, the first real 13-target session, where this exact
+    # shear scenario occurs. Testing _fit_candidate alone never caught
+    # it because the bug was entirely in loo_errors's gate, one level up.
+    _sel16 = _vsmod.select_correction(_targets, _W, _H)
+    _row16 = next(c for c in _sel16["decision"]["candidates"]
+                 if c["candidate"] == "full-affine")
+    check("select_correction actually EVALUATES full-affine at n=16 "
+          "(status 'evaluated' with a real LOO figure, not 'unstable' "
+          "or 'not fittable' just because n >= FULL_AFFINE_MIN_TARGETS)",
+          _row16.get("status") == "evaluated"
+          and _row16.get("loo_mean_err_px") is not None,
+          str(_row16))
+    check("select_correction CHOOSES full-affine when it clearly beats "
+          "every other candidate (strong synthetic shear, n=16)",
+          _sel16["decision"]["chosen"] == "full-affine",
+          "chosen=%s" % _sel16["decision"]["chosen"])
+
+    _corr7 = _vsmod._fit_candidate(_m_arr[:7], _t_arr[:7], "full-affine",
+                                   _W, _H)
+    check("full-affine is refused outright below FULL_AFFINE_MIN_TARGETS "
+          "(never even attempted at n=7)", _corr7 is None)
+
+    _sel7 = _vsmod.select_correction(_targets[:7], _W, _H)
+    _row7 = next(c for c in _sel7["decision"]["candidates"]
+                if c["candidate"] == "full-affine")
+    check("select_correction reports WHY it was not fittable (the "
+          "target-count floor, not a generic gain excuse — F36)",
+          _row7["status"] == "not fittable"
+          and "12" in _row7["why"] and "7" in _row7["why"])
+    check("full-affine never changes the chosen candidate at n=7 (the "
+          "nine recorded sessions are unaffected today)",
+          _sel7["decision"]["chosen"]
+          in ("none", "affine", "quadratic-vertical"))
+
+    if _corr:
+        _rt = _vsmod.raw_targets([{"mx": 555.0, "my": 321.0}], _corr, _W, _H)
+        _back = _vsmod.apply_point(_rt[0]["mx"], _rt[0]["my"], _corr)
+        check("apply_point <-> raw_targets round-trips exactly (linear, "
+              "no bisection needed)",
+              abs(_back[0] - 555.0) < 1e-6 and abs(_back[1] - 321.0) < 1e-6)
+
+        _pl = _vsmod.payload(_corr)
+        check("payload() has no px/py for full-affine (explicit None, "
+              "not a missing key that a .get('px') call reads the same "
+              "as 'no correction')",
+              "px" in _pl and _pl["px"] is None
+              and "py" in _pl and _pl["py"] is None)
+        check("payload() still carries gain_x/gain_y (the diagonal of A) "
+              "for the one existing UI/log reader that expects them",
+              abs(_pl["gain_x"] - _corr["A"][0][0]) < 1e-3)
+
+        # THE bug this session found: reconstructing {"px", "py"} by hand
+        # from a full-affine payload silently builds an empty correction.
+        _naive = {"px": _pl.get("px"), "py": _pl.get("py")}
+        _nx, _ny = _vsmod.apply_points(np.array([400.0]), np.array([300.0]),
+                                       _naive)
+        check("the naive {'px','py'} reconstruction IS a silent no-op "
+              "for full-affine (demonstrates the bug from_payload fixes)",
+              abs(_nx[0] - 400.0) < 1e-9 and abs(_ny[0] - 300.0) < 1e-9)
+
+        _reconstructed = _vsmod.from_payload(_pl)
+        check("from_payload reconstructs a correction that actually "
+              "applies (not the naive no-op)",
+              _reconstructed is not None
+              and _vsmod.corrections_equal(_corr, _reconstructed))
+
+        # app.py's live paths must not silently drop a full-affine
+        # correction either — the same class of bug, three more places.
+        _apx, _apy = _app_mod._apply_point(400.0, 300.0, _corr)
+        check("app._apply_point delegates to validation_stats (matches)",
+              abs(_apx - _vsmod.apply_point(400.0, 300.0, _corr)[0]) < 1e-9)
+
+        _sx = pd.Series([100.0, 500.0], index=[5, 6])
+        _sy = pd.Series([200.0, 400.0], index=[5, 6])
+        _gx, _gy = _app_mod._apply_series(_sx, _sy, _corr)
+        check("app._apply_series applies a full-affine correction (not a "
+              "silent no-op) and preserves the index",
+              list(_gx.index) == [5, 6]
+              and (abs(_gx.iloc[0] - 100.0) > 1.0
+                   or abs(_gy.iloc[0] - 200.0) > 1.0))
+
+        _active_payload = _app_mod._correction_payload(_corr)
+        _fake_state = {}
+        _fake_record = {"targets": _targets,
+                        "correction_active": _active_payload,
+                        "screen": {"width_px": _W, "height_px": _H}}
+        try:
+            _app_mod._auto_fit_correction(_fake_state, _fake_record,
+                                          sid="run-tests-fake-sid")
+            check("_auto_fit_correction runs end-to-end with an ACTIVE "
+                  "full-affine correction on the input", True)
+        except Exception as exc:  # noqa: BLE001
+            check("_auto_fit_correction runs end-to-end with an ACTIVE "
+                  "full-affine correction on the input", False,
+                  "%s: %s" % (type(exc).__name__, exc))
+
+    # correction_audit.py's "DIFFERS from what was applied" flag used to
+    # compare only (chosen == "none") against (not applied) -- a session
+    # with an AFFINE correction applied and a current rule of FULL-AFFINE
+    # read as "no change" (both sides are simply "a correction exists"),
+    # exactly the case PILOT_06 hit (applied=affine, rule now says
+    # full-affine, a real 13% LOO improvement never flagged). Fixed to
+    # use corrections_equal, the same kind-aware function
+    # rederive_session.py already used for this decision.
+    _ca_src = read("correction_audit.py")
+    check("correction_audit's rule-changed flag is kind-aware "
+          "(corrections_equal, not a bare none-vs-something comparison)",
+          "vs.corrections_equal(\n            sel[\"correction\"], applied)"
+          in _ca_src or "not vs.corrections_equal(" in _ca_src)
+    check("full-affine WON at n=16, so it must differ from an affine "
+          "correction recorded earlier -- and corrections_equal must say "
+          "so, not read both as \"a correction exists\"",
+          not _vsmod.corrections_equal(
+              _corr, {"px": [1.0, 0.0], "py": [1.0, 0.0], "kind": "affine",
+                      "cx": _W / 2, "cy": _H / 2}))
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("full-affine correction candidate", False, _blocked or repr(exc))
+
+
+print("\n[23] The correction actually fixes a systematically offset point")
+# Every check up to here verifies the correction machinery in isolation:
+# fitting recovers known parameters, apply<->invert round-trips, payload
+# forms survive reconstruction. None of them ask the practical question a
+# participant actually asked: raw gaze reads BELOW the target — does the
+# fitted correction put a NEW, held-out point back where it belongs?
+# Parameter recovery and outcome correctness are not the same claim, and
+# nothing before this section tested the second one.
+try:
+    import numpy as np
+    import pandas as pd
+    import validation_stats as _vsmod2
+    import app as _app_mod2
+
+    _rng2 = np.random.default_rng(42)
+    _W2, _H2 = 1920.0, 1080.0
+    _cy2 = _H2 / 2.0
+    _OFFSET_Y = 80.0
+    _GAIN_Y = 0.85
+    _GRID_PCT = [(12, 12), (88, 12), (50, 31), (15, 50), (85, 50),
+                (50, 69), (50, 88)]
+
+    _fit_targets = []
+    for _px, _py in _GRID_PCT:
+        _tx, _ty = _px / 100.0 * _W2, _py / 100.0 * _H2
+        _my_true = _GAIN_Y * (_ty - _cy2) + _cy2 + _OFFSET_Y
+        _fit_targets.append({
+            "tx": _tx, "ty": _ty,
+            "mx": _tx + _rng2.normal(0, 4.0),
+            "my": _my_true + _rng2.normal(0, 4.0),
+        })
+
+    _raw_bias = np.mean([t["my"] - t["ty"] for t in _fit_targets])
+    check("scenario check: raw gaze IS systematically below target "
+          "before any correction (this test's own setup, not the "
+          "pipeline)", _raw_bias > 50, "mean raw dy = %.1f px" % _raw_bias)
+
+    _result2 = _vsmod2.select_correction(_fit_targets, _W2, _H2)
+    _corr2 = _result2["correction"]
+    check("select_correction (what app._auto_fit_correction calls) picks "
+          "a correction for an unambiguous systematic offset",
+          _corr2 is not None)
+
+    if _corr2:
+        # HELD-OUT points: same bias model, NOT in the fit grid.
+        _held_out = [(300.0, 200.0), (960.0, 540.0), (1600.0, 850.0),
+                    (960.0, 130.0)]
+        _resids = []
+        for _tx, _ty in _held_out:
+            _my_true = _GAIN_Y * (_ty - _cy2) + _cy2 + _OFFSET_Y
+            _cx, _cyy = _vsmod2.apply_point(_tx, _my_true, _corr2)
+            _resids.append(float(np.hypot(_cx - _tx, _cyy - _ty)))
+        check("apply_point puts every HELD-OUT biased point (not used to "
+              "fit) back within 15px of truth (started 60-95px off)",
+              all(r < 15 for r in _resids),
+              "residuals: %s" % [round(r, 1) for r in _resids])
+
+        # The full live path: _auto_fit_correction (real server code) then
+        # _apply_series (the real code that builds
+        # corrected_gaze_position_* for a session's CSV).
+        _fake_state2 = {}
+        _fake_record2 = {
+            "phase": "pre_fit", "targets": _fit_targets,
+            "mean_err_px": float(np.mean(
+                [np.hypot(t["mx"] - t["tx"], t["my"] - t["ty"])
+                 for t in _fit_targets])),
+            "screen": {"width_px": _W2, "height_px": _H2},
+        }
+        _app_mod2._auto_fit_correction(_fake_state2, _fake_record2,
+                                       sid="run-tests-offset-test")
+        _prod_corr = _fake_state2.get("correction")
+        check("app._auto_fit_correction (the real server path) also "
+              "selects a correction for this scenario", _prod_corr is not None)
+
+        if _prod_corr:
+            _n2 = 200
+            _true_x = _rng2.uniform(100, _W2 - 100, _n2)
+            _true_y = _rng2.uniform(100, _H2 - 100, _n2)
+            _raw_x = _true_x + _rng2.normal(0, 5, _n2)
+            _raw_y = (_GAIN_Y * (_true_y - _cy2) + _cy2 + _OFFSET_Y
+                     + _rng2.normal(0, 5, _n2))
+            _cx2, _cy3 = _app_mod2._apply_series(
+                pd.Series(_raw_x), pd.Series(_raw_y), _prod_corr)
+            _err_before = np.hypot(_raw_x - _true_x, _raw_y - _true_y)
+            _err_after = np.hypot(_cx2.to_numpy() - _true_x,
+                                  _cy3.to_numpy() - _true_y)
+            _dy_after = float(np.mean(_cy3.to_numpy() - _true_y))
+            check("on 200 simulated recorded samples the CSV correction "
+                  "path (_apply_series) removes the systematic bias, not "
+                  "just reduces it", abs(_dy_after) < 10,
+                  "%.1f px remains" % _dy_after)
+            check("mean error drops to well under a quarter of its raw "
+                  "value (this is what a participant would see: the dot "
+                  "moving onto the person, not staying above)",
+                  _err_after.mean() < 0.25 * _err_before.mean(),
+                  "%.1f -> %.1f px" % (_err_before.mean(), _err_after.mean()))
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("the correction fixes a systematically offset point", False,
+          _blocked or repr(exc))
+
+
+print("\n[24] The offset-fix claim, across 20 varied scenarios")
+# Section [23] proved the claim on ONE hand-picked scenario. One scenario
+# is an existence proof, not a sound claim — asked directly whether this
+# had been checked more broadly. This runs the same held-out-point
+# question across 20 scenarios varying offset direction/magnitude (both
+# axes, both signs), gain compression AND expansion (both axes), noise
+# level, screen size/aspect ratio, and random seed — including cases
+# where the honest answer is "the rule should say NONE" (a battery that
+# only tests favourable cases is not sound either).
+try:
+    import numpy as np
+    import pandas as pd
+    import validation_stats as _vsmod3
+    import app as _app_mod3
+
+    _GRID_PCT3 = [(12, 12), (88, 12), (50, 31), (15, 50), (85, 50),
+                 (50, 69), (50, 88)]
+
+    def _run_offset_scenario(_name, _W, _H, _off_x, _off_y, _gx, _gy,
+                             _noise, _seed):
+        _rng3 = np.random.default_rng(_seed)
+        _cx3, _cy4 = _W / 2.0, _H / 2.0
+
+        def _biased(tx, ty, extra_noise=None):
+            n = extra_noise if extra_noise is not None else _noise
+            mx = _gx * (tx - _cx3) + _cx3 + _off_x + _rng3.normal(0, n)
+            my = _gy * (ty - _cy4) + _cy4 + _off_y + _rng3.normal(0, n)
+            return mx, my
+
+        _fit3 = []
+        for _p, _q in _GRID_PCT3:
+            _tx, _ty = _p / 100.0 * _W, _q / 100.0 * _H
+            _mx, _my = _biased(_tx, _ty)
+            _fit3.append({"tx": _tx, "ty": _ty, "mx": _mx, "my": _my})
+        _raw_bias = float(np.mean(
+            [np.hypot(t["mx"] - t["tx"], t["my"] - t["ty"]) for t in _fit3]))
+
+        _res3 = _vsmod3.select_correction(_fit3, _W, _H)
+        _chosen3 = _res3["decision"]["chosen"]
+        _corr3 = _res3["correction"]
+
+        if _chosen3 == "none":
+            check("[%s] rule says NONE — honest, given the noise" % _name,
+                  _raw_bias < 40 or _noise > 25,
+                  "raw_bias=%.1f noise=%.1f" % (_raw_bias, _noise))
+            return
+
+        _held_pct = [(30, 20), (70, 40), (50, 60), (25, 80), (75, 15)]
+        _resids = []
+        for _p, _q in _held_pct:
+            _tx, _ty = _p / 100.0 * _W, _q / 100.0 * _H
+            _mx, _my = _biased(_tx, _ty, extra_noise=0.0)
+            _cx5, _cy5 = _vsmod3.apply_point(_mx, _my, _corr3)
+            _resids.append(float(np.hypot(_cx5 - _tx, _cy5 - _ty)))
+        _mean_resid = float(np.mean(_resids))
+
+        # Noise-aware tolerance: with n=7 fit targets, the standard error
+        # of a fitted offset is roughly noise/sqrt(7); a held-out
+        # residual within a few multiples of that is expected sampling
+        # variance, not a broken correction. A fixed absolute bound
+        # falsely failed a high-noise scenario in the first version of
+        # this battery.
+        _se_floor = _noise / (7 ** 0.5)
+        _tol = max(15.0, 6.0 * _se_floor)
+        _scale = min(_W, _H)
+        check("[%s] held-out residual << raw offset, or within "
+              "noise-appropriate tolerance" % _name,
+              _mean_resid < 0.25 * _raw_bias or _mean_resid < _tol,
+              "raw=%.1f resid=%.1f tol=%.1f" % (_raw_bias, _mean_resid, _tol))
+        check("[%s] held-out residual small vs screen size and this "
+              "scenario's own noise floor" % _name,
+              _mean_resid < max(0.02 * _scale, _tol),
+              "resid=%.1f bound=%.1f" % (_mean_resid,
+                                         max(0.02 * _scale, _tol)))
+
+        if _seed % 3 == 0:
+            _fs = {}
+            _fr = {"phase": "pre_fit", "targets": _fit3,
+                  "mean_err_px": _raw_bias,
+                  "screen": {"width_px": _W, "height_px": _H}}
+            _app_mod3._auto_fit_correction(_fs, _fr,
+                                           sid="run-tests-battery-%s" % _name)
+            _pc = _fs.get("correction")
+            check("[%s] app._auto_fit_correction agrees with "
+                  "select_correction" % _name, _pc is not None)
+            if _pc:
+                _n4 = 100
+                _txa = np.random.default_rng(_seed + 1).uniform(
+                    80, _W - 80, _n4)
+                _tya = np.random.default_rng(_seed + 2).uniform(
+                    80, _H - 80, _n4)
+                _mxa = _gx * (_txa - _cx3) + _cx3 + _off_x
+                _mya = _gy * (_tya - _cy4) + _cy4 + _off_y
+                _cxa, _cya = _app_mod3._apply_series(
+                    pd.Series(_mxa), pd.Series(_mya), _pc)
+                _eb = np.hypot(_mxa - _txa, _mya - _tya).mean()
+                _ea = np.hypot(_cxa.to_numpy() - _txa,
+                              _cya.to_numpy() - _tya).mean()
+                check("[%s] app._apply_series on 100 fresh samples: "
+                      "error after << error before" % _name,
+                      _ea < 0.3 * _eb or _ea < 0.02 * _scale,
+                      "%.1f -> %.1f" % (_eb, _ea))
+
+    _SCENARIOS = [
+        ("01_pure_+y_offset",        1920, 1080,   0,   80, 1.00, 1.00, 4, 1),
+        ("02_pure_-y_offset",        1920, 1080,   0,  -80, 1.00, 1.00, 4, 2),
+        ("03_pure_+x_offset",        1920, 1080,  80,    0, 1.00, 1.00, 4, 3),
+        ("04_pure_-x_offset",        1920, 1080, -80,    0, 1.00, 1.00, 4, 4),
+        ("05_xy_offset_same_sign",   1920, 1080,  60,   60, 1.00, 1.00, 4, 5),
+        ("06_xy_offset_opp_sign",    1920, 1080,  60,  -60, 1.00, 1.00, 4, 6),
+        ("07_y_gain_compression",    1920, 1080,   0,    0, 1.00, 0.75, 4, 7),
+        ("08_y_gain_expansion",      1920, 1080,   0,    0, 1.00, 1.25, 4, 8),
+        ("09_x_gain_compression",    1920, 1080,   0,    0, 0.75, 1.00, 4, 9),
+        ("10_x_gain_expansion",      1920, 1080,   0,    0, 1.25, 1.00, 4, 10),
+        ("11_offset+compression",    1920, 1080,   0,   80, 1.00, 0.85, 4, 11),
+        ("12_severe_offset_200px",   1920, 1080,   0,  200, 1.00, 1.00, 5, 12),
+        ("13_tiny_offset_near_noise", 1920, 1080,  0,   15, 1.00, 1.00, 10, 13),
+        ("14_moderate_offset_hi_noise", 1920, 1080, 0,  100, 1.00, 1.00, 35, 14),
+        ("15_near_zero_offset_low_noise", 1920, 1080, 0,   3, 1.00, 1.00, 3, 15),
+        ("16_asymmetric_gain+offset", 1920, 1080,  20,  -40, 0.80, 1.20, 4, 16),
+        ("17_scenario01_reseeded",   1920, 1080,   0,   80, 1.00, 1.00, 4, 17),
+        ("18_scenario01_reseeded2",  1920, 1080,   0,   80, 1.00, 1.00, 4, 27),
+        ("19_larger_screen_2560x1440", 2560, 1440,  0,  110, 1.00, 0.85, 5, 19),
+        ("20_smaller_screen_1366x768", 1366, 768,   0,   60, 1.00, 0.85, 3, 20),
+    ]
+    for _s in _SCENARIOS:
+        _run_offset_scenario(*_s)
+except Exception as exc:  # noqa: BLE001
+    _blocked = environment_block(exc)
+    check("the offset-fix claim across 20 varied scenarios", False,
+          _blocked or repr(exc))
 
 
 # ── The summary must be LAST ──────────────────────────────────────────

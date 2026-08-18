@@ -2409,10 +2409,12 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
         # then REJECTED is indistinguishable from one where it was never
         # fitted unless this is written down (F30).
         "correction_decision": state.get("correction_decision"),
-        # Head-position snapshot from the pre-calibration guide. OPTIONAL
-        # — the guide is a convenience for seating the participant, and
-        # in most sessions nobody opens it, so this is usually null.
-        "head_position": state.get("position_snapshot"),
+        # Head-position/geometry snapshots, one per phase (calibration,
+        # pre_fit, pre_check, post — see _capture_head_position), taken
+        # AUTOMATICALLY, not from the optional pre-calibration guide.
+        # Was null in all nine sessions recorded before this because the
+        # guide is opt-in and nobody had opened it (F33/F36).
+        "head_position": _head_position_manifest(state),
         # ── THE VIEWING DISTANCE, from the MANDATORY validation ───────
         # Every degree figure in this study divides by this number, so it
         # cannot depend on whether someone happened to open an optional
@@ -2628,25 +2630,28 @@ def _slope(coeffs: list, at: float) -> float:
 
 
 def _apply_point(x: float, y: float, corr: "dict | None") -> "tuple":
-    import numpy as np
-
-    if not corr:
-        return x, y
-    px, py = corr.get("px"), corr.get("py")
-    return (float(np.polyval(px, x)) if px else x,
-            float(np.polyval(py, y)) if py else y)
+    """Delegates to validation_stats.apply_point — see _apply_series for
+    why this must not be a second, independent implementation."""
+    return validation_stats.apply_point(x, y, corr)
 
 
 def _apply_series(x_series, y_series, corr):
-    """Vectorized correction for pandas Series → (Series, Series)."""
-    import numpy as np
+    """Vectorized correction for pandas Series -> (Series, Series).
 
-    px, py = corr.get("px"), corr.get("py")
-    gx = pd.Series(np.polyval(px, x_series.to_numpy()),
-                   index=x_series.index) if px else x_series
-    gy = pd.Series(np.polyval(py, y_series.to_numpy()),
-                   index=y_series.index) if py else y_series
-    return gx, gy
+    Delegates to ``validation_stats.apply_points``, the one place a
+    correction is applied. This used to be a second, independent
+    per-axis implementation (``np.polyval(px, ...)`` / ``np.polyval(py,
+    ...)`` duplicated from validation_stats.apply_point) — exactly the
+    failure class F30 exists to prevent, two copies of "apply the
+    correction" that could silently disagree. It also could not have
+    represented a full-affine correction at all: that kind mixes both
+    axes by construction, so applying x and y independently would have
+    silently applied only the diagonal part of it.
+    """
+    gx, gy = validation_stats.apply_points(x_series.to_numpy(),
+                                           y_series.to_numpy(), corr)
+    return (pd.Series(gx, index=x_series.index),
+            pd.Series(gy, index=y_series.index))
 
 
 def _correction_payload(corr: "dict | None") -> dict:
@@ -2684,9 +2689,12 @@ def _auto_fit_correction(state: dict, record: dict, sid: str) -> None:
     Fitting on recovered raw avoids composing corrections, so repeated
     checks can only improve — never double-apply.
     """
-    active = record.get("correction_active") or {}
-    corr_active = {"px": active.get("px"), "py": active.get("py")} \
-        if active.get("active") else None
+    # validation_stats.from_payload, not a hand-built {"px", "py"} dict:
+    # a full-affine correction's payload has neither key, and rebuilding
+    # only those two here would silently reconstruct an empty
+    # correction for it (see that function's docstring).
+    corr_active = validation_stats.from_payload(
+        record.get("correction_active"))
     width = float((record.get("screen") or {}).get("width_px") or 0) or 1920.0
     height = float((record.get("screen") or {}).get("height_px") or 0) or 1080.0
 
@@ -2716,10 +2724,16 @@ def _auto_fit_correction(state: dict, record: dict, sid: str) -> None:
 
     state["correction"] = corr
     state["auto_correction"] = dict(corr)     # restorable via "Auto"
+    # gain_x/gain_y come from the payload, not corr["px"]/corr["py"]
+    # directly: a full-affine correction has neither key (its two axes
+    # cannot be separated into independent polynomials), and payload()
+    # already computes the right local-gain figure for every kind this
+    # pipeline can produce, in one place, for the log line and the
+    # manifest to agree.
+    _gains = _correction_payload(corr)
     logger.info("Gain correction applied (%s): gain_x %.2f, gain_y "
-                "(centre) %.2f — %s", decision["chosen"], corr["px"][0],
-                _slope(corr["py"], corr.get("cy", 0.0)),
-                decision.get("reason"))
+                "(centre) %.2f — %s", decision["chosen"],
+                _gains["gain_x"], _gains["gain_y"], decision.get("reason"))
     socketio.emit("gain_correction", _correction_payload(corr), to=sid)
 
 
@@ -2863,7 +2877,14 @@ def _uncorrected_error(payload: dict, corr: "dict | None") -> "dict":
         raw_stats = validation_stats.signed_bias(targets, deg_per_px)
     else:
         px, py = corr.get("px"), corr.get("py")
-        if not (px and py):
+        # A full-affine correction has neither px nor py (its axes are
+        # not separable), but it IS invertible — validation_stats.
+        # raw_targets already knows how (a 2x2 matrix solve, not a
+        # per-axis one). Refusing it here would silently drop every
+        # full-affine session out of the raw/corrected comparison and
+        # the selection rule both, the exact gap this function's
+        # docstring says was already fixed once for quadratic-vertical.
+        if not (px and py) and corr.get("kind") != "full-affine":
             return out
         raw = validation_stats.raw_targets(targets, corr, width, height)
         raw_stats = validation_stats.signed_bias(raw, deg_per_px)
@@ -2890,6 +2911,53 @@ def _uncorrected_error(payload: dict, corr: "dict | None") -> "dict":
             if field in src:
                 out[field + key] = src[field]
     return out
+
+
+def _degree_fields(record: dict) -> dict:
+    """Convert every pixel figure in a validation record to degrees.
+
+    THE CONVENTION, which this code broke once and now follows: a PLAIN
+    degree field is on the browser's ruler, exactly like ``mean_err_deg``;
+    a ``_measured`` field is on the distance measured at validation time,
+    exactly like ``mean_err_deg_measured``. The two never mix under
+    similar names.
+
+    The first version rescaled ``bias_deg`` in place while leaving
+    ``mean_err_deg`` alone, so one record held a bias and an accuracy on
+    different rulers — dividing one by the other gave 0.686 where
+    ``bias_ratio`` says 0.759 — and ``bias_deg`` sat beside
+    ``bias_deg_raw`` describing the same pixels through two different
+    conversions. Fixing the ruler broke the naming instead. Both hold
+    now, and this is a named function so the invariant can be tested by
+    calling it rather than by reading it (F36).
+
+    Mutates and returns ``record``.
+    """
+    px = record.get("mean_err_px")
+    deg_b, deg_m = record.get("mean_err_deg"), record.get(
+        "mean_err_deg_measured")
+    dpp_b = (deg_b / px) if (px and deg_b) else None
+    dpp_m = (deg_m / px) if (px and deg_m) else None
+    for src in ("bias_px", "bias_x_px", "bias_y_px", "median_err_px",
+                "max_err_px", "bias_px_raw", "bias_x_px_raw",
+                "bias_y_px_raw", "median_err_px_raw", "max_err_px_raw"):
+        val = record.get(src)
+        if val is None:
+            continue
+        # "bias_px" -> "bias_" ; "bias_px_raw" -> "bias_"
+        stem = src[:-6] if src.endswith("_raw") else src[:-2]
+        suf = "_raw" if src.endswith("_raw") else ""
+        if dpp_b:
+            record[stem + "deg" + suf] = round(val * dpp_b, 2)
+        if dpp_m:
+            record[stem + "deg_measured" + suf] = round(val * dpp_m, 2)
+    record["bias_deg_basis"] = (
+        "plain fields use the browser's assumed distance, as mean_err_deg "
+        "does; *_deg_measured use the measured distance (%s)"
+        % ((record.get("distance") or {}).get("source"))
+        if dpp_m else
+        "browser assumption only — no measured distance at validation time")
+    return record
 
 
 @socketio.on("validation_result")
@@ -2974,6 +3042,12 @@ def handle_validation_result(payload: dict):
     # differ, that difference is exactly the error the assumption caused.
     try:
         pos = gaze_service.position_info() or {}
+        # Same reply the distance conversion below uses — logged as this
+        # phase's head-position snapshot too, so the geometry at THIS
+        # validation (not just the distance derived from it) is on
+        # record. Mandatory: every validation runs this block already.
+        record["head_position"] = _capture_head_position(
+            state, record["phase"], pos=pos)
         dist = pos.get("est_distance_cm")
         scr = payload.get("screen") or {}
         if dist and 25 < float(dist) < 120 and record.get("mean_err_px"):
@@ -3058,30 +3132,8 @@ def handle_validation_result(payload: dict):
     except Exception:  # noqa: BLE001 — never lose a validation over stats
         logger.exception("Could not compute the spatial terms")
 
-    # ── THE BIAS IN DEGREES USES THE MEASURED DISTANCE TOO ───────────
-    # _uncorrected_error runs before the block above and can only use the
-    # browser's px→degree scale, which divides by window.measuredDistanceCm
-    # and in practice by a hardcoded 60 cm (F21). The authoritative scale
-    # is the one just computed from the iris. Leaving the bias on the
-    # browser's scale would have reported it 6 % low on PILOT_02 while the
-    # accuracy beside it was right — two angles on the same line, measured
-    # against two different rulers, which is precisely the class of fault
-    # this whole session set out to remove.
-    _px = record.get("mean_err_px")
-    _deg_m = record.get("mean_err_deg_measured")
-    if _px and _deg_m:
-        _dpp = _deg_m / _px
-        for _f, _src in (("bias_deg", "bias_px"),
-                         ("bias_x_deg", "bias_x_px"),
-                         ("bias_y_deg", "bias_y_px"),
-                         ("median_err_deg", "median_err_px")):
-            if record.get(_src) is not None:
-                record[_f] = round(record[_src] * _dpp, 2)
-        record["bias_deg_basis"] = "measured distance (%s)" % (
-            (record.get("distance") or {}).get("source") or "unknown")
-    elif record.get("bias_deg") is not None:
-        record["bias_deg_basis"] = ("browser assumption — no measured "
-                                    "distance at validation time")
+    # ── DEGREES, ON BOTH RULERS, UNDER STABLE NAMES ──────────────────
+    _degree_fields(record)
 
     # ── WHICH CHECK IS WHICH, decided here and recorded ──────────────
     # pre_fit    grid A, uncorrected. Native accuracy AND the fit set.
@@ -3639,6 +3691,86 @@ def _persist_llm_result(session: str, stimulus: str, block: dict) -> None:
         logger.exception("Could not persist the LLM result")
 
 
+#: Protocol/guidance keys `position_info` replies carry that are not
+#: head-geometry measurements (UI text, envelope fields). Excluded when
+#: a reply is folded into a head-position snapshot so the snapshot is
+#: exactly the geometry, nothing else.
+_POSITION_GUIDANCE_KEYS = frozenset((
+    "ok", "cmd", "error", "guidance", "ready", "face", "available",
+    "warming", "reason",
+))
+
+
+def _capture_head_position(state: dict, phase: str,
+                           pos: "dict | None" = None) -> dict:
+    """Take one head-position/geometry snapshot and log it under `phase`.
+
+    F33/F36: `head_position` was null in all nine manifests recorded so
+    far because the ONLY thing that ever wrote it was the pre-calibration
+    guide, which is opt-in behind a button nobody clicked. That made the
+    leading hypothesis for the measured shear (an off-centre head, or a
+    head pose that differs between calibration and validation) untestable
+    on every session recorded to date.
+
+    This makes the measurement automatic and mandatory instead of
+    optional: called once right after calibration succeeds, and again at
+    every validation (which already runs `position_info()` for the
+    distance-in-degrees conversion — `pos`, if given, is that same reply,
+    so this costs no extra tracker round-trip there). Never blocks or
+    fails the caller; `position_info()` itself never raises by contract,
+    but this still guards, because losing head-position data must never
+    cost a calibration or a validation.
+    """
+    try:
+        info = pos if pos is not None else (gaze_service.position_info() or {})
+    except Exception:  # noqa: BLE001 — head position is instrumentation,
+        logger.exception("head-position capture failed for phase %s", phase)
+        info = {}
+    snap = {"phase": phase,
+            "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
+            "available": bool(info and info.get("available")
+                              and info.get("face"))}
+    if snap["available"]:
+        snap.update({k: v for k, v in info.items()
+                     if k not in _POSITION_GUIDANCE_KEYS and v is not None})
+    state.setdefault("head_position_log", []).append(snap)
+    return snap
+
+
+def _head_position_manifest(state: dict) -> "dict | None":
+    """Fold every automatic head-position snapshot into one manifest field.
+
+    `_capture_head_position` appends one entry per phase (calibration,
+    pre_fit, pre_check, post — whichever ran) to
+    `state["head_position_log"]`, in the order they happened; the
+    optional pre-calibration guide, if someone did open it, contributes
+    one more under phase "guide". `by_phase` keeps all of them, keyed by
+    phase, which is what F33's question needs: does the shear or the
+    signed bias track head placement ACROSS PHASES within a session, not
+    just across sessions.
+
+    The most recent available snapshot's fields are also mirrored at the
+    top level, for the one existing reader (`verify_metrics.py`'s
+    distance fallback) that pre-dates per-phase capture and expects
+    `head_position.<field>` directly — a fallback that rarely fires,
+    since `_session_distance` already prefers the mandatory validation's
+    own distance, but kept working rather than silently orphaned.
+    """
+    guide = state.get("position_snapshot")
+    log = ([{"phase": "guide", **guide}] if guide else []) + list(
+        state.get("head_position_log") or [])
+    if not log:
+        return None
+    by_phase = {snap.get("phase", "unknown"): snap for snap in log}
+    out: dict = {"by_phase": by_phase}
+    last_available = next((s for s in reversed(log) if s.get("available")),
+                          None)
+    if last_available:
+        out.update({k: v for k, v in last_available.items()
+                    if k not in ("phase", "recorded_at_utc", "available")})
+    return out
+
+
 def _session_distance(state: dict) -> dict:
     """The viewing distance in force for this session, and its provenance.
 
@@ -3718,6 +3850,12 @@ def handle_start_native_calibration(_payload=None):
         _telemetry_event(sid, "calibration_finished",
                          success=bool((result or {}).get("success")),
                          error=(result or {}).get("error"))
+        if (result or {}).get("success"):
+            # Automatic head-position snapshot at the moment calibration
+            # succeeded — the participant's pose the tracker's mapping
+            # was actually fit to. See _capture_head_position: this used
+            # to depend on someone opening the optional guide first.
+            _capture_head_position(_get_session_state(sid), "calibration")
         # The rate gate needs a calibration model, so it runs here —
         # never before calibration (see _run_rate_gate).
         if result.get("success"):

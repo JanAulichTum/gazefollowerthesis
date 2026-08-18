@@ -368,10 +368,21 @@ kept current), `README.md`.
 - Measured quality on this hardware: jitter RMS ~45–60 px filtered;
   vertical accuracy is the weak axis (gain compression) — mitigations:
   13-pt calibration, camera at eye level, gain correction, 32M model.
-- Validation: **7 targets pre AND 7 post** (same grid, five vertical
-  elevations — `VALIDATION_GRID` in experiment.js). Identical sets are
+- Validation: **two grids, not one.** Grid A (`pre_fit`, the one the
+  correction is fitted to) has **13 targets**; grid B (`pre_check` and
+  `post`, never fitted to) has **7** — both five vertical elevations,
+  disjoint positions, eccentricity-matched (`VALIDATION_GRID` /
+  `VALIDATION_CHECK_GRID` in experiment.js; `run_tests.py` [17] asserts
+  the disjointness and the match). Identical grid-B sets pre/post are
   required for drift to be like-for-like; the old 3-target post check
-  made drift partly an artefact of which targets were dropped.
+  made drift partly an artefact of which targets were dropped. Grid A
+  grew from 7 to 13 on 2026-08-18 (F33/brief item 2) so a full-affine
+  correction — the only candidate that can represent `m_yx`, vertical
+  error caused by horizontal position — has enough leave-one-out
+  headroom to be more than noise; see
+  `validation_stats.FULL_AFFINE_MIN_TARGETS`. Sessions recorded before
+  that date have a 7-target grid A and cannot receive a full-affine
+  correction, by design (`select_correction` gates it on target count).
 - Drift is computed from **uncorrected** errors (`mean_err_deg_raw`) —
   the pre check is measured raw and the post check with the gain
   correction applied, so differencing the reported numbers conflates
