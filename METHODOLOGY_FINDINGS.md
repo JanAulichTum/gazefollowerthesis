@@ -1859,6 +1859,82 @@ ten and the ratio must not move.
 measurement that would test whether the shear comes from head placement
 has never been taken.
 
+---
+
+## F37 · The top validation row undershoots in EVERY session — universal direction, session-variable magnitude
+**2026-08-18 · Methods, Results — extends F36's PILOT_05 observation to all seven sessions with per-target records**
+
+F36 found PILOT_05's vertical error was almost entirely its two `ty = 130`
+(12 % elevation) targets. Asked whether that is one participant or the
+instrument: pooled RAW (uncorrected) `pre_fit` per-target dy against
+target y, at the same nominal elevations (12/31/50/69/88 %), across all
+seven sessions carrying per-target records — the two `_uncorrected`
+top-row targets, before any correction and before any confound from a
+correction fitted partly on them.
+
+**Every one of the 14 measurements (two top-row targets x seven
+sessions) has POSITIVE dy** — the tracker undershoots (measures BELOW)
+the top-row target every single time, in every session, on a shared
+1080 px screen:
+
+| session | left corner (px / deg) | right corner (px / deg) |
+|---|---|---|
+| Manuel_P2 | +54 / 1.01° | +84 / 1.57° |
+| PILOT_00 | +218 / 3.31° | +370 / 5.62° |
+| PILOT_01 | +99 / 1.40° | +230 / 3.25° |
+| PILOT_02 | +75 / 1.21° | +77 / 1.24° |
+| PILOT_03 | +52 / 0.77° | +172 / 2.55° |
+| PILOT_04 | +256 / 3.81° | +75 / 1.12° |
+| PILOT_05 | +325 / 5.03° | +243 / 3.76° |
+
+14/14 positive, mean 166 px (≈2.7°), median 136 px, range 52–370 px
+(0.77°–5.62°), n = 40–46 samples per target — not a sampling artefact.
+
+**This is not simply "positive dy everywhere"**: the SAME analysis at
+the next elevation down (31 %, one target per session, `n=7`) gives mean
++36 px, median **−13 px**, only 3/7 positive — indistinguishable from
+noise. The 50/69/88 % elevations run 71–100 % positive at smaller,
+less consistent magnitudes than the top row. The top row is the one
+elevation where the direction is unanimous across every participant,
+every session, every corner.
+
+**Verdict on the three candidate explanations (brief item 3):**
+unanimous direction across seven independent participants argues
+strongly against "the participant's gaze" (no reason seven different
+people would all undershoot the same way) and for **the tracker's
+vertical range** — consistent with what `CLAUDE.md` already documents
+("vertical accuracy is the weak axis (gain compression)") and what the
+calibration instructions already warn participants about ("the upper
+edge is the hardest for a webcam"). This is the first measurement that
+puts a number on that known qualitative weakness, across every session
+recorded so far, not just PILOT_05.
+
+**But the magnitude is not fixed** — 0.77° to 5.62°, a 7x range across
+otherwise-identical setups (same screen, same protocol). Camera
+geometry (height, angle, distance) is the obvious candidate for what
+modulates it, and it is exactly the untested hypothesis from item 1:
+`head_position` is null in all nine manifests, so nothing here can
+attribute the session-to-session spread to head placement specifically
+— only the direction and existence of the effect, not its cause.
+
+**What this does NOT support:** a hard "cannot resolve" claim, or a
+specific stimulus-design exclusion threshold. Two sessions (Manuel_P2,
+PILOT_02) show a mild ~1.0–1.6° effect; two (PILOT_00, PILOT_05) show a
+severe 3.3–5.6° one. Any single top-band exclusion width would be
+correct for some sessions and wrong for others without more data to
+explain the spread — which is why none is implemented here. **This is
+reported, not encoded as a rule**: the ruler-choice and outlier-rule
+precedent applies (F31/F34) — a new stimulus-design threshold is a
+pre-registration decision for Jan to make, dated, once there is a basis
+for the magnitude, not a number this analysis should invent.
+
+### Code
+
+Analysis only — no source file changed. Reproducible from
+`data/study/*_manifest.json` via `validation_stats.raw_targets` on each
+session's `pre_fit` phase, filtered to targets within 5 px of `ty = 0.12
+* screen_height`.
+
 ## Open items before evaluation collection
 
 - ~~`EVALUATION_FROM_DATE`~~ **SET to 2026-08-11T14:00** (F17).
@@ -1878,3 +1954,7 @@ has never been taken.
   or whether rate enters the analysis as a covariate, and pre-specify it
   in `config.py` with the other thresholds. Comparing fixation counts or
   durations across rate bands is not defensible as things stand.
+- **The top ~12 % of the screen undershoots in every session (F37),
+  0.77°–5.62°.** Whether AOI analysis excludes a top band, and how wide,
+  is undecided and should be fixed before evaluation collection rather
+  than chosen per-session after seeing which one it rescues.
