@@ -1,3 +1,5 @@
+> **SUPERSEDED 2026-10-02.** This brief was executed; kept for the record. Do not paste it into a new session.
+
 # Brief — make the instrument usable, or bound what it can't do
 
 *Paste this as the first message of a Claude Code session in

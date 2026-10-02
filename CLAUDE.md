@@ -71,7 +71,7 @@ kept current), `README.md`.
   5s/1 full/all. Orange badge shown.
 - Env vars: `PORT` (5050), `GF_CALI_MODE` (13 default), `GF_MODEL_PATH`
   (authors' 32M model — request via email template in README),
-  `LLM_MAX_FRAMES` (60), `GEMINI_API_KEY` or `.gemini_key` file (a default
+  `LLM_MAX_FRAMES` (200), `GEMINI_API_KEY` or `.gemini_key` file (a default
   key is stored there).
 
 ## Hard-won gotchas (violate these and things silently break)
@@ -202,9 +202,9 @@ kept current), `README.md`.
   reintroduce a long-blocking tracker command. The JS also keeps the
   accuracy-check button disabled until the verdict arrives (with a 90 s
   watchdog so a missing verdict can't strand a participant).
-- **A normal run shows ONE 30 s clip** (`SESSION_STIMULUS_MODE`=clip30 by
-  default; `1full` or `all` are the alternatives). Set it to `all` for
-  real data collection and record which mode produced each dataset.
+- **`SESSION_STIMULUS_MODE` defaults to `all`** (changed 2026-10-02; the
+  stimuli are the two 30 s clips). `clip30` and `1full` remain as
+  alternatives for demos; record which mode produced each dataset.
 - **Nothing in the participant flow waits for the rate measurement.** It
   runs in the background from calibration onward; the verdict gates the
   *videos* button, not the accuracy check. Gating the accuracy check made
@@ -399,8 +399,9 @@ kept current), `README.md`.
 - Pipeline: I-DT fixations → one annotated keyframe per fixation (marker
   radius = session's validation error) + zoomed crop → two-step chain
   (scene description without gaze first = hallucination check, then
-  rubric evaluation) → structured JSON summary for Cohen's-kappa
-  validation against human raters.
+  evaluation) → structured JSON summary. Validation is Design A
+  (human coder marks RIGHT / WRONG / UNCLEAR per fixation); the rubric /
+  Cohen's-kappa plan was dropped (see RUBRIC.md, superseded).
 - **One API call per evaluation step** (frames ride inline). Scientific
   design: calls = participants × videos × 3–5 repetitions; report
   inter-run consistency + LLM-vs-human agreement on a ~20% subset.
@@ -465,3 +466,14 @@ Gemini frame-based feedback with rubric, llm audit logs, fixation
 detection). The stimuli are classroom scenes; the research frame is
 teacher professional vision (noticing), which the LLM feedback rubric
 operationalizes.
+
+## State on 2026-10-02 (data collection starts)
+
+- Evaluation boundary is 2026-10-02T00:00; IDs starting REHEARSAL/TEST/PILOT/DEMO never count.
+- Manifest-first atomic finalisation, media-clock logging, append-only event log, IPC sequence numbers, provenance in manifests.
+- Balanced clip allocation; first-clip pre-roll (the first-presented clip window ran 335-600 ms long); recalibrate button.
+- `claim_check` affine-intercept bug fixed (F19 correction in `METHODOLOGY_FINDINGS.md`).
+- Design A coder + `analysis_designA.py`; the C1/C2/C3 rubric and kappa are dropped (`review.html`, `criteria_met`, `agreement_kit.py` left in place, unused).
+- `post_video` viewing-condition check over a frozen frame; local `static/js/socket.io.min.js`.
+- Tests: `run_tests.py` 1,179 passes; 2 known macOS-only failures (perf_mode kernel32/pyobjc mocking).
+- The instrument is frozen for collection: do not change app/tracker/JS/template logic.

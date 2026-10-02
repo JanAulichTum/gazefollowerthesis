@@ -2062,3 +2062,20 @@ here.
   `affine` correction the pre-fix rule chose; the current rule says
   `full-affine` should have been applied instead. Whether to re-derive a
   brand-new pilot session is Jan's call, not made here.
+
+
+---
+
+## 2026-10-02 addenda (appended; earlier entries unchanged)
+
+### F19 correction · `claim_check` dropped the affine intercept
+`claim_check` omitted the affine intercept. Re-scored with the fix, F19 is **54.2 % strict / 76.3 % lenient** (offset 0.63 deg = 0.9x accuracy), not 16.9 % / 28.8 % (2.63 deg, 3.6x). The "tracker exonerated / localises badly" conclusion of F19 does not hold.
+
+### F11 denominator
+"88 %" = 44/50 excludes 9 never-shown units, but "unclear 16.9 %" = 12/71 includes them. On the same basis it is 12/62 = **19.4 %**.
+
+### First-presented clip window
+The first-presented clip window is 335-600 ms longer than the 30.000 s clip (mean 486 ms, 9/9 pilots); the second clip is 62-92 ms longer. This is why the media-clock log and the first-clip pre-roll were added.
+
+### New `post_video` viewing-condition check
+Dark vs. frozen video frame, the same grid B, measured back to back, to separate viewing condition from tracker drift.

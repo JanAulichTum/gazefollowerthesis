@@ -1,3 +1,5 @@
+> **SUPERSEDED 2026-10-02 (draft, never signed).** It contradicts Design A (coder marks RIGHT / WRONG / UNCLEAR per fixation; participants are the resampling unit). Do not treat as in force.
+
 # Pre-registration addendum — 2026-08-18
 
 **Status: DRAFT for sign-off. Not in force until dated and signed below.**
