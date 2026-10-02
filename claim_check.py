@@ -777,13 +777,16 @@ def load_gaze(manifest: dict, manifest_path: str, stimulus: str) -> "tuple":
     if not t0 or not t1:
         return [], "stimulus has no time window"
 
-    corr = manifest.get("gain_correction") or {}
-    gx = float(corr.get("gain_x") or 1.0)
-    gy = float(corr.get("gain_y") or 1.0)
-    ox = float(corr.get("offset_x") or 0.0)
-    oy = float(corr.get("offset_y") or 0.0)
-    cx = float(corr.get("centre_x") or corr.get("center_x") or 0.0)
-    cy = float(corr.get("centre_y") or corr.get("center_y") or 0.0)
+    # The correction EXACTLY as finalisation applied it (affine, quadratic-
+    # vertical or full-affine), via the one shared implementation. This
+    # previously rebuilt "cx + (x - cx) * gain_x + offset_x" from keys the
+    # payload never contains, i.e. a pure scaling about the screen origin
+    # that dropped every intercept — 113-197 px of displacement on the
+    # corrected pilot sessions, and the cause of F19's 16.9/28.8 %
+    # (54.2/76.3 % when re-scored correctly).
+    import validation_stats as _vs
+
+    corr = _vs.from_payload(manifest.get("gain_correction"))
 
     samples: list = []
     with open(csv_path, newline="", encoding="utf-8") as fh:
@@ -800,9 +803,9 @@ def load_gaze(manifest: dict, manifest_path: str, stimulus: str) -> "tuple":
                 sy = float(row["filtered_gaze_position_y"])
             except (KeyError, TypeError, ValueError):
                 continue
-            # Same affine the live preview applied, about the same centre.
-            sx = cx + (sx - cx) * gx + ox
-            sy = cy + (sy - cy) * gy + oy
+            if corr and valid:
+                sx, sy = _vs.apply_point(sx, sy, corr)
+                sx, sy = float(sx), float(sy)
             samples.append(((ts - t0) / 1e9,
                             (sx - rx) / rw, (sy - ry) / rh, valid))
     if not samples:

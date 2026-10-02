@@ -5,34 +5,32 @@
 
 {% block content %}
 <!--
-  HUMAN CODING OF INDIVIDUAL FIXATIONS.
+  DESIGN A CODING (fixed 2026-10-02).
 
-  Every other check in this study compares one model's output against
-  another measurement. That establishes CORRESPONDENCE, not correctness:
-  a model and a tracker can agree and both be describing the wrong
-  thing. Only a person looking at the frame can say whether the claim is
-  true — and only human ratings give a reliability coefficient, because
-  kappa needs two raters on the same units.
+  Unit: one fixation the model was shown. The coder judges whether the
+  model's description names what is UNDER THE MARKER in this frame —
+  the region at the reported gaze location, not "what the participant
+  looked at" (that gap is the instrument's error, measured separately).
 
-  Design decisions that matter for validity, not for looks:
-
-  * The verdict buttons are shown BEFORE the model's claim is revealed
-    where possible, and the claim can be hidden entirely. Seeing a
-    plausible answer first is the classic way a coder stops coding and
-    starts agreeing.
-  * "Unclear" is a first-class verdict, not a skip. At 2 deg accuracy a
-    genuine fraction of fixations sit between two objects, and forcing a
-    binary there manufactures agreement that is not real.
-  * The coder's name is stored per file. Two coders are never merged —
-    merged files silently become one rater with no way back.
+  * RIGHT / WRONG / UNCLEAR. UNCLEAR = cannot tell which of two
+    candidate regions the marker sits on. It is a result, not a skip.
+  * WRONG requires free text: what is actually under the marker. That
+    is the failure analysis.
+  * BLIND-FIRST units (a fixed ~20 % chosen by the SERVER from a hash,
+    not by the coder): the coder types what is under the marker BEFORE
+    the model's claim is revealed. The difference between blind-first
+    and normal units estimates how much seeing the claim inflates
+    agreement.
+  * Every verdict is stored with its unit (ID, time, position), the
+    claim as shown, whether the claim was visible, and a timestamp.
 -->
 <div class="page-container">
   <div class="card">
     <h1 class="study-header__title">Fixation coding</h1>
-    <p class="study-info__text">
-      For each fixation: does the model's claim describe what the
-      participant was actually looking at? Judge the FRAME, not the
-      sentence.
+    <p class="study-info__text" id="instructionText">
+      For each fixation: does the model's description name what is under
+      the marker in this frame? RIGHT, WRONG, or UNCLEAR (you cannot tell
+      which of two candidate regions the marker sits on).
     </p>
 
     <div class="form-group">
@@ -46,18 +44,6 @@
       <select class="form-input" id="recSelect"></select>
     </div>
 
-    <div class="form-group">
-      <label class="consent-label" style="display:block">
-        <input type="checkbox" id="blindMode" checked>
-        <span class="consent-text">
-          <strong>Blind mode</strong> — hide the model's claim until
-          after I have decided what the fixation is on. Strongly
-          recommended: seeing a plausible answer first is how a coder
-          stops coding and starts agreeing.
-        </span>
-      </label>
-    </div>
-
     <button class="btn-primary" id="startBtn">Load fixations</button>
     <p class="form-error" id="coderError" role="alert" hidden></p>
   </div>
@@ -69,8 +55,6 @@
     <div style="position:relative; display:inline-block; max-width:100%">
       <video id="frameVideo" style="max-width:100%; display:block"
              muted playsinline preload="auto"></video>
-      <!-- The marker radius is the session's MEASURED accuracy, so the
-           coder sees the uncertainty rather than a false point. -->
       <div id="gazeRing" style="position:absolute; border:3px solid #ff3b30;
            border-radius:50%; pointer-events:none; display:none"></div>
       <div id="gazeDotC" style="position:absolute; width:8px; height:8px;
@@ -80,22 +64,37 @@
 
     <p id="fixMeta" style="color:#595959; font-size:0.9em"></p>
 
+    <div id="blindBox" hidden style="margin:12px 0; padding:12px;
+         background:#FFF8E6; border-left:4px solid #b45309">
+      <label class="form-label" for="blindNaming"><strong>Blind-first:</strong>
+        what is under the marker? (before you see the model's answer)</label>
+      <input class="form-input" id="blindNaming" autocomplete="off">
+      <button class="btn-secondary" id="revealBtn">Reveal the model's claim (R)</button>
+    </div>
+
     <div id="claimBox" style="margin:12px 0; padding:12px;
          background:#F7F9FC; border-left:4px solid #1F4E79">
-      <span id="claimHidden"><em>Claim hidden — decide first, then
-        press <kbd>R</kbd> to reveal.</em></span>
+      <span id="claimHidden"><em>Claim hidden until you have named the
+        region.</em></span>
       <span id="claimText" hidden></span>
     </div>
 
-    <p style="margin-bottom:6px"><strong>Is the claim correct?</strong></p>
-    <button class="btn-primary" data-code="correct">Correct (1)</button>
-    <button class="btn-primary" data-code="wrong">Wrong (2)</button>
-    <button class="btn-primary" data-code="unclear">Unclear (3)</button>
+    <p style="margin-bottom:6px"><strong>Does the model name what is under the marker?</strong></p>
+    <button class="btn-primary" data-code="right">RIGHT (1)</button>
+    <button class="btn-primary" data-code="wrong">WRONG (2)</button>
+    <button class="btn-primary" data-code="unclear">UNCLEAR (3)</button>
     <button class="btn-link" id="backBtn">← Back (B)</button>
 
+    <div id="wrongBox" hidden style="margin-top:10px">
+      <label class="form-label" for="wrongNote">WRONG — what is actually
+        under the marker?</label>
+      <input class="form-input" id="wrongNote" autocomplete="off">
+      <button class="btn-primary" id="wrongSave">Save WRONG (Enter)</button>
+    </div>
+
     <p style="margin-top:14px; color:#595959; font-size:0.9em">
-      Keys: 1 correct · 2 wrong · 3 unclear · B back · R reveal claim.
-      Saved automatically after every verdict.
+      Keys: 1 right · 2 wrong · 3 unclear · B back · R reveal (blind-first
+      units). Saved after every verdict.
     </p>
     <p id="saveState" style="font-size:0.9em"></p>
   </div>
@@ -109,11 +108,14 @@
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
+  const PROTOCOL = 'designA-v1';
   let units = [], idx = 0, meta = {}, codes = {}, revealed = false;
 
   function showError(m) {
     const e = $('coderError'); e.textContent = m; e.hidden = false;
   }
+  const typing = () => ['blindNaming', 'wrongNote', 'coderName']
+    .includes(document.activeElement && document.activeElement.id);
 
   fetch('/api/review_index').then(r => r.json()).then(d => {
     const sel = $('recSelect');
@@ -130,8 +132,7 @@
   $('startBtn').addEventListener('click', async () => {
     $('coderError').hidden = true;
     const coder = $('coderName').value.trim();
-    if (!coder) { showError('Enter a coder ID first — verdicts are '
-      + 'stored per coder so two coders can be compared.'); return; }
+    if (!coder) { showError('Enter a coder ID first.'); return; }
     const rec = JSON.parse($('recSelect').value || '{}');
     if (!rec.participant_id) { showError('Choose a recording.'); return; }
 
@@ -145,32 +146,12 @@
     units = d.units;
     meta = { coder: coder, participant: rec.participant_id,
              stimulus: rec.stimulus_name, session: rec.session_id || '',
-             accuracy_deg: d.accuracy_deg, n_claims: d.n_claims };
-
-    // Say WHY there is nothing to judge, rather than letting every
-    // fixation read "no model claim covers this" — which looks like a
-    // property of the data and is actually a loading problem.
-    if (d.match_warning) {
-        showError(d.match_warning);
-        if (!d.n_claims) return;
-    } else {
-        $('coderError').hidden = true;
-    }
-    $('claimSource').textContent = d.claims_source
-        ? (d.n_claims + ' claims from the ' + d.claims_source
-           + ' · ' + d.n_matched + ' of ' + units.length
-           + ' fixations matched'
-           + (d.n_frames_sent
-               ? '  ·  the model was shown ' + d.n_frames_sent + ' of '
-                 + units.length + ' fixations'
-               : ''))
-        : '';
-    if (d.n_frames_sent && d.n_frames_sent < units.length) {
-        showError('The model was shown only ' + d.n_frames_sent + ' of '
-          + units.length + ' fixations — the keyframe sampler kept the '
-          + 'LONGEST ones. The ' + (units.length - d.n_frames_sent)
-          + ' it never saw are marked and should be coded unclear.');
-    }
+             accuracy_deg: d.accuracy_deg, n_claims: d.n_claims,
+             unit_basis: d.unit_basis || 'legacy time-matched' };
+    if (d.match_warning) showError(d.match_warning);
+    if (!d.n_claims) return;
+    $('claimSource').textContent = d.n_claims + ' claims from the '
+      + (d.claims_source || '?') + ' · units: ' + meta.unit_basis;
 
     const prev = await (await fetch('/api/coding_load?' + new URLSearchParams({
       coder: coder, session: meta.session, stimulus: meta.stimulus }))).json();
@@ -178,63 +159,65 @@
 
     $('frameVideo').src = '/stimulus/' + encodeURIComponent(meta.stimulus);
     $('codingCard').hidden = false;
-    idx = units.findIndex(u => codes[u.index] === undefined);
+    idx = units.findIndex(u => codes[u.unit_id] === undefined);
     if (idx < 0) idx = 0;
     render();
   });
 
+  function setClaimVisible(v) {
+    revealed = v;
+    $('claimText').hidden = !v;
+    $('claimHidden').hidden = v;
+  }
+
   function render() {
     if (idx >= units.length) { finish(); return; }
     const u = units[idx];
-    revealed = !$('blindMode').checked;
-
-    const done = Object.keys(codes).length;
+    const prev = codes[u.unit_id];
     $('progressLine').textContent =
       'Fixation ' + (idx + 1) + ' of ' + units.length
-      + '  ·  ' + done + ' coded'
-      + (codes[u.index] ? '  ·  previously: ' + codes[u.index] : '');
+      + '  ·  ' + Object.keys(codes).length + ' coded'
+      + (prev ? '  ·  previously: ' + (prev.verdict || prev) : '')
+      + (u.blind_first ? '  ·  BLIND-FIRST unit' : '');
 
     const v = $('frameVideo');
     v.currentTime = u.t_mid;
     v.onseeked = placeMarker;
     placeMarker();
 
-    $('fixMeta').textContent =
-      't = ' + u.t_mid.toFixed(2) + ' s · duration ' + u.duration_ms
-      + ' ms · position (' + u.x.toFixed(2) + ', ' + u.y.toFixed(2) + ')';
+    $('fixMeta').textContent = (u.fixation_id ? u.fixation_id + ' · ' : '')
+      + 't = ' + Number(u.t_mid).toFixed(2) + ' s · duration '
+      + u.duration_ms + ' ms';
 
-    // A fixation the model was never shown cannot be scored. Saying so
-    // is not the same as "the model had no comment": one is a gap in
-    // the pipeline, the other is a judgment, and coding the first as
-    // "wrong" would blame the model for a frame it never received.
     let claim;
     if (u.shown_to_model === false) {
-      claim = 'NOT SHOWN TO THE MODEL — this fixation was dropped when '
-        + 'the keyframes were sampled, so there is nothing to judge. '
-        + 'Press 3 (unclear) and move on.';
+      claim = 'NOT SHOWN TO THE MODEL — nothing to judge. Press 3.';
     } else if (u.model_claim) {
-      claim = 'The model says: "' + u.model_claim + '"'
-        + (u.model_confidence ? ' (confidence: ' + u.model_confidence + ')' : '');
+      claim = 'The model says: "' + u.model_claim + '"';
     } else {
-      claim = 'No model claim covers this fixation.';
+      claim = 'The model gave no claim for this fixation.';
     }
     $('claimText').textContent = claim;
-    $('claimText').hidden = !revealed;
-    $('claimHidden').hidden = revealed;
+    $('wrongBox').hidden = true;
+    $('wrongNote').value = '';
+    $('blindNaming').value = '';
+    $('blindBox').hidden = !u.blind_first;
+    setClaimVisible(!u.blind_first);
   }
 
   function placeMarker() {
     const v = $('frameVideo'), u = units[idx];
-    if (!v.clientWidth) return;
+    if (!u || !v.clientWidth) return;
     const x = u.x * v.clientWidth, y = u.y * v.clientHeight;
     $('gazeDotC').style.display = 'block';
     $('gazeDotC').style.left = (x - 4) + 'px';
     $('gazeDotC').style.top = (y - 4) + 'px';
-    // Radius = the session's measured accuracy, in on-screen pixels.
-    // A bare dot would tell the coder the gaze is known to the pixel,
-    // which it is not, and would make near misses look like hits.
-    if (meta.accuracy_deg) {
-      const r = (meta.accuracy_deg * 58.2) * (v.clientWidth / 1680);
+    // The SAME ring the model saw (fraction of the keyframe width).
+    // Legacy units without it fall back to the session accuracy.
+    let r = null;
+    if (u.marker_radius_frac) r = u.marker_radius_frac * v.clientWidth;
+    else if (meta.accuracy_deg) r = (meta.accuracy_deg * 58.2) * (v.clientWidth / 1680);
+    if (r) {
       $('gazeRing').style.display = 'block';
       $('gazeRing').style.width = (2 * r) + 'px';
       $('gazeRing').style.height = (2 * r) + 'px';
@@ -243,25 +226,57 @@
     }
   }
 
-  async function code(verdict) {
-    if (idx >= units.length) return;
-    codes[units[idx].index] = verdict;
-    idx += 1;
-    render();
-    await save();
+  function reveal() {
+    const u = units[idx];
+    if (!u || !u.blind_first || revealed) return;
+    if (!$('blindNaming').value.trim()) {
+      $('saveState').textContent = 'Name what is under the marker first.';
+      $('blindNaming').focus();
+      return;
+    }
+    setClaimVisible(true);
   }
 
-  async function save() {
+  async function code(verdict, note) {
+    if (idx >= units.length) return;
+    const u = units[idx];
+    if (u.blind_first && !revealed) {
+      $('saveState').textContent = 'Blind-first unit: name the region and '
+        + 'reveal the claim before giving a verdict.';
+      return;
+    }
+    if (verdict === 'wrong' && !note) {
+      $('wrongBox').hidden = false;
+      $('wrongNote').focus();
+      return;
+    }
+    codes[u.unit_id] = {
+      verdict: verdict,
+      wrong_note: verdict === 'wrong' ? note : null,
+      blind_first: !!u.blind_first,
+      blind_naming: u.blind_first ? $('blindNaming').value.trim() : null,
+      claim_visible_at_verdict: revealed,
+      claim: u.model_claim || null,
+      fixation_id: u.fixation_id || null,
+      index: u.index, t_start: u.t_start, t_end: u.t_end,
+      x: u.x, y: u.y,
+      coded_at_utc: new Date().toISOString(),
+    };
+    const unitId = u.unit_id;
+    idx += 1;
+    render();
+    await save(unitId);
+  }
+
+  async function save(lastUnit) {
     $('saveState').textContent = 'saving…';
     const r = await (await fetch('/api/coding_save', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         coder: meta.coder, session: meta.session, stimulus: meta.stimulus,
-        codes: codes,
-        instructions: 'Does the model\'s claim describe what the '
-          + 'participant was looking at in this frame? correct / wrong / '
-          + 'unclear. Blind mode: '
-          + ($('blindMode').checked ? 'on' : 'off') })
+        codes: codes, last_unit: lastUnit, protocol: PROTOCOL,
+        unit_basis: meta.unit_basis,
+        instructions: $('instructionText').textContent.trim() })
     })).json();
     $('saveState').textContent = r.ok
       ? ('saved — ' + r.n_coded + ' verdicts in ' + r.path)
@@ -269,42 +284,48 @@
   }
 
   function finish() {
-    const vals = Object.values(codes);
-    const n = (v) => vals.filter(x => x === v).length;
-    const scored = n('correct') + n('wrong');
+    const vals = Object.values(codes).map(c => (c && c.verdict) || c);
+    const n = (v) => vals.filter(x => x === v || (v === 'right' && x === 'correct')).length;
+    const scored = n('right') + n('wrong');
     $('codingCard').hidden = true;
     $('summaryCard').hidden = false;
     $('summaryBody').innerHTML =
       '<p><strong>' + vals.length + '</strong> fixations coded.</p>'
-      + '<p>Correct ' + n('correct') + ' · Wrong ' + n('wrong')
-      + ' · Unclear ' + n('unclear') + '</p>'
-      + (scored
-          ? '<p>Accuracy on the units you could judge: <strong>'
-            + (100 * n('correct') / scored).toFixed(1) + ' %</strong> of '
-            + scored + '.</p>'
-          : '')
-      + '<p style="color:#595959">Unclear verdicts are excluded from that '
-      + 'rate rather than counted as wrong — they are cases the '
-      + 'instrument cannot resolve, not model errors. Report the unclear '
-      + 'share alongside the rate.</p>'
-      + '<p style="color:#595959">For a reliability coefficient, have a '
-      + 'second coder repeat this on the same recording with a different '
-      + 'coder ID, then run <code>python agreement_kit.py</code>.</p>';
+      + '<p>RIGHT ' + n('right') + ' · WRONG ' + n('wrong')
+      + ' · UNCLEAR ' + n('unclear') + '</p>'
+      + (scored ? '<p>RIGHT among judgeable units: <strong>'
+        + (100 * n('right') / scored).toFixed(1) + ' %</strong> of '
+        + scored + '. UNCLEAR is reported separately.</p>' : '')
+      + '<p style="color:#595959">Study-level figures with participant-'
+      + 'level intervals: <code>python analysis_designA.py</code>.</p>';
   }
 
   document.addEventListener('keydown', (e) => {
     if ($('codingCard').hidden) return;
-    if (e.key === '1') code('correct');
+    if (e.key === 'Enter' && document.activeElement === $('wrongNote')) {
+      const note = $('wrongNote').value.trim();
+      if (note) code('wrong', note);
+      return;
+    }
+    if (e.key === 'Enter' && document.activeElement === $('blindNaming')) {
+      reveal(); return;
+    }
+    if (typing()) return;
+    if (e.key === '1') code('right');
     else if (e.key === '2') code('wrong');
     else if (e.key === '3') code('unclear');
     else if (e.key.toLowerCase() === 'b') { idx = Math.max(0, idx - 1); render(); }
-    else if (e.key.toLowerCase() === 'r') {
-      revealed = true; $('claimText').hidden = false; $('claimHidden').hidden = true;
-    }
+    else if (e.key.toLowerCase() === 'r') reveal();
   });
 
   document.querySelectorAll('[data-code]').forEach(b =>
     b.addEventListener('click', () => code(b.dataset.code)));
+  $('revealBtn').addEventListener('click', reveal);
+  $('wrongSave').addEventListener('click', () => {
+    const note = $('wrongNote').value.trim();
+    if (!note) { $('wrongNote').focus(); return; }
+    code('wrong', note);
+  });
   $('backBtn').addEventListener('click', () => {
     idx = Math.max(0, idx - 1); render();
   });

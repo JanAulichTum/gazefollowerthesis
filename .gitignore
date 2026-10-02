@@ -122,6 +122,17 @@ data/share_pseudonyms.json
 # Evaluation sessions: raw participant data, same as gazefollower_raw.
 data/study/
 
+# Append-only per-login event log (every calibration, validation, rate
+# decision, stimulus event). Participant-linked.
+data/session_events/
+
+# Stimulus-order allocation log: participant IDs with their enrolment
+# number and order. Participant-linked.
+data/allocation_log.json
+
+# analysis_designA.py output (per-participant units, WRONG free text).
+data/analysis/
+
 # THE REPLAY PAYLOADS. These are not metadata — app.py writes the LLM
 # request "images included" so model_comparison.py can send a
 # byte-identical prompt to another model. That means base64 JPEG frames

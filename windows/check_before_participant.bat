@@ -45,6 +45,20 @@ python perf_mode.py --verify
 echo.
 echo ================== 4. tracker self-check ===============
 python tracker_service.py --check
+if errorlevel 1 (
+    echo.
+    echo   TRACKER SELF-CHECK FAILED ^(camera, MNN, gazefollower or model^).
+    echo   Do not record until every line above says ok.
+    pause & exit /b 1
+)
+python -c "import os,sys; sys.exit(0 if os.path.isfile(os.path.join('models','base_32M.mnn')) else 1)"
+if errorlevel 1 (
+    echo.
+    echo   models\base_32M.mnn is MISSING - the tracker would silently use
+    echo   GazeFollower's bundled model, which is a DIFFERENT network.
+    echo   Copy the model file back before recording.
+    pause & exit /b 1
+)
 
 echo.
 echo ================== 5. yesterday's sessions =============

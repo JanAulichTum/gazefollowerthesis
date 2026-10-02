@@ -1592,8 +1592,8 @@ try:
     # A normal run's stimulus scope must be configurable, not hardcoded.
     check("normal-run stimulus mode is configurable",
           "SESSION_STIMULUS_MODE" in _cfg and "SESSION_STIMULUS_MODE" in _app)
-    check("normal run defaults to the single 30 s clip",
-          'SESSION_STIMULUS_MODE", "clip30"' in _cfg)
+    check("normal run defaults to the full study set",
+          'SESSION_STIMULUS_MODE", "all"' in _cfg)
     _diag = read("diagnose_rate.py")
     check("per-stage rate diagnosis exists",
           "face_alignment" in _diag and "residual_ms" in _diag)
@@ -1999,7 +1999,7 @@ try:
     check("core pinning is present but commented out by default",
           "REM set GF_PERF_PIN_CORES=12" in _run)
     check("the launcher states the rate to expect",
-          "under 25 Hz" in _run)
+          "Expect ~30 Hz" in _run and "rate gate FAILS" in _run)
     _pre = read("windows/check_before_participant.bat")
     check("pre-flight runs the test suite and stops on failure",
           "run_tests.py" in _pre and "exit /b 1" in _pre)
@@ -2491,9 +2491,13 @@ try:
           hasattr(_SPEC, "NOT_APPLICABLE") and _SPEC.NOT_APPLICABLE)
     check("the design choice (no hand-drawn AOIs) is written down",
           "deliberately uses NO hand-drawn AOIs" in read("metrics_spec.py"))
-    check("kappa is still flagged as the remaining RQ3 gap",
-          any(i[0] == "human_agreement_kappa" and i[3] == "missing"
-              for i in _SPEC.RQ3_FEEDBACK))
+    check("kappa is recorded as dropped (Design A), not as a missing metric",
+          "human_agreement_kappa" in _SPEC.NOT_APPLICABLE_NAMES
+          and not any(i[0] == "human_agreement_kappa"
+                      for i in _SPEC.RQ3_FEEDBACK))
+    check("Design A outcomes are in the spec",
+          {"coded_percent_right", "coded_unclear_pct"}
+          <= {i[0] for i in _SPEC.RQ3_FEEDBACK})
     check("inclusion criteria are dated in the spec",
           "decided_on" in _SPEC.INCLUSION)
 
@@ -2694,7 +2698,7 @@ try:
     check("a segment without video coordinates fails safe",
           "error" in _ev(_pd.DataFrame({"x": [1]})))
     check("event metrics reach the manifest",
-          '"events": counts.get("__events__")' in _app2)
+          'manifest["events"] = events' in _app2)
     check("a stats failure can never lose a session",
           "never lose a session over stats" in _app2)
     check("px-per-degree is shared with the metrics spec, not re-derived",
@@ -3213,8 +3217,10 @@ try:
           and "Wire in the gaze CSV" not in _cc)
     check("screen pixels are mapped into VIDEO coordinates via video_rect",
           "video_rect" in _cc and "(sx - rx) / rw" in _cc)
-    check("the session's gain correction is applied before scoring",
-          "gain correction applied" in _cc and "(sx - cx) * gx" in _cc)
+    check("the session's gain correction is applied before scoring, via "
+          "the shared implementation (not a re-built scaling)",
+          "_vs.from_payload(" in _cc and "_vs.apply_point(" in _cc
+          and "(sx - cx) * gx" not in _cc)
     check("invalid samples are marked, not scored as 'outside the box'",
           'row.get("status"' in _cc)
     check("only samples inside the stimulus window are used",
@@ -3429,14 +3435,16 @@ try:
     check("ONLY the fit phase fits the correction",
           'record["phase"] in ("pre_fit", "pre")' in _app3
           and '_auto_fit_correction' in _app3)
-    check("a repeat attempt does NOT refit",
-          'record["attempt"] == 1' in _app3)
+    check("a repeat attempt does NOT refit (once per calibration)",
+          'record["attempt_in_epoch"] == 1' in _app3)
     check("each validation records its role and grid",
           'record["role"]' in _app3 and 'record["grid"]' in _app3
           and 'record["canonical_accuracy"]' in _app3)
-    check("repeat attempts are counted and logged as a deviation",
-          'record["attempt"] = len(prior) + 1' in _app3
-          and "PROTOCOL:" in _app3)
+    check("repeat attempts are counted (across page reloads, from the "
+          "durable event log) and logged as a deviation",
+          'record["attempt"] = max(len(prior), len(prior_logged)) + 1'
+          in _app3 and "PROTOCOL:" in _app3
+          and '_session_event(state, "validation"' in _app3)
 
     # ── The written rule and the applied rule must be the same rule ──
     # metrics_spec.INCLUSION is the pre-declared criterion; verify_metrics
@@ -3487,7 +3495,8 @@ try:
     check("the LLM result is written into the manifest, not only the log "
           "directory",
           "def _persist_llm_result" in _app3
-          and 'manifest.setdefault("llm", {})[stimulus] = block' in _app3)
+          and "llm[stimulus] = block" in _app3
+          and 'setdefault("llm_history", {})' in _app3)
     check("correspondence is scored at write time, not left to a command "
           "someone must remember",
           "claim_check.check_all(" in _app3)
@@ -3704,17 +3713,27 @@ try:
           and '"%s__%s__%s.json"' in _app3)
     check("the rubric the coder worked to is stored with the verdicts",
           '"instructions": payload.get("instructions")' in _app3)
-    check("blind mode hides the claim until the coder has decided",
-          "blindMode" in _coder and "stops coding and starts agreeing"
-          in _coder)
-    check("'unclear' is a first-class verdict, not a skip",
-          "unclear" in _coder and "first-class verdict" in _coder)
-    check("unclear units are excluded from the rate, not counted wrong",
-          "excluded from that" in _coder)
-    check("the marker shows the measured error as a RING, not a point",
-          "gazeRing" in _coder and "accuracy_deg" in _coder)
-    check("the coder is pointed at a second rater for kappa",
-          "second coder" in _coder and "agreement_kit" in _coder)
+    check("Design A verdicts: RIGHT / WRONG / UNCLEAR",
+          'data-code="right"' in _coder and 'data-code="wrong"' in _coder
+          and 'data-code="unclear"' in _coder)
+    check("WRONG requires free text (what is actually under the marker)",
+          "wrongNote" in _coder
+          and "verdict === 'wrong' && !note" in _coder)
+    check("blind-first units: the coder names the region BEFORE the claim "
+          "is revealed, chosen by the server, not the coder",
+          "blindNaming" in _coder and "u.blind_first" in _coder
+          and "def _blind_first" in _app3 and "blindMode" not in _coder)
+    check("each verdict stores its unit, the claim, whether the claim was "
+          "visible, and a timestamp",
+          "claim_visible_at_verdict" in _coder and "coded_at_utc" in _coder
+          and "codes[u.unit_id]" in _coder)
+    check("UNCLEAR is reported separately, not counted wrong",
+          "UNCLEAR is reported separately" in _coder)
+    check("the marker shows the SAME ring the model saw",
+          "gazeRing" in _coder and "marker_radius_frac" in _coder)
+    check("the coder instruction stays inside the claim boundary",
+          "under the marker" in _coder
+          and "what the participant was actually looking at" not in _coder)
 
     # Every fixation read "no model claim covers this fixation". The
     # cause was not the coder and not the matching: the manifest
@@ -3798,13 +3817,23 @@ try:
     check("collection has a start boundary, with a TIME on the first day",
           bool(_cfgmod._eval_boundary()),
           _cfgmod.EVALUATION_FROM_DATE)
-    check("the boundary excludes the same day's earlier debug runs",
+    check("the boundary excludes every pilot session",
           _cfgmod.is_evaluation_session(
-              "13_47_11.08_2026-08-11_135021") is False)
-    check("...and includes a session recorded after it that same day",
-          _cfgmod.is_evaluation_session("P01_2026-08-11_143000") is True)
+              "PILOT_07_2026-08-18_163437") is False
+          and _cfgmod.is_evaluation_session(
+              "13_47_11.08_2026-08-11_135021") is False
+          and _cfgmod.is_evaluation_session(
+              "X_2026-10-01_235900") is False)
+    check("...and includes a session recorded after it",
+          _cfgmod.is_evaluation_session("P01_2026-10-02_093000") is True)
+    check("rehearsal / test IDs are never evaluation data, whatever "
+          "the date",
+          _cfgmod.is_evaluation_session(
+              "REHEARSAL_01_2026-10-02_093000") is False
+          and _cfgmod.is_evaluation_session(
+              "TEST_2026-10-05_093000") is False)
     check("evaluation sessions route to data/study",
-          _cfgmod.session_dir_for("P01_2026-08-11_143000")
+          _cfgmod.session_dir_for("P01_2026-10-02_093000")
           .endswith("study"))
     check("development sessions stay in gazefollower_raw",
           _cfgmod.session_dir_for("x_2026-07-16_163647")
@@ -4011,9 +4040,10 @@ try:
             exec(compile(_ast.Module([_node], []), "app.py", "exec"), _ns)
     check("the manifest write has a json fallback converter",
           "_json_safe" in _ns and "default=_json_safe" in _app_src)
-    check("...and catches more than OSError",
-          "except Exception:  # noqa: BLE001" in
-          _app_src.split("Manifest write FAILED")[0][-400:])
+    _wja = _app_src.split("def _write_json_atomic")[1][:1600]
+    check("...and catches more than OSError, writing atomically",
+          "except Exception:  # noqa: BLE001" in _wja
+          and "os.replace(tmp, path)" in _wja and "os.fsync" in _wja)
 
     import numpy as _np3
 
@@ -4052,12 +4082,15 @@ try:
     # finished lost the validations, the distance and the correction -
     # everything that only existed in server memory.
     _app_src2 = read("app.py")
-    check("a provisional manifest is written before segmentation",
-          "PROVISIONAL MANIFEST" in _app_src2
-          and _app_src2.index("_provisional")
-          < _app_src2.index("gaze_service.end_session(csv_path)"))
-    check("...and is marked incomplete so it cannot pass as a full one",
-          '"complete": False' in _app_src2)
+    _fs = _app_src2.split("def _finalize_session")[1]
+    check("the FULL manifest is written before the tracker save, "
+          "segmentation and the workbook",
+          _fs.index("_write_json_atomic(_manifest_path, manifest)")
+          < _fs.index("counts = finalize_gazefollower_session("))
+    check("...and is marked pre-segmentation until completed",
+          '"finalisation": {"stage": "pre-segmentation"}' in _fs)
+    check("a workbook failure cannot abort finalisation",
+          "workbook_errors[entry[\"stimulus\"]] = repr(exc)" in _app_src2)
 
     # ── Rebuilding a manifest from the log ───────────────────────────
     _rb = read("rebuild_manifest.py")
@@ -4384,8 +4417,9 @@ try:
     _rs = read("windows/run_session.bat")
     check("collection presents the real stimulus set, not the pilot clip",
           "set SESSION_STIMULUS_MODE=all" in _rs)
-    check("...set in the frozen launcher, not left to a default",
-          'SESSION_STIMULUS_MODE", "clip30"' in read("config.py"))
+    check("...and the config default is the full set too, so a server "
+          "started without the launcher cannot show the pilot clip",
+          'SESSION_STIMULUS_MODE", "all"' in read("config.py"))
     check("an empty stimulus folder stops the run before the participant "
           "sits down",
           "NO STIMULI FOUND" in _rs and "exit /b 1" in _rs)
@@ -4579,8 +4613,16 @@ try:
     # guarding the collection machine.
     check("update is a subroutine, defined once",
           _start.count("\n:do_update") == 1)
-    check("...and called from both launch and the menu",
-          _start.count("call :do_update") == 2)
+    check("...and called ONLY from the menu: no automatic pull at launch "
+          "while collection runs (the instrument must not change between "
+          "participants)",
+          _start.count("call :do_update") == 1
+          and "NOT pulled" in _start)
+    _pre2 = read("windows/check_before_participant.bat")
+    check("pre-flight STOPS on a failed tracker self-check and on a "
+          "missing gaze model",
+          "TRACKER SELF-CHECK FAILED" in _pre2
+          and "base_32M.mnn is MISSING" in _pre2)
     _start_code = bat_code("START.bat")
     check("there is exactly one git pull and one dirty-tree guard",
           _start_code.count("git pull --ff-only") == 1
@@ -5659,6 +5701,296 @@ except Exception as exc:  # noqa: BLE001
     _blocked = environment_block(exc)
     check("the offset-fix claim across 20 varied scenarios", False,
           _blocked or repr(exc))
+
+
+# ── 25. Collection-readiness fixes (2026-10-02), EXECUTED not grepped ──
+print("\n[25] Collection-readiness fixes, executed")
+try:
+    import csv as _csv25
+    import json as _js25
+    import queue as _q25
+    import shutil as _sh25
+    import tempfile as _tf25
+
+    import numpy as _np25
+
+    import validation_stats as _vs25
+
+    # (a) claim_check applies the correction EXACTLY as finalisation did.
+    # The fixture uses the payload the production code writes (px/py/cy,
+    # no offset_* keys) — the old fixture had no correction at all, which
+    # is why the dropped-intercept bug (F19) passed for months.
+    import claim_check as _cc25
+    _tmp25 = _tf25.mkdtemp(prefix="ready_")
+    _corr = {"px": [0.97, -32.5], "py": [1.10, -148.9], "cy": 540.0,
+             "kind": "affine", "source": "test"}
+    _rect = {"x": 0, "y": 0, "w": 1920, "h": 1080}
+    _T0 = 1_800_000_000_000_000_000
+    _rows, _raw = [], []
+    _rng25 = _np25.random.default_rng(25)
+    for _i in range(300):
+        _x, _y = _rng25.uniform(100, 1800), _rng25.uniform(100, 1000)
+        _raw.append((_x, _y))
+        _rows.append({"timestamp": _T0 + _i * 33_000_000,
+                      "filtered_gaze_position_x": _x,
+                      "filtered_gaze_position_y": _y, "status": 1})
+    _csvp = os.path.join(_tmp25, "S_2026-10-02_100000.csv")
+    with open(_csvp, "w", newline="", encoding="utf-8") as _fh:
+        _w = _csv25.DictWriter(_fh, fieldnames=list(_rows[0]))
+        _w.writeheader()
+        _w.writerows(_rows)
+    for _kind, _c in (("affine", _corr), ("full-affine", {
+            "kind": "full-affine", "A": [[0.95, 0.04], [0.12, 1.08]],
+            "b": [970.0, 520.0], "cx": 960.0, "cy": 540.0})):
+        _man = {"session_csv": os.path.basename(_csvp),
+                "gain_correction": _vs25.payload(_c),
+                "stimuli": [{"stimulus": "c.mp4", "t_start_ns": _T0,
+                             "t_end_ns": _T0 + 300 * 33_000_000,
+                             "video_rect": _rect}]}
+        _mp25 = _csvp.replace(".csv", "_manifest.json")
+        with open(_mp25, "w", encoding="utf-8") as _fh:
+            _js25.dump(_man, _fh)
+        _s, _e = _cc25.load_gaze(_man, _mp25, "c.mp4")
+        _ex, _ey = _vs25.apply_points([p[0] for p in _raw],
+                                      [p[1] for p in _raw],
+                                      _vs25.from_payload(_man["gain_correction"]))
+        _dev = max(max(abs(s[1] * 1920 - ex), abs(s[2] * 1080 - ey))
+                   for s, ex, ey in zip(_s, _ex, _ey))
+        check("claim_check reproduces the applied %s correction exactly"
+              % _kind, not _e and _dev < 1e-6, "max dev %.3g px" % _dev)
+
+    # (b) media clock: a 0.4 s start-up stall must NOT shift the mapping.
+    import app as _app25
+    _off = 1234.5                                # server - browser, ms
+    _b0 = 1_900_000_000_000.0                    # browser epoch ms
+    _frames = [[_b0 + 400 + k * 40.0, k * 0.04] for k in range(750)]
+    _mc = {"frames": _frames, "offset_ms": _off, "duration_s": 30.0}
+    _q = _np25.array([(_b0 + _off + 400 + 1000.0) * 1e6,   # media 1.0 s
+                      (_b0 + _off + 0) * 1e6,              # before frame 0
+                      (_b0 + _off + 400 + 29960 + 1000) * 1e6])  # after end
+    _m = _app25._media_time_s(_q, _mc)
+    check("media clock maps a sample to the frame on screen at that time",
+          abs(_m[0] - 1.0) < 1e-6, str(_m))
+    check("...samples before the first presented frame come out negative "
+          "(the stall is not counted as video time)",
+          abs(_m[1] - (-0.4)) < 1e-6, str(_m[1]))
+    check("...and after the last frame beyond the duration",
+          _m[2] > 30.0, str(_m[2]))
+    check("no media log -> wall clock fallback (None)",
+          _app25._media_time_s(_q, None) is None
+          and _app25._media_time_s(_q, {"frames": _frames}) is None)
+
+    # (c) balanced allocation at every even N, whatever N ends up being.
+    _st = ["Stimuli_1_30s.mp4", "Stimuli_5_30s.mp4"]
+    _firsts = [_app25._block_order(k, _st)[0] for k in range(40)]
+    check("allocation is exactly balanced at every even N",
+          all(_firsts[:n].count(_st[0]) == n // 2 for n in range(2, 41, 2)))
+    check("allocation is reproducible (fixed seed)",
+          _firsts == [_app25._block_order(k, _st)[0] for k in range(40)])
+    _saved_af = _app25.ALLOCATION_FILE
+    _app25.ALLOCATION_FILE = os.path.join(_tmp25, "alloc.json")
+    try:
+        _a1 = _app25._allocate("P01", _st)
+        _a1b = _app25._allocate("P01", _st)
+        _a2 = _app25._allocate("P02", _st)
+        _r = _app25._allocate("REHEARSAL_01", _st)
+        check("a participant keeps their allocation; the next gets the "
+              "reverse order; rehearsal IDs use no slot",
+              _a1 == _a1b and _a1["order"] == list(reversed(_a2["order"]))
+              and _r is None and len(_app25._read_allocations()) == 2)
+    finally:
+        _app25.ALLOCATION_FILE = _saved_af
+
+    # (d) crops stay CENTRED on the gaze at the frame edge, marker drawn.
+    import gaze_vision as _gv25
+    _img = _np25.zeros((288, 512, 3), dtype=_np25.uint8)
+    _img[0:6, 0:6] = (0, 255, 0)
+    _cr = _gv25._crop_around(_img, 2, 2, radius=None)
+    _c = _cr[_cr.shape[0] // 2, _cr.shape[1] // 2]
+    check("a corner fixation's crop is centred on the gaze point",
+          tuple(int(v) for v in _c) == (0, 255, 0), str(_c))
+    _crm = _gv25._crop_around(_img, 256, 144, radius=20)
+    check("...and the gaze marker is drawn on the crop",
+          (_crm[..., 2] > 200).any())
+
+    # (e) IPC: a stale reply is discarded, the matching one returned.
+    import gaze_service as _gs25
+
+    class _FakeStdin:
+        def __init__(self, svc):
+            self.svc = svc
+
+        def write(self, s):
+            msg = _js25.loads(s)
+            self.svc._replies.put({"ok": True, "cmd": "telemetry",
+                                   "seq": msg["seq"] - 1})   # stale
+            self.svc._replies.put({"ok": True, "cmd": msg["cmd"],
+                                   "seq": msg["seq"], "mine": True})
+
+        def flush(self):
+            pass
+
+    _svc = _gs25.GazeService()
+    _svc._ensure_process = lambda: True
+
+    class _P:
+        pass
+    _svc._proc = _P()
+    _svc._proc.stdin = _FakeStdin(_svc)
+    _rep = _svc._send({"cmd": "begin_stimulus"}, 2)
+    check("a late reply to an earlier command is discarded, not returned",
+          bool(_rep and _rep.get("mine") and _rep.get("cmd")
+               == "begin_stimulus"), str(_rep))
+    check("the tracker echoes the sequence number",
+          'result["seq"] = msg.get("seq")' in read("tracker_service.py"))
+
+    # (f) finalisation: a LOCKED workbook (Windows + Excel) must not cost
+    # the manifest, and the full record is on disk before segmentation.
+    _sd = os.path.join(_tmp25, "sessions")
+    os.makedirs(_sd)
+    _saved = (_app25.session_dir_for, _app25.SESSION_EVENTS_DIR,
+              _app25._append_to_excel, _app25.gaze_service.end_session,
+              _app25._finish_telemetry)
+
+    def _fake_end(path):
+        _sh25.copy(_csvp, path)
+        _app25.gaze_service.last_end_session = {"ok": True}
+        return path
+
+    def _locked(*a, **k):
+        raise PermissionError(13, "file is open in Excel")
+
+    _app25.session_dir_for = lambda base: _sd
+    _app25.SESSION_EVENTS_DIR = os.path.join(_tmp25, "events")
+    _app25._append_to_excel = _locked
+    _app25.gaze_service.end_session = _fake_end
+    _app25._finish_telemetry = lambda sid: (None, None)
+    try:
+        _state = {"participant_id": "TEST_FIN", "session_uid": "u1",
+                  "stimulus_log": [{"stimulus": "c.mp4", "t_start_ns": _T0,
+                                    "t_end_ns": _T0 + 300 * 33_000_000,
+                                    "video_rect": _rect}],
+                  "validations": [{"phase": "pre_check",
+                                   "mean_err_deg": 1.5}],
+                  "correction": None}
+        _app25._finalize_session("sid-test", _state)
+        _mans = [f for f in os.listdir(_sd) if f.endswith("_manifest.json")]
+        with open(os.path.join(_sd, _mans[0]), encoding="utf-8") as _fh:
+            _fm = _js25.load(_fh)
+        check("a locked workbook does not lose the manifest",
+              _fm["validations"][0]["mean_err_deg"] == 1.5
+              and _fm["finalisation"]["stage"] == "complete"
+              and "c.mp4" in _fm["finalisation"].get("workbook_errors", {}))
+        check("...the per-stimulus metrics are still recorded",
+              (_fm.get("data_quality") or {}).get("c.mp4", {})
+              .get("samples") == 300)
+        check("...provenance (commit, packages, model, stimuli) is in it",
+              {"git_commit", "packages", "gaze_model", "stimuli", "config"}
+              <= set(_fm.get("provenance") or {}))
+        check("...and the browser is told the outcome, not a timer",
+              _state["finalisation_result"]["ok"] is True)
+    finally:
+        (_app25.session_dir_for, _app25.SESSION_EVENTS_DIR,
+         _app25._append_to_excel, _app25.gaze_service.end_session,
+         _app25._finish_telemetry) = _saved
+    # (h) viewing-condition check: post (dark) vs post_video (frozen
+    # stimulus frame), same grid, compared in the manifest; never fitted,
+    # never part of the inclusion figure.
+    import metrics_spec as _ms25
+    _vc = _app25._viewing_condition_check([
+        {"phase": "post", "mean_err_px": 100.0, "mean_err_deg_measured": 1.6,
+         "bias_y_px": -10.0},
+        {"phase": "post_video", "mean_err_px": 150.0,
+         "mean_err_deg_measured": 2.4, "bias_y_px": -60.0,
+         "background": {"stimulus": "c.mp4", "frame_time_s": 15.0}}])
+    check("post_video is compared with post on the same basis",
+          _vc["mean_err_px"]["diff"] == 50.0
+          and _vc["bias_y_px"]["diff"] == -50.0
+          and _vc["background"]["frame_time_s"] == 15.0, str(_vc))
+    _incl = _ms25.inclusion({
+        "validations": [
+            {"phase": "pre_check", "mean_err_px": 100, "mean_err_deg": 1.0,
+             "mean_err_deg_measured": 1.0},
+            {"phase": "post", "mean_err_px": 100, "mean_err_deg": 1.0,
+             "mean_err_deg_measured": 1.0},
+            {"phase": "post_video", "mean_err_px": 900,
+             "mean_err_deg": 9.0, "mean_err_deg_measured": 9.0}],
+        "data_quality": {}})
+    check("...and post_video never enters the inclusion figure",
+          _incl["accuracy_deg"] == 1.0 and _incl["include"])
+    _jssrc25 = read("static/js/experiment.js")
+    check("post_video uses grid B and runs after post over a frozen frame "
+          "of the last clip watched",
+          "post_video: VALIDATION_CHECK_GRID" in _jssrc25
+          and "run('post_video', finalize" in _jssrc25
+          and "this.stimuli[this.stimuli.length - 1]" in _jssrc25)
+    check("the first clip is pre-rolled before recording",
+          "await this.primePlayback(this.stimuli[0])" in _jssrc25)
+    check("Socket.IO is served locally (sessions do not need internet)",
+          os.path.isfile(os.path.join(BASE, "static", "js",
+                                      "socket.io.min.js")))
+
+    # (g) the Design A analysis runs end to end: inclusion, pooled
+    # %RIGHT, participant-cluster bootstrap, blind-first split.
+    import analysis_designA as _ad
+    import metrics_spec as _ms25
+    _cd = os.path.join(_tmp25, "coding")
+    os.makedirs(_cd, exist_ok=True)
+    _mans = {}
+    for _p, (_acc, _nr, _nw, _nu) in {"P01": (1.5, 8, 2, 0),
+                                      "P02": (2.0, 6, 2, 2),
+                                      "P03": (4.0, 9, 1, 0)}.items():
+        _sid = "%s_2026-10-02_100000" % _p
+        _mans[_sid] = {"participant_id": _p, "validations": [
+            {"phase": "pre_check", "mean_err_px": 100.0,
+             "mean_err_deg": _acc, "mean_err_deg_measured": _acc,
+             "targets": [{"err_px": 100.0, "n_samples": 40}] * 7},
+            {"phase": "post", "mean_err_px": 100.0, "mean_err_deg": _acc,
+             "mean_err_deg_measured": _acc,
+             "targets": [{"err_px": 100.0, "n_samples": 40}] * 7}],
+            "data_quality": {"c.mp4": {"gaze_samples_pct": 99.0,
+                                       "sampling_hz": 30.0}}}
+        _codes = {}
+        for _k, _v in enumerate(["right"] * _nr + ["wrong"] * _nw
+                                + ["unclear"] * _nu):
+            _codes["F%03d" % _k] = {"verdict": _v, "blind_first": _k == 0,
+                                    "wrong_note": "x" if _v == "wrong"
+                                    else None}
+        with open(os.path.join(_cd, "%s__c__JA.json" % _sid), "w",
+                  encoding="utf-8") as _fh:
+            _js25.dump({"coder": "JA", "session": _sid, "stimulus": "c.mp4",
+                        "codes": _codes}, _fh)
+    _saved_cd, _saved_lm = _ad.CODING_DIR, _ad._load_manifest
+    _ad.CODING_DIR = _cd
+    _ad._load_manifest = lambda s: _mans.get(s)
+    try:
+        _u, _ex = _ad.collect(None, False)
+        _po = _ad._pooled(_u)
+        check("Design A analysis: a session failing the 3.0 deg rule is "
+              "excluded with its reason",
+              any("P03" in e[0] and "accuracy" in e[2] for e in _ex), str(_ex))
+        check("...pooled %RIGHT = RIGHT/(RIGHT+WRONG), UNCLEAR separate",
+              _po["right"] == 14 and _po["wrong"] == 4
+              and _po["unclear"] == 2
+              and abs(_po["pct_right"] - 100 * 14 / 18) < 1e-9)
+        _ci = _ad._boot(_ad._by_pid(_u), lambda us: _ad._pooled(us)
+                        ["pct_right"], n_boot=500)
+        check("...participant-cluster bootstrap gives an interval around it",
+              _ci is not None and _ci[0] <= _po["pct_right"] <= _ci[1],
+              str(_ci))
+        check("...blind-first units are identified",
+              sum(1 for x in _u if x["blind_first"]) == 2)
+        check("the inclusion rule is ONE function with a fixed date",
+              callable(_ms25.inclusion)
+              and _ms25.INCLUSION.get("fixed_on") == "2026-10-02")
+    finally:
+        _ad.CODING_DIR, _ad._load_manifest = _saved_cd, _saved_lm
+    _sh25.rmtree(_tmp25, ignore_errors=True)
+except Exception as exc:  # noqa: BLE001
+    import traceback as _tb25
+    _blocked = environment_block(exc)
+    check("collection-readiness fixes execute", False,
+          _blocked or _tb25.format_exc()[-800:])
 
 
 # ── The summary must be LAST ──────────────────────────────────────────

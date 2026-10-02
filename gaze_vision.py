@@ -64,22 +64,41 @@ def _draw_marker(frame: "np.ndarray", x: int, y: int,
     cv2.circle(frame, (x, y), 3, (0, 0, 255), -1, cv2.LINE_AA)
 
 
-def _label(frame: "np.ndarray", text: str) -> None:
-    cv2.putText(frame, text, (8, 22), cv2.FONT_HERSHEY_SIMPLEX,
-                0.6, (0, 0, 0), 3, cv2.LINE_AA)
-    cv2.putText(frame, text, (8, 22), cv2.FONT_HERSHEY_SIMPLEX,
+LABEL_BAND_PX = 28
+
+
+def _label(frame: "np.ndarray", text: str) -> "np.ndarray":
+    """Return the frame with a caption band ABOVE it.
+
+    The caption used to be drawn onto the image, hiding whatever was in
+    the top-left corner — sometimes the very thing at the gaze marker.
+    """
+    band = np.zeros((LABEL_BAND_PX, frame.shape[1], 3), dtype=frame.dtype)
+    cv2.putText(band, text, (8, 20), cv2.FONT_HERSHEY_SIMPLEX,
                 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+    return np.vstack([band, frame])
 
 
-def _crop_around(frame: "np.ndarray", x: int, y: int) -> "np.ndarray":
-    """Square crop centred on (x, y), clamped to the frame."""
+def _crop_around(frame: "np.ndarray", x: int, y: int,
+                 radius: "int | None" = None) -> "np.ndarray":
+    """Square crop CENTRED on (x, y), padded with grey beyond the frame.
+
+    It used to be clamped inside the frame, which moved the gaze point
+    off-centre for every fixation in the outer bands (27 % of pilot
+    fixations) while the prompt said the crop was centred on the gaze.
+    The marker is drawn on the crop too, so the model never has to infer
+    where the gaze is from the crop's geometry.
+    """
     h, w = frame.shape[:2]
     half = max(32, int(w * CROP_FRACTION / 2))
-    x0 = min(max(0, x - half), max(0, w - 2 * half))
-    y0 = min(max(0, y - half), max(0, h - 2 * half))
-    crop = frame[y0:y0 + 2 * half, x0:x0 + 2 * half]
+    padded = cv2.copyMakeBorder(frame, half, half, half, half,
+                                cv2.BORDER_CONSTANT, value=(128, 128, 128))
+    cx, cy = x + half, y + half
+    crop = padded[cy - half:cy + half, cx - half:cx + half].copy()
     if crop.size == 0:
         return frame
+    if radius:
+        _draw_marker(crop, half, half, radius)
     return cv2.resize(crop, (CROP_OUTPUT_PX, CROP_OUTPUT_PX))
 
 
@@ -124,6 +143,7 @@ def sample_gaze_frames(
     error_px: "float | None" = None,
     with_crops: bool = True,
     draw_marker: bool = True,
+    video_w_screen_px: "float | None" = None,
 ) -> list[dict]:
     """Return gaze-annotated keyframes for the LLM pipeline.
 
@@ -153,12 +173,17 @@ def sample_gaze_frames(
         if not np.isfinite(duration) or duration <= 0:
             raise RuntimeError("No usable gaze timeline for this recording")
 
-        # Marker radius: scale measured screen-px error to output-frame px.
-        # (Screen px → output px ≈ frame_width / on-screen video width;
-        # unknown here, so a conservative 1/2.5 scale is applied. The
-        # radius is a lower-bounded visual cue, not a measurement.)
-        radius = 14 if error_px is None else int(
-            np.clip(error_px / 2.5, 10, 60))
+        # Marker radius = the measured screen-px error converted to
+        # output-frame px with the REAL on-screen video width. (A fixed
+        # 1/2.5 scale drew it 1.49x too large on the 1920-px rect while
+        # the prompt said the radius WAS the measured uncertainty.)
+        if error_px is None:
+            radius = 14
+        elif video_w_screen_px:
+            radius = int(np.clip(error_px * frame_width
+                                 / float(video_w_screen_px), 6, 120))
+        else:
+            radius = int(np.clip(error_px / 2.5, 10, 60))
 
         # ── Preferred path: fixation-based keyframes (I-DT) ──
         fixations: list[Fixation] = []
@@ -176,28 +201,40 @@ def sample_gaze_frames(
                 selected = sorted(selected, key=lambda f: -f.duration)
                 selected = sorted(selected[:max_frames],
                                   key=lambda f: f.t_start)
+            # Fixation IDs are assigned over ALL detected fixations (in time
+            # order) BEFORE any capping, so an ID names the same fixation
+            # in the model's answer, the manifest and the coding tool.
+            ids = {id(f): "F%03d" % (i + 1) for i, f in enumerate(fixations)}
             for fx in selected:
                 frame = _read_frame(cap, fx.t_mid, frame_width)
                 if frame is None:
                     continue
                 h, w = frame.shape[:2]
                 x, y = int(fx.nx * w), int(fx.ny * h)
-                crop_b64 = _encode_jpeg(_crop_around(frame, x, y)) \
+                crop_b64 = _encode_jpeg(_crop_around(
+                    frame, x, y, radius if draw_marker else None)) \
                     if with_crops else None
                 if draw_marker:
                     _draw_marker(frame, x, y, radius)
-                _label(frame, "t=%.1fs  fixation %dms"
-                       % (fx.t_mid, int(fx.duration * 1000)))
-                b64 = _encode_jpeg(frame)
+                fid = ids[id(fx)]
+                framed = _label(frame, "%s  t=%.1fs  fixation %dms"
+                                % (fid, fx.t_mid, int(fx.duration * 1000)))
+                b64 = _encode_jpeg(framed)
                 if b64 is None:
                     continue
                 frames.append({
+                    "fixation_id": fid,
                     "t": round(fx.t_mid, 1),
+                    "t_start": round(fx.t_start, 3),
+                    "t_end": round(fx.t_end, 3),
+                    "nx": round(fx.nx, 4),
+                    "ny": round(fx.ny, 4),
                     "b64": b64,
                     "status": "fixation",
                     "duration_s": round(fx.duration, 2),
                     "crop_b64": crop_b64,
                     "method": "fixation",
+                    "marker_radius_px": radius,
                 })
             if frames:
                 return frames
@@ -226,7 +263,8 @@ def sample_gaze_frames(
                     nx, ny = pt
                     if 0.0 <= nx <= 1.0 and 0.0 <= ny <= 1.0:
                         x, y = int(nx * w), int(ny * h)
-                        crop_b64 = _encode_jpeg(_crop_around(frame, x, y)) \
+                        crop_b64 = _encode_jpeg(_crop_around(
+                            frame, x, y, radius if draw_marker else None)) \
                             if with_crops else None
                         if draw_marker:
                             _draw_marker(frame, x, y, radius)
@@ -234,8 +272,7 @@ def sample_gaze_frames(
                     else:
                         status = "gaze off-video"
 
-            _label(frame, "t=%.1fs" % t)
-            b64 = _encode_jpeg(frame)
+            b64 = _encode_jpeg(_label(frame, "t=%.1fs" % t))
             if b64 is None:
                 continue
             frames.append({

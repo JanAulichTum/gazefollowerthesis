@@ -71,6 +71,7 @@ from config import (
     LLM_TIMEOUT_PER_FRAME_S,
     LLM_N_RUNS_MAX,
     LLM_WINDOW_SECONDS,
+    EVALUATION_FROM_DATE,
     MAX_VALIDATION_ERROR_DEG,
     MIN_GAZE_SAMPLES_PCT,
     MIN_SAMPLING_HZ,
@@ -129,12 +130,17 @@ def inject_globals():
         "asset_version": ASSET_VERSION,
         "test_mode": TEST_MODE,
         "current_year": datetime.now().year,
+        "local_socketio": os.path.isfile(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "static", "js",
+            "socket.io.min.js")),
     }
 
 # "threading" async mode: works on all Python versions (eventlet is
 # deprecated and incompatible with Python >= 3.12).  WebSocket transport
 # is provided by the `simple-websocket` package.
-socketio = SocketIO(app, async_mode="threading", cors_allowed_origins="*")
+# No wildcard CORS: the only legitimate client is the page this server
+# itself serves (same origin).
+socketio = SocketIO(app, async_mode="threading")
 
 # ---------------------------------------------------------------------------
 # GazeFollower tracker service (one shared instance — single-participant lab
@@ -159,6 +165,7 @@ _gazefollower_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 active_sessions: dict[str, dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
+_finalize_lock = threading.Lock()
 
 # =========================================================================
 # Data-persistence helpers
@@ -318,6 +325,167 @@ def _strip_unserialisable(obj):
     return obj
 
 
+def _write_json_atomic(path: str, obj) -> bool:
+    """Write JSON to a temp file, fsync, then os.replace onto *path*.
+
+    A crash, a full disk or a non-serialisable value can therefore never
+    leave a truncated manifest behind: either the old file or the complete
+    new one exists. Falls back to dropping unserialisable fields rather
+    than losing the record.
+    """
+    tmp = path + ".tmp"
+    for payload in (obj, None):
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                if payload is not None:
+                    json.dump(payload, fh, indent=2, default=_json_safe)
+                else:
+                    json.dump(_strip_unserialisable(obj), fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+            if payload is None:
+                logger.warning("JSON written in DEGRADED form: %s", path)
+            return True
+        except Exception:  # noqa: BLE001
+            logger.exception("Atomic JSON write failed: %s", path)
+    return False
+
+
+# ── Provenance: WHICH instrument produced a session ─────────────────────
+# Code, packages, model and stimuli can all change between participants
+# (an update, a reinstall, a missing model file that silently falls back
+# to GazeFollower's bundled network). Every manifest therefore states
+# them. Computed once per server start; cheap.
+_PROVENANCE: "dict | None" = None
+_PROVENANCE_PACKAGES = ("gazefollower", "MNN", "mediapipe", "numpy",
+                        "opencv-python", "opencv-contrib-python", "pandas",
+                        "openpyxl", "Flask", "Flask-SocketIO",
+                        "python-socketio", "pygame", "screeninfo", "psutil")
+
+
+def _sha256_file(path: str) -> "str | None":
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _provenance() -> dict:
+    global _PROVENANCE
+    if _PROVENANCE is not None:
+        return _PROVENANCE
+    import platform
+    import subprocess as _sp
+
+    base = os.path.dirname(os.path.abspath(__file__))
+    out: dict = {"python": sys.version.split()[0],
+                 "platform": platform.platform(),
+                 "machine": platform.machine()}
+    try:
+        out["git_commit"] = _sp.run(
+            ["git", "rev-parse", "HEAD"], cwd=base, capture_output=True,
+            text=True, timeout=10).stdout.strip() or None
+        dirty = _sp.run(["git", "status", "--porcelain",
+                         "--untracked-files=no"], cwd=base,
+                        capture_output=True, text=True, timeout=10).stdout
+        out["git_dirty"] = bool(dirty.strip())
+        out["git_dirty_files"] = [ln[3:] for ln in dirty.splitlines()][:30]
+    except Exception as exc:  # noqa: BLE001
+        out["git_error"] = str(exc)[:120]
+    try:
+        from importlib import metadata as _md
+
+        pk = {}
+        for name in _PROVENANCE_PACKAGES:
+            try:
+                pk[name] = _md.version(name)
+            except Exception:  # noqa: BLE001
+                pass
+        out["packages"] = pk
+    except Exception:  # noqa: BLE001
+        pass
+    # The gaze model that WILL load (same resolution rule as the tracker).
+    env_model = os.environ.get("GF_MODEL_PATH")
+    model_path = (env_model.strip() if env_model is not None
+                  else os.path.join(base, "models", "base_32M.mnn"))
+    if model_path and os.path.isfile(model_path):
+        out["gaze_model"] = {"path": os.path.basename(model_path),
+                             "sha256": _sha256_file(model_path)}
+    else:
+        out["gaze_model"] = {"path": None, "note": (
+            "custom model missing — GazeFollower's BUNDLED model is used, "
+            "which is a different network")}
+    out["stimuli"] = {f: _sha256_file(os.path.join(STIMULI_DIR, f))
+                      for f in discover_stimuli()}
+    out["config"] = {
+        "EVALUATION_FROM_DATE": EVALUATION_FROM_DATE,
+        "SESSION_STIMULUS_MODE": SESSION_STIMULUS_MODE,
+        "NOMINAL_SAMPLING_HZ": NOMINAL_SAMPLING_HZ,
+        "MIN_SAMPLING_HZ": MIN_SAMPLING_HZ,
+        "MAX_VALIDATION_ERROR_DEG": MAX_VALIDATION_ERROR_DEG,
+        "MIN_GAZE_SAMPLES_PCT": MIN_GAZE_SAMPLES_PCT,
+        "FIXATION_DISPERSION_NORM": FIXATION_DISPERSION_NORM,
+        "DEFAULT_SCREEN_DIAG_INCHES": DEFAULT_SCREEN_DIAG_INCHES,
+        "GEMINI_MODEL": GEMINI_MODEL,
+        "env": {k: os.environ.get(k) for k in (
+            "GF_PERF_MODE", "GF_PERF_PRIORITY", "GF_CAMERA_FIX",
+            "GF_TELEMETRY", "GF_CALI_MODE", "GF_MODEL_PATH",
+            "GF_MNN_BACKEND", "GF_SAMPLE_PATCH", "GF_FAKE_CAMERA",
+            "GF_FAKE_CALIBRATION", "TEST_MODE")},
+    }
+    _PROVENANCE = out
+    return out
+
+
+# ── Append-only event log, keyed by the LOGIN, not the socket ───────────
+# The socket state dies with a page reload; the Flask session cookie does
+# not. Every calibration, validation, correction change, rate decision
+# and stimulus event is appended here the moment it happens, so a repeat
+# validation after a reload is still visible (and counted) afterwards.
+SESSION_EVENTS_DIR = os.path.join(DATA_DIR, "session_events")
+
+
+def _session_event(state: dict, kind: str, **fields) -> None:
+    uid = (state or {}).get("session_uid")
+    if not uid:
+        return
+    rec = {"kind": kind, "at_utc": datetime.now(timezone.utc).isoformat(),
+           "t_ns": time.time_ns(),
+           "participant_id": (state or {}).get("participant_id")}
+    rec.update(fields)
+    try:
+        os.makedirs(SESSION_EVENTS_DIR, exist_ok=True)
+        with open(os.path.join(SESSION_EVENTS_DIR, "%s.jsonl" % uid), "a",
+                  encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, default=_json_safe) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+    except Exception:  # noqa: BLE001 — never lose a session over logging
+        logger.exception("Could not append session event %s", kind)
+
+
+def _read_session_events(uid: "str | None") -> list:
+    if not uid:
+        return []
+    path = os.path.join(SESSION_EVENTS_DIR, "%s.jsonl" % uid)
+    out = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    return out
+
+
 def finalize_gazefollower_session(
     participant_id: str,
     csv_path: str,
@@ -342,48 +510,15 @@ def finalize_gazefollower_session(
     # recordings of the same stimulus).
     session_id = os.path.splitext(os.path.basename(csv_path))[0]
 
-    # PROVISIONAL MANIFEST, written before any of the slow work.
-    #
-    # Finalisation re-reads the whole CSV once per stimulus and writes
-    # the manifest LAST, so it takes about a minute. Close the app inside
-    # that window - which looks entirely reasonable, the participant has
-    # finished and the screen says complete - and everything held in
-    # server memory is gone: the three validations, the distance, the
-    # correction, the rate gates. The gaze CSV survives and is useless
-    # without them.
-    #
-    # This writes those first. If finalisation completes, the full
-    # manifest replaces it a minute later. If it does not, the session is
-    # still analysable.
-    try:
-        _state = session_states.get(_sid_for_participant(participant_id)) \
-            if "_sid_for_participant" in globals() else None
-    except Exception:  # noqa: BLE001
-        _state = None
-    _provisional = {
-        "session_id": session_id,
-        "participant_id": participant_id,
-        "provisional": {
-            "written_at": datetime.now(timezone.utc).isoformat(),
-            "why": ("written before per-stimulus segmentation so that an "
-                    "interrupted finalisation still leaves the validations "
-                    "and the distance on disk"),
-            "complete": False,
-        },
-        "stimulus_log": stimulus_log,
-        "correction": correction,
-    }
-    try:
-        with open(csv_path.replace(".csv", "_manifest.json"), "w",
-                  encoding="utf-8") as _fh:
-            json.dump(_provisional, _fh, indent=2, default=_json_safe)
-        logger.info("Provisional manifest written for %s", session_id)
-    except Exception:  # noqa: BLE001
-        logger.exception("Could not write the provisional manifest")
-
+    # NOTE: the caller (_finalize_session) has ALREADY written the complete
+    # manifest — validations, distance, correction, rate gates, provenance —
+    # atomically, before this function does any slow or fragile work. What
+    # happens here only ADDS the per-stimulus metrics; if it fails or the
+    # app is closed half-way, the accuracy record is already on disk.
     if gaze_service.end_session(csv_path) is None:
         logger.error("GazeFollower session save failed — no data written.")
-        return {}
+        return {"__save_error__": "end_session failed (see tracker log); "
+                "raw samples may still be in ~/GazeFollower/tmp"}
 
     try:
         df = pd.read_csv(csv_path)
@@ -407,6 +542,7 @@ def finalize_gazefollower_session(
     counts: dict[str, Any] = {}
     events: dict = {}
     quality: dict[str, dict] = {}
+    workbook_errors: dict = {}
     for entry in stimulus_log:
         segment = df[
             (df["timestamp"] >= entry["t_start_ns"])
@@ -478,10 +614,41 @@ def finalize_gazefollower_session(
         # Relative time within the stimulus (seconds) — the main time
         # axis for analysis ("where in the video was the participant
         # looking at second X").
-        segment.insert(
-            3, "video_time_s",
-            ((segment["timestamp"] - entry["t_start_ns"]) / 1e9).round(3),
-        )
+        #
+        # WALL-CLOCK basis (time since the server heard "start"): kept as
+        # video_time_wall_s. It is NOT the video's own clock: in every
+        # pilot the first-presented clip's window ran 335-600 ms longer
+        # than the 30.000 s file, so the two diverge by up to ~0.5 s.
+        # When the browser logged the MEDIA clock (presented frames with
+        # their display times), video_time_s is taken from that instead;
+        # samples before the first or after the last presented frame are
+        # dropped from the analysis rows (they are not on any frame).
+        wall = ((segment["timestamp"] - entry["t_start_ns"]) / 1e9).round(3)
+        media = _media_time_s(segment["timestamp"].to_numpy(),
+                              entry.get("media_clock"))
+        if media is not None:
+            segment.insert(3, "video_time_s", pd.Series(
+                media, index=segment.index).round(3))
+            segment.insert(4, "video_time_wall_s", wall)
+            dur = float((entry.get("media_clock") or {}).get(
+                "duration_s") or 0) or None
+            keep = segment["video_time_s"] >= 0
+            if dur:
+                keep &= segment["video_time_s"] <= dur
+            quality[entry["stimulus"]]["outside_presented_frames"] = int(
+                (~keep).sum())
+            _mc = entry.get("media_clock") or {}
+            quality[entry["stimulus"]]["time_basis"] = (
+                "media clock (presented frames)"
+                if len(_mc.get("frames") or []) >= 10
+                else "media clock (timeupdate ticks, ~4 Hz)")
+            segment = segment[keep].copy()
+        else:
+            segment.insert(3, "video_time_s", wall)
+            quality[entry["stimulus"]]["time_basis"] = (
+                "wall clock (no media-clock log)")
+        if segment.empty:
+            continue
         # Human-readable wall-clock time. The raw `timestamp` column is
         # epoch NANOSECONDS (19 digits) — it only looks constant because
         # its leading digits change on the scale of months.
@@ -520,14 +687,23 @@ def finalize_gazefollower_session(
             if "gaze_position" in col:
                 segment[col] = pd.to_numeric(
                     segment[col], errors="coerce").round(2)
-        _append_to_excel(
-            GAZEFOLLOWER_DATA_FILE, segment, list(segment.columns),
-            _gazefollower_lock,
-        )
-        logger.info(
-            "Saved %d GazeFollower samples – participant=%s, stimulus=%s",
-            len(segment), participant_id, entry["stimulus"],
-        )
+        # The workbook is a DERIVED convenience copy (the session CSV +
+        # manifest are the record). A failure here — the file open in Excel
+        # on Windows locks it, a full disk — must not abort finalisation;
+        # it is recorded and the workbook can be rebuilt with tidy_data.py.
+        try:
+            _append_to_excel(
+                GAZEFOLLOWER_DATA_FILE, segment, list(segment.columns),
+                _gazefollower_lock,
+            )
+            logger.info(
+                "Saved %d GazeFollower samples – participant=%s, stimulus=%s",
+                len(segment), participant_id, entry["stimulus"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Workbook append FAILED for %s",
+                             entry["stimulus"])
+            workbook_errors[entry["stimulus"]] = repr(exc)[:300]
 
         # ── RQ2 event metrics, PERSISTED ─────────────────────────────
         # Previously these were computed only inside quality_report.py,
@@ -545,7 +721,53 @@ def finalize_gazefollower_session(
     )
     counts["__quality__"] = quality
     counts["__events__"] = events
+    counts["__workbook_errors__"] = workbook_errors
+    counts["__tracker_save__"] = getattr(gaze_service, "last_end_session",
+                                         None)
     return counts
+
+
+def _media_time_s(ts_ns, media_clock: "dict | None"):
+    """Map gaze timestamps (epoch ns, server clock) to the VIDEO's clock.
+
+    ``media_clock["frames"]`` holds one entry per frame the browser
+    actually presented: ``[epoch_ms_browser, media_time_s]``. The browser
+    and server clocks are aligned with ``offset_ms`` (server − browser,
+    from round-trip pings). Between presented frames the media time is
+    interpolated; outside them it is extrapolated at real-time speed, so
+    samples before the first frame come out negative and samples after
+    the last frame come out beyond the duration (callers drop both).
+    During a stall the media time stays constant while wall time runs,
+    which is exactly what makes this better than the wall-clock window.
+
+    Returns a numpy array, or None if no usable log exists.
+    """
+    import numpy as np
+
+    mc = media_clock or {}
+    frames = mc.get("frames") or []
+    if len(frames) < 10:
+        # Frame callbacks are throttled when the page is not the visible
+        # surface; the ~4 Hz timeupdate ticks are the coarser fallback.
+        frames = mc.get("ticks") or []
+    if len(frames) < 10 or mc.get("offset_ms") is None:
+        return None
+    try:
+        f = np.asarray(frames, dtype=float)
+        order = np.argsort(f[:, 0], kind="stable")
+        f = f[order]
+        t_ms = f[:, 0] + float(mc["offset_ms"])      # → server clock
+        m_s = f[:, 1]
+        q_ms = np.asarray(ts_ns, dtype=float) / 1e6
+        out = np.interp(q_ms, t_ms, m_s)
+        before = q_ms < t_ms[0]
+        after = q_ms > t_ms[-1]
+        out[before] = m_s[0] - (t_ms[0] - q_ms[before]) / 1000.0
+        out[after] = m_s[-1] + (q_ms[after] - t_ms[-1]) / 1000.0
+        return out
+    except Exception:  # noqa: BLE001
+        logger.exception("Media-clock mapping failed; using wall clock")
+        return None
 
 
 # =========================================================================
@@ -589,6 +811,22 @@ def login():
     if not participant_id:
         flash("Please enter a participant ID.", "error")
         return redirect(url_for("index"))
+    # The ID becomes a file name, a session label and the allocation key,
+    # so it must be one unambiguous token. Case-normalised for NEW IDs:
+    # "p01" and "P01" are the same person, not two allocations.
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_-]{2,32}", participant_id):
+        flash("Participant ID: 2-32 letters, digits, _ or - (no spaces).",
+              "error")
+        return redirect(url_for("index"))
+    if get_participant(participant_id) is None:
+        participant_id = participant_id.upper()
+    # One id per LOGIN: the append-only event log is keyed by it, so
+    # attempts made before a page reload stay attached to the session.
+    import uuid as _uuid
+    session["session_uid"] = "%s_%s_%s" % (
+        _safe_filename(participant_id),
+        datetime.now().strftime("%Y%m%d_%H%M%S"), _uuid.uuid4().hex[:8])
 
     if not password:
         flash("Please enter a password.", "error")
@@ -729,16 +967,83 @@ def _apply_test_options(stimuli: list[str]) -> "tuple[list[str], int | None]":
 
 
 def _stimuli_for(participant_id: str) -> list[str]:
-    """Deterministically shuffled stimulus list for a participant.
+    """Stimulus order for a participant.
+
+    EVALUATION participants get a BALANCED allocation (see _allocate):
+    a hash of the ID alone is deterministic but not balanced — with IDs
+    P1..P15 it splits 12/3 — and N is not fixed in advance.
+
+    Rehearsal/test IDs (config.NON_EVALUATION_ID_PREFIXES) keep the old
+    hash shuffle, so they never consume an allocation slot.
 
     NOTE: built-in hash() is salted per process (PYTHONHASHSEED), so a
-    cryptographic digest is used instead to guarantee the same order
-    for the same participant across server restarts.
+    cryptographic digest is used for the shuffle.
     """
     stimulus_list = discover_stimuli()
+    alloc = _allocate(participant_id, stimulus_list)
+    if alloc:
+        return list(alloc["order"])
     seed = int(hashlib.sha256(participant_id.encode("utf-8")).hexdigest(), 16)
     random.Random(seed).shuffle(stimulus_list)
     return stimulus_list
+
+
+# ── Balanced allocation (permuted blocks of 2) ──────────────────────────
+# Enrolment k (0-based, in order of first allocation) belongs to block
+# k // 2. Each block's first order is drawn from a seed fixed BEFORE
+# collection; the second member gets the reverse. The split is therefore
+# exact at every even N and off by one at every odd N, whatever N ends
+# up being. The log is append-only and is the record of intended order.
+ALLOCATION_SEED = 20261002
+ALLOCATION_FILE = os.path.join(DATA_DIR, "allocation_log.json")
+_allocation_lock = threading.Lock()
+
+
+def _block_order(k: int, stimuli: list) -> list:
+    first = sorted(stimuli)
+    random.Random(ALLOCATION_SEED + k // 2).shuffle(first)
+    return first if k % 2 == 0 else list(reversed(first))
+
+
+def _read_allocations() -> list:
+    try:
+        with open(ALLOCATION_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _allocation_lookup(participant_id: str) -> "dict | None":
+    for a in _read_allocations():
+        if a.get("participant_id") == participant_id:
+            return a
+    return None
+
+
+def _allocate(participant_id: str, stimuli: list) -> "dict | None":
+    """The participant's allocation, created on first request."""
+    from config import NON_EVALUATION_ID_PREFIXES
+
+    if TEST_MODE or not participant_id or str(participant_id).upper(
+            ).startswith(NON_EVALUATION_ID_PREFIXES) or len(stimuli) != 2:
+        return None
+    with _allocation_lock:
+        allocs = _read_allocations()
+        for a in allocs:
+            if a.get("participant_id") == participant_id:
+                return a
+        k = len(allocs)
+        rec = {"participant_id": participant_id, "enrolment_no": k,
+               "block": k // 2, "order": _block_order(k, stimuli),
+               "seed": ALLOCATION_SEED,
+               "allocated_at_utc": datetime.now(timezone.utc).isoformat()}
+        allocs.append(rec)
+        os.makedirs(DATA_DIR, exist_ok=True)
+        _write_json_atomic(ALLOCATION_FILE, allocs)
+        logger.info("Allocation: %s -> enrolment %d, order %s",
+                    participant_id, k, rec["order"])
+        return rec
 
 
 @app.route("/api/stimuli")
@@ -817,6 +1122,19 @@ def coder():
     return render_template("coder.html")
 
 
+#: Share of units coded BLIND-FIRST (coder names what is under the marker
+#: before the model's claim is shown). Selected mechanically from a hash
+#: of (session, stimulus, unit) — the coder cannot choose, and the same
+#: unit is always in or out.
+BLIND_FIRST_FRACTION = 0.20
+
+
+def _blind_first(session: str, stimulus: str, unit_id: str) -> bool:
+    h = hashlib.sha256(("%s|%s|%s" % (session, stimulus, unit_id))
+                       .encode("utf-8")).hexdigest()
+    return (int(h[:8], 16) / 0xFFFFFFFF) < BLIND_FIRST_FRACTION
+
+
 @app.route("/api/coding_units")
 def api_coding_units():
     """The fixations to code, each with the model's claim about it."""
@@ -853,6 +1171,7 @@ def api_coding_units():
     mpath = find_manifest(session) or os.path.join(
         GAZEFOLLOWER_CSV_DIR, session + "_manifest.json")
     accuracy_deg = None
+    fixations_sent = None
     if os.path.isfile(mpath):
         try:
             with open(mpath, encoding="utf-8") as fh:
@@ -860,6 +1179,7 @@ def api_coding_units():
             _blk = (man.get("llm") or {}).get(stimulus) or {}
             claims = _blk.get("structured") or []
             frame_times = _blk.get("frame_times") or []
+            fixations_sent = _blk.get("fixations_sent") or None
             if claims:
                 claims_source = "session manifest"
             import claim_check
@@ -912,6 +1232,50 @@ def api_coding_units():
             return True          # unknown: assume yes rather than accuse
         return any(abs(float(t) - mid) <= 0.25 for t in frame_times)
 
+    # ── DESIGN A UNITS: exactly the fixations the model was shown ───────
+    # When the feedback run stored its fixation list (with IDs), the coder
+    # codes THOSE units and each is joined to the claim carrying the same
+    # fixation_id — never to a re-detected list whose indices could shift,
+    # and never to the nearest claim in time. Older (pilot) runs fall
+    # through to the time-matched path below.
+    if fixations_sent:
+        by_id = {str(c.get("fixation_id")): c for c in claims
+                 if isinstance(c, dict) and c.get("fixation_id")}
+        units = []
+        for i, f in enumerate(fixations_sent):
+            fid = str(f.get("fixation_id"))
+            c = by_id.get(fid)
+            units.append({
+                "unit_id": fid, "fixation_id": fid, "index": i,
+                "shown_to_model": True,
+                "t_start": f.get("t_start"), "t_end": f.get("t_end"),
+                "t_mid": f.get("t"),
+                "duration_ms": int(1000 * float(f.get("duration_s") or 0)),
+                "x": f.get("nx"), "y": f.get("ny"),
+                # Same ring as the model saw: radius as a fraction of the
+                # 512-px keyframe width.
+                "marker_radius_frac": (float(f["marker_radius_px"]) / 512.0
+                                       if f.get("marker_radius_px") else None),
+                "model_claim": (c or {}).get("attended"),
+                "model_bbox": (c or {}).get("bbox"),
+                "model_confidence": (c or {}).get("confidence"),
+                "blind_first": _blind_first(session, stimulus, fid),
+            })
+        n_claimed = sum(1 for u in units if u["model_claim"])
+        return {"units": units, "stimulus": stimulus,
+                "unit_basis": "fixations sent to the model (joined by ID)",
+                "n_shown_to_model": len(units),
+                "n_frames_sent": len(units),
+                "participant": participant, "session": session,
+                "accuracy_deg": accuracy_deg,
+                "n_claims": len(claims), "claims_source": claims_source,
+                "n_matched": n_claimed,
+                "match_warning": (None if n_claimed == len(units) else
+                                  "%d of %d fixations have no claim with "
+                                  "their ID — the model skipped them; code "
+                                  "them as the protocol says."
+                                  % (len(units) - n_claimed, len(units)))}
+
     units = []
     for i, f in enumerate(fixations):
         mid = f.t_start + (f.duration / 2.0)
@@ -919,6 +1283,9 @@ def api_coding_units():
         near = [matched] if matched else []
         shown = _was_shown(mid)
         units.append({
+            "unit_id": "t%.3f" % f.t_start,
+            "blind_first": _blind_first(session, stimulus,
+                                        "t%.3f" % f.t_start),
             "shown_to_model": shown,
             "index": i,
             "t_start": round(f.t_start, 3),
@@ -983,12 +1350,24 @@ def api_coding_save():
         # different instructions are not the same variable, so a file
         # without this cannot safely be pooled with another.
         "instructions": payload.get("instructions"),
+        "protocol": payload.get("protocol"),
+        "blind_first_fraction": BLIND_FIRST_FRACTION,
     }
+    if not _write_json_atomic(path, record):
+        return {"ok": False, "error": "could not write %s" % path}, 500
+    # Append-only history: a later save can never silently erase an
+    # earlier verdict (e.g. a reload that loaded nothing, then saved).
     try:
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(record, fh, indent=2)
-    except OSError as exc:
-        return {"ok": False, "error": str(exc)}, 500
+        with open(path.replace(".json", ".history.jsonl"), "a",
+                  encoding="utf-8") as fh:
+            fh.write(json.dumps({"saved_utc": record["saved_utc"],
+                                 "last_unit": payload.get("last_unit"),
+                                 "last_code": (record["codes"] or {}).get(
+                                     payload.get("last_unit")),
+                                 "n_codes": len(record["codes"])},
+                                default=_json_safe) + "\n")
+    except OSError:
+        logger.exception("Coding history append failed")
     logger.info("Coding saved: %s (%d units)", os.path.basename(path),
                 len(record["codes"]))
     return {"ok": True, "path": os.path.basename(path),
@@ -1486,9 +1865,41 @@ def _loggable_parts(parts: list) -> list:
     return out
 
 
+#: Metadata of the most recent Gemini call on this thread (finish reason,
+#: served model version, usage, latency) for the caller to persist.
+_gemini_meta = threading.local()
+
+
 def _call_gemini(api_key: str, parts: "str | list",
                  step: str = "call", context: "dict | None" = None,
                  max_tokens: int = 4000) -> str:
+    """Logged wrapper: EVERY attempt reaches the audit log, failures too."""
+    _gemini_meta.last = {}
+    t0 = time.monotonic()
+    try:
+        return _call_gemini_inner(api_key, parts, step, context, max_tokens)
+    except Exception as exc:  # noqa: BLE001
+        body = ""
+        if isinstance(exc, urllib.error.HTTPError):
+            try:
+                body = exc.read().decode("utf-8", errors="replace")[:500]
+            except Exception:  # noqa: BLE001
+                body = ""
+        _log_llm_call({
+            "step": step, "model": GEMINI_MODEL, "failed": True,
+            "error": repr(exc)[:300], "http_body": body or None,
+            "latency_s": round(time.monotonic() - t0, 2),
+            "requested_at_utc": datetime.now(timezone.utc).isoformat(),
+            "context": context or {},
+            "request_parts": _loggable_parts(
+                parts if isinstance(parts, list) else [{"text": parts}]),
+        })
+        raise
+
+
+def _call_gemini_inner(api_key: str, parts: "str | list",
+                       step: str = "call", context: "dict | None" = None,
+                       max_tokens: int = 4000) -> str:
     """Google Gemini API call against the PINNED model (stdlib only).
 
     The model is pinned via ``config.GEMINI_MODEL`` — a methods thesis
@@ -1519,6 +1930,7 @@ def _call_gemini(api_key: str, parts: "str | list",
 
     data = None
     used_config = None
+    _t0 = time.monotonic()
     for body in (body_fast, body_plain):
         req = urllib.request.Request(
             "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -1571,9 +1983,23 @@ def _call_gemini(api_key: str, parts: "str | list",
         text += ("\n\n*(Output was truncated by the token limit — "
                  "treat this run as incomplete and regenerate.)*")
 
+    _gemini_meta.last = {
+        "finish_reason": finish_reason,
+        # What Google actually served behind the pinned name — the only
+        # way to see a silent model update.
+        "model_version": data.get("modelVersion"),
+        "usage": data.get("usageMetadata"),
+        "latency_s": round(time.monotonic() - _t0, 2),
+        "generation_config": used_config,
+    }
     _log_llm_call({
         "step": step,
         "model": GEMINI_MODEL,
+        "model_version_served": data.get("modelVersion"),
+        "usage": data.get("usageMetadata"),
+        "latency_s": _gemini_meta.last["latency_s"],
+        "response_id": data.get("responseId"),
+        "prompt_feedback": data.get("promptFeedback"),
         "generation_config": used_config,
         "finish_reason": finish_reason,
         "requested_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -1604,7 +2030,8 @@ def _session_validation_error(session_id: str) -> "dict | None":
     except (OSError, ValueError):
         return None
     validations = [v for v in (manifest.get("validations") or [])
-                   if v.get("mean_err_px") is not None]
+                   if v.get("mean_err_px") is not None
+                   and v.get("phase") != "post_video"]
     if not validations:
         return None
     # The workbook data is written WITH the gain correction applied, so
@@ -1765,6 +2192,19 @@ def api_llm_feedback():
     frames: list = []
     clean_frames: list = []
     video_file = os.path.join(STIMULI_DIR, stimulus)
+    # On-screen width of the video content rect for THIS recording, so the
+    # marker radius is the measured error at the frame's real scale.
+    video_w_screen = None
+    try:
+        _mp = find_manifest(session)
+        if _mp:
+            with open(_mp, encoding="utf-8") as _fh:
+                _m = json.load(_fh)
+            _e = next((s for s in _m.get("stimuli") or []
+                       if s.get("stimulus") == stimulus), None)
+            video_w_screen = ((_e or {}).get("video_rect") or {}).get("w")
+    except Exception:  # noqa: BLE001
+        video_w_screen = None
     if os.path.isfile(video_file):
         try:
             from gaze_vision import sample_gaze_frames
@@ -1772,6 +2212,7 @@ def api_llm_feedback():
             frames = sample_gaze_frames(
                 video_file, df, max_frames=LLM_MAX_FRAMES,
                 error_px=error_px, with_crops=True,
+                video_w_screen_px=video_w_screen,
             )
             logger.info(
                 "Prepared %d keyframes (%s) for LLM feedback",
@@ -1781,7 +2222,7 @@ def api_llm_feedback():
                 clean_frames = sample_gaze_frames(
                     video_file, df, max_frames=LLM_MAX_FRAMES,
                     error_px=error_px, with_crops=False,
-                    draw_marker=False,
+                    draw_marker=False, video_w_screen_px=video_w_screen,
                 )
         except Exception:
             logger.exception("Frame annotation failed — stats-only feedback")
@@ -1841,8 +2282,11 @@ def api_llm_feedback():
     if frames:
         fixation_based = frames[0]["method"] == "fixation"
         parts.append({"text": (
+            # No participant ID: it is not needed for the task, it would
+            # make the prompt differ between participants, and it is an
+            # identifier sent to a third party.
             "You are assisting an eye-tracking researcher. A participant "
-            f"(ID: {participant}) watched the video stimulus '{stimulus}' "
+            f"watched the video stimulus '{stimulus}' "
             f"({duration:.1f} s, {len(df)} gaze samples). Below are "
             + ("keyframes captured at DETECTED FIXATIONS (sustained "
                "attention); each label gives the fixation duration."
@@ -1851,14 +2295,18 @@ def api_llm_feedback():
             + " On each full frame, a RED CIRCLE WITH A WHITE RING marks "
             "where the participant was looking; the circle radius "
             "reflects the measurement uncertainty (" + uncertainty_text +
-            "). After each full frame, a ZOOMED CROP of the region "
-            "around the gaze point is provided — use it to identify the "
-            "attended object precisely. Frames labelled 'gaze off-video' "
+            "). After each full frame, a ZOOMED CROP centred on the gaze "
+            "point, with the same marker drawn on it, is provided — use "
+            "it to identify the object under the marker precisely. Grey "
+            "areas in a crop lie outside the video. Frames labelled "
+            "'gaze off-video' "
             "mean the participant looked outside the video; 'no gaze "
             "data' means tracking dropped out briefly."
         )})
         for fr in frames:
             label = "Frame at t=%.1f s — %s" % (fr["t"], fr["status"])
+            if fr.get("fixation_id"):
+                label = "Fixation %s — %s" % (fr["fixation_id"], label)
             if fr.get("duration_s"):
                 label += " (%.0f ms)" % (fr["duration_s"] * 1000)
             parts.append({"text": label + ":"})
@@ -1957,9 +2405,10 @@ def api_llm_feedback():
             "\n\nYour tasks:\n"
             "1. For EVERY keyframe above (each one is a single fixation), "
             "write EXACTLY ONE short sentence in a bullet list:\n"
-            "'t=<time> s (<duration> ms): <what the participant looked "
-            "at>' — name the specific object/person/area under the gaze "
-            "marker, using the zoomed crop to identify it. Given the "
+            "'F<nnn> t=<time> s (<duration> ms): <the object/person/area "
+            "under the gaze marker>' — name the specific object/person/"
+            "area under the marker, using the zoomed crop to identify it. "
+            "Given the "
             "stated measurement uncertainty, name the general "
             "object/area rather than making over-precise claims. Do not "
             "skip, merge, or reorder fixations.\n"
@@ -1969,7 +2418,9 @@ def api_llm_feedback():
             "notation — write times plainly, e.g. 't=4.5 s'.\n"
             "3. AFTER the prose, output a machine-readable summary as a "
             "fenced code block starting with ```json — a JSON array with "
-            "ONE object PER FIXATION, same order: [{\"t_start\": <s>, "
+            "ONE object PER FIXATION, same order: [{\"fixation_id\": "
+            "\"<the F-number from that frame's label, e.g. F007>\", "
+            "\"t_start\": <s>, "
             "\"t_end\": <s>, \"attended\": \"<object/area>\", "
             "\"bbox\": [x, y, w, h], "
             "\"criteria_met\": <true|false|null>, \"confidence\": "
@@ -2085,6 +2536,28 @@ def api_llm_feedback():
                 "structured": _extract_structured(text),
             })
         first = runs[0]
+        meta = dict(getattr(_gemini_meta, "last", None) or {})
+        # A truncated, blocked or unparseable answer is NOT a result. It
+        # used to be persisted anyway and overwrote the good claims the
+        # coder works from. Record the failed run, keep the old result.
+        _parsed = first["structured"]
+        _valid_result = (isinstance(_parsed, list) and len(_parsed) > 0
+                         and meta.get("finish_reason") in (None, "STOP"))
+        if detail == "fixations" and _valid_result and frames:
+            _ids = {str(c.get("fixation_id")) for c in _parsed
+                    if isinstance(c, dict)}
+            _sent = {f.get("fixation_id") for f in frames}
+            _valid_result = bool(_ids & _sent)
+        if not _valid_result:
+            logger.error("LLM result NOT persisted (finish=%s, parsed=%s) — "
+                         "the previous result is kept", meta.get(
+                             "finish_reason"), type(_parsed).__name__)
+            return {"feedback": first["feedback"], "structured": _parsed,
+                    "error": "The model's answer was incomplete or "
+                             "unparseable (finish reason %s); it was logged "
+                             "but NOT saved as the session's result. "
+                             "Generate again." % meta.get("finish_reason"),
+                    "model": GEMINI_MODEL}, 502
         # RQ3's primary outcome belongs in the session record, not in a
         # log directory. Until now the feedback was returned to the
         # browser and written to data/llm_logs/, so llm_model_id,
@@ -2111,6 +2584,19 @@ def api_llm_feedback():
             # of leaving it to be discovered by a coder wondering why
             # the tail is nonsense.
             "frame_times": [f.get("t") for f in frames],
+            # The EXACT units the model judged, with IDs. The coding tool
+            # codes these (joined to claims by fixation_id), never a
+            # re-detected list whose indices could have shifted.
+            "fixations_sent": [{k: f.get(k) for k in (
+                "fixation_id", "t", "t_start", "t_end", "nx", "ny",
+                "duration_s", "marker_radius_px")} for f in frames],
+            "model_version_served": meta.get("model_version"),
+            "finish_reason": meta.get("finish_reason"),
+            "usage": meta.get("usage"),
+            "latency_s": meta.get("latency_s"),
+            "prompt_sha256": hashlib.sha256(json.dumps(
+                [p.get("text") for p in parts if "text" in p]
+            ).encode("utf-8")).hexdigest(),
             "n_fixations_total": len(_all_fix_times) if _all_fix_times
             else None,
             "frames_dropped": (len(_all_fix_times) - len(frames))
@@ -2318,15 +2804,53 @@ def handle_connect():
     # carried across or they silently never reach the record.
     if session.get("conditions"):
         state["conditions"] = session["conditions"]
+    state["session_uid"] = session.get("session_uid")
+    state["screen_diag_assumed"] = session.get("screen_diag_assumed")
+    state["user_agent"] = request.headers.get("User-Agent")
+    if state["session_uid"]:
+        prior = _read_session_events(state["session_uid"])
+        _session_event(state, "socket_connected", sid=sid,
+                       reconnect=bool(prior),
+                       user_agent=state["user_agent"])
     logger.info("SocketIO connected: sid=%s, participant=%s", sid, pid)
     _start_telemetry(sid, pid)
 
 
+def _viewing_condition_check(validations: list) -> "dict | None":
+    """post (dark screen) vs post_video (frozen stimulus frame), same grid.
+
+    Both are measured with the same correction, seconds apart, so their
+    difference isolates the viewing condition: does the tracker err
+    differently on a bright classroom scene than on the dark validation
+    screen? Positive diff = worse over the video. The signed bias shift
+    says in which direction (e.g. dy < 0: gaze reads higher on video).
+    """
+    post = [v for v in validations if v.get("phase") == "post"]
+    vid = [v for v in validations if v.get("phase") == "post_video"]
+    if not post or not vid:
+        return None
+    a, b = post[0], vid[0]
+
+    def _g(v, k):
+        x = v.get(k)
+        return float(x) if isinstance(x, (int, float)) else None
+
+    out = {"background": b.get("background")}
+    for key in ("mean_err_px", "mean_err_deg", "mean_err_deg_measured",
+                "bias_x_px", "bias_y_px"):
+        pa, pb = _g(a, key), _g(b, key)
+        out[key] = {"post": pa, "post_video": pb,
+                    "diff": round(pb - pa, 3) if None not in (pa, pb)
+                    else None}
+    return out
+
+
 def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
     """Save & segment the GazeFollower session recording (idempotent)."""
-    if state.get("finalized") or not state.get("stimulus_log"):
-        return {}
-    state["finalized"] = True
+    with _finalize_lock:
+        if state.get("finalized") or not state.get("stimulus_log"):
+            return {}
+        state["finalized"] = True
 
     # Stop and write telemetry FIRST, so its summary is available to the
     # manifest built below and the file exists even if segmentation
@@ -2359,17 +2883,8 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
     while os.path.exists(csv_path):   # same participant, same second
         csv_path = os.path.join(out_dir, "%s_run%d.csv" % (base, n))
         n += 1
-    counts = finalize_gazefollower_session(
-        participant_id, csv_path, state["stimulus_log"],
-        correction=state.get("correction"),
-    )
-    quality = counts.pop("__quality__", {})
-
-    # Per-stimulus pass/fail against the PREREGISTERED quality threshold
-    for q in quality.values():
-        q["passes_gaze_samples_threshold"] = (
-            q.get("gaze_samples_pct", 0.0) >= MIN_GAZE_SAMPLES_PCT
-        )
+    counts: dict = {}
+    quality: dict = {}
 
     # Validation verdicts (pre/post accuracy vs. preregistered threshold)
     validations = list(state.get("validations", []))
@@ -2386,6 +2901,29 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
         "finalized_at_utc": datetime.now(timezone.utc).isoformat(),
         "session_csv": os.path.basename(csv_path),
         "test_mode": TEST_MODE,
+        # "pre-segmentation" until the per-stimulus metrics are added; a
+        # manifest stuck at that stage still holds the full accuracy
+        # record and can be completed with rederive_session.py.
+        "finalisation": {"stage": "pre-segmentation"},
+        # WHICH instrument: code commit, packages, model and stimulus
+        # hashes, config snapshot, browser.
+        "provenance": dict(_provenance(),
+                           browser_user_agent=state.get("user_agent"),
+                           screen_diag_assumed=state.get(
+                               "screen_diag_assumed")),
+        "session_uid": state.get("session_uid"),
+        # Append-only record of everything that happened under this login,
+        # INCLUDING attempts made before a page reload (which the socket
+        # state no longer holds).
+        "event_log": _read_session_events(state.get("session_uid")),
+        # Dark-screen vs frozen-video-frame accuracy on the same grid,
+        # measured back to back after the videos.
+        "viewing_condition_check": _viewing_condition_check(validations),
+        "stimuli_not_recorded": state.get("stimuli_not_recorded") or [],
+        "calibration_epochs": state.get("calibration_epoch", 0),
+        "rate_gate_decisions": state.get("rate_gate_decisions") or [],
+        "rate_gate_post_video": state.get("rate_gate_post_video"),
+        "allocation": _allocation_lookup(participant_id),
         "sample_counts": counts,
         # Tobii-style data-loss metrics per stimulus:
         # valid_pct = successful estimations / captured frames (≈100 %
@@ -2438,7 +2976,7 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
         # each carrying the caveat that makes it interpretable at this
         # sampling rate. Previously computed only in quality_report.py and
         # never persisted.
-        "events": counts.get("__events__"),
+        "events": None,
         # Recording conditions, captured at login. RQ1 asks about
         # varying recording conditions; this is the only record of them.
         "conditions": state.get("conditions"),
@@ -2476,33 +3014,67 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
                            if s.get("stimulus")],
     }
     _manifest_path = csv_path.replace(".csv", "_manifest.json")
+
+    # ── 1. THE RECORD FIRST. Everything held only in server memory —
+    # validations, distance, correction, rate gates, provenance — goes to
+    # disk atomically BEFORE the slow, failure-prone work (tracker save,
+    # CSV re-read, workbook rewrite). Previously the manifest came LAST,
+    # so a locked workbook, a full disk or closing the server in that
+    # minute lost the accuracy record.
+    first_ok = _write_json_atomic(_manifest_path, manifest)
+    if not first_ok:
+        logger.error("MANIFEST COULD NOT BE WRITTEN for %s — see above", base)
+    _session_event(state, "manifest_written", stage="pre-segmentation",
+                   ok=first_ok, path=os.path.basename(_manifest_path))
+
+    # ── 2. Save the tracker data and segment it per stimulus.
     try:
-        # default= and a broad except, both deliberately.
-        #
-        # This caught only OSError. Anything else — a numpy scalar from
-        # the iris measurement, a set, a datetime — raises TypeError
-        # inside json.dump, the exception propagates out of finalisation,
-        # and the session ends with a gaze CSV and NO manifest: no
-        # validations, no distance, no quality metrics, nothing that
-        # makes the recording analysable. The participant has already
-        # gone home by the time anyone notices.
-        #
-        # The manifest is the unit of record for this study. It is worth
-        # more than the purity of its types.
-        with open(_manifest_path, "w", encoding="utf-8") as fh:
-            json.dump(manifest, fh, indent=2, default=_json_safe)
-    except Exception:  # noqa: BLE001
-        logger.exception("Manifest write FAILED — retrying without the "
-                         "parts that could not be serialised")
-        try:
-            with open(_manifest_path, "w", encoding="utf-8") as fh:
-                json.dump(_strip_unserialisable(manifest), fh, indent=2)
-            logger.warning("Manifest written in DEGRADED form: some fields "
-                           "were dropped. The session is analysable but "
-                           "check %s", os.path.basename(_manifest_path))
-        except Exception:  # noqa: BLE001
-            logger.exception("Manifest could not be written at all. The "
-                             "gaze CSV survives at %s", csv_path)
+        counts = finalize_gazefollower_session(
+            participant_id, csv_path, state["stimulus_log"],
+            correction=state.get("correction"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Segmentation FAILED for %s", base)
+        counts = {"__segmentation_error__": repr(exc)[:300]}
+    quality = counts.pop("__quality__", {})
+    events = counts.pop("__events__", None)
+    workbook_errors = counts.pop("__workbook_errors__", {})
+    tracker_save = counts.pop("__tracker_save__", None)
+    save_error = counts.pop("__save_error__", None)
+    seg_error = counts.pop("__segmentation_error__", None)
+
+    # Per-stimulus pass/fail against the PREREGISTERED quality threshold
+    for q in quality.values():
+        q["passes_gaze_samples_threshold"] = (
+            q.get("gaze_samples_pct", 0.0) >= MIN_GAZE_SAMPLES_PCT
+        )
+
+    # ── 3. Complete the record.
+    manifest["sample_counts"] = counts
+    manifest["data_quality"] = quality
+    manifest["events"] = events
+    manifest["tracker_save"] = tracker_save
+    problems = {k: v for k, v in (("tracker_save_error", save_error),
+                                   ("segmentation_error", seg_error),
+                                   ("workbook_errors", workbook_errors))
+                if v}
+    manifest["finalisation"] = {
+        "stage": "complete" if not (save_error or seg_error) else "failed",
+        "completed_at_utc": datetime.now(timezone.utc).isoformat(),
+        **problems,
+    }
+    _session_event(state, "segmentation_done",
+                   stage=manifest["finalisation"]["stage"], **problems)
+    manifest["event_log"] = _read_session_events(state.get("session_uid"))
+    _write_json_atomic(_manifest_path, manifest)
+    state["finalisation_result"] = {
+        "ok": bool(first_ok and not save_error and not seg_error),
+        "manifest": os.path.basename(_manifest_path),
+        "problems": problems,
+        "samples": {k: v for k, v in counts.items()
+                    if not str(k).startswith("__")},
+    }
+    _session_event(state, "finalised", **state["finalisation_result"])
 
     logger.info(
         "Session finalized – sid=%s, participant=%s, per-stimulus samples: %s",
@@ -2522,10 +3094,17 @@ def handle_experiment_done(_payload=None):
         # always log them and always release the waiting client.
         try:
             counts = _finalize_session(sid, state)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.exception("Session finalize FAILED")
             counts = {}
-        socketio.emit("experiment_saved", {"gazefollower_samples": counts}, to=sid)
+            state["finalisation_result"] = {
+                "ok": False, "problems": {"exception": repr(exc)[:300]}}
+        result = state.get("finalisation_result") or {
+            "ok": False, "problems": {"nothing to save": (
+                "no stimulus was recorded in this session")}}
+        # The browser shows SAVED or FAILED from THIS, never from a timer.
+        socketio.emit("experiment_saved", {"gazefollower_samples": counts,
+                                           "result": result}, to=sid)
 
     socketio.start_background_task(_run)
 
@@ -2537,11 +3116,41 @@ def handle_disconnect():
     sid = request.sid  # type: ignore[attr-defined]
     with _sessions_lock:
         state = active_sessions.get(sid)
+    if state:
+        _session_event(state, "socket_disconnected",
+                       stimuli_logged=len(state.get("stimulus_log") or []),
+                       finalized=bool(state.get("finalized")),
+                       recording=bool(state.get("recording")))
     if state and state.get("stimulus_log") and not state.get("finalized"):
         logger.warning("Disconnect with unsaved session — finalizing now.")
         _finalize_session(sid, state)
     _remove_session_state(sid)
     logger.info("SocketIO disconnected: sid=%s", sid)
+
+
+@socketio.on("stimulus_skipped")
+def handle_stimulus_skipped(payload: dict = None):
+    """The browser could not play a stimulus and skipped it."""
+    sid = request.sid  # type: ignore[attr-defined]
+    state = _get_session_state(sid)
+    name = str((payload or {}).get("stimulus_name", "unknown"))
+    state.setdefault("stimuli_not_recorded", []).append({
+        "stimulus": name, "reason": "unplayable (skipped by the browser)",
+        "at_utc": datetime.now(timezone.utc).isoformat()})
+    _session_event(state, "stimulus_skipped", stimulus=name)
+    logger.error("Stimulus SKIPPED (unplayable): %s", name)
+
+
+@socketio.on("clock_ping")
+def handle_clock_ping(_payload=None):
+    """Server time for browser↔server clock alignment (ack callback).
+
+    The browser sends several pings, keeps the one with the shortest
+    round trip, and estimates offset = server − browser midpoint. That
+    offset maps the media-clock log (browser timebase) onto the gaze
+    timestamps (server timebase); its round trip bounds the error.
+    """
+    return {"server_ns": time.time_ns()}
 
 
 @socketio.on("start_recording")
@@ -2572,12 +3181,26 @@ def handle_start_recording(payload: dict):
     # Video content rectangle in physical screen px (for converting gaze
     # screen coordinates → normalized video coordinates later)
     state["current_video_rect"] = payload.get("video_rect")
+    state["current_start_payload"] = {
+        k: payload.get(k) for k in ("client_epoch_ms", "fullscreen",
+                                     "geometry", "clock", "primed")}
+    _session_event(state, "stimulus_start", stimulus=stimulus_name,
+                   index=k, recording=bool(state["gazefollower_active"]),
+                   t_start_ns=state["current_t_start_ns"],
+                   video_rect=state["current_video_rect"])
     if not state["gazefollower_active"]:
-        logger.warning(
+        logger.error(
             "GazeFollower unavailable for stimulus %s – "
             "no gaze data will be recorded for it!",
             stimulus_name,
         )
+        # Never let a participant watch an unrecorded clip in silence:
+        # record it, and tell the browser so the run stops visibly.
+        state.setdefault("stimuli_not_recorded", []).append({
+            "stimulus": stimulus_name, "index": k,
+            "at_utc": datetime.now(timezone.utc).isoformat()})
+        emit("recording_failed", {"stimulus_name": stimulus_name})
+        return
 
     logger.info(
         "Recording started – sid=%s, participant=%s, stimulus=%s",
@@ -2746,6 +3369,18 @@ def handle_set_gain_correction(payload: dict):
     """
     sid = request.sid  # type: ignore[attr-defined]
     state = _get_session_state(sid)
+    # Outside TEST_MODE the correction is decided by the cross-validated
+    # rule only. A manual gain set AFTER the canonical pre_check would make
+    # that check describe a different correction from the one applied to
+    # the stimuli — so it is refused, and the attempt is logged.
+    if not TEST_MODE:
+        _session_event(state, "manual_correction_refused",
+                       payload={k: payload.get(k) for k in
+                                ("mode", "gain", "center_x", "center_y")})
+        logger.warning("Manual gain change refused outside TEST_MODE: %s",
+                       payload)
+        emit("gain_correction", _correction_payload(state.get("correction")))
+        return
     mode = payload.get("mode")
     if mode == "auto":
         state["correction"] = state.get("auto_correction")
@@ -2770,6 +3405,8 @@ def handle_set_gain_correction(payload: dict):
         }
     logger.info("Gain correction set: %s",
                 _correction_payload(state.get("correction")))
+    _session_event(state, "manual_correction",
+                   correction=_correction_payload(state.get("correction")))
     emit("gain_correction", _correction_payload(state.get("correction")))
 
 
@@ -3003,6 +3640,11 @@ def handle_validation_result(payload: dict):
         # devicePixelRatio). Without this, a coordinate-space fault is
         # indistinguishable from bad tracking after the fact.
         "geometry": payload.get("geometry"),
+        # Browser↔server clock offset for the per-target t_*_ms fields.
+        "clock": payload.get("clock"),
+        # The frozen stimulus frame behind the targets (post_video), or
+        # None for the ordinary dark-screen checks.
+        "background": payload.get("background"),
     }
     # Correction-free error for like-for-like pre/post drift (see
     # _uncorrected_error for why the raw figures are the ones to compare).
@@ -3155,6 +3797,11 @@ def handle_validation_result(payload: dict):
                       "is the canonical corrected accuracy"),
         "post": ("drift check — same grid as pre_check, differenced on "
                  "the UNCORRECTED basis"),
+        "post_video": ("viewing-condition check — grid B again, seconds "
+                       "after post, over a FROZEN STIMULUS FRAME instead "
+                       "of the dark screen; same correction. post_video "
+                       "minus post = effect of the bright video scene. "
+                       "Never fitted, never in the inclusion figure"),
         "pre": "legacy single pre-validation (recorded before the split)",
     }
     record["role"] = ROLES.get(record["phase"], "unknown")
@@ -3163,9 +3810,21 @@ def handle_validation_result(payload: dict):
     # How many times this phase has been attempted in this session. A
     # protocol deviation must be visible in the data, not only in
     # someone's memory of the session.
+    # Counted from the DURABLE event log (keyed by the login), not from
+    # the socket state: a page reload used to reset this to 1 and make a
+    # repeated check indistinguishable from a first one.
+    prior_logged = [e for e in _read_session_events(state.get("session_uid"))
+                    if e.get("kind") == "validation"
+                    and e.get("phase") == record["phase"]]
     prior = [v for v in state.get("validations", [])
              if v.get("phase") == record["phase"]]
-    record["attempt"] = len(prior) + 1
+    record["attempt"] = max(len(prior), len(prior_logged)) + 1
+    record["calibration_epoch"] = state.get("calibration_epoch", 0)
+    # Within one calibration, only the first fit-grid check may fit.
+    prior_epoch = [v for v in prior
+                   if v.get("calibration_epoch", 0) == record[
+                       "calibration_epoch"]]
+    record["attempt_in_epoch"] = len(prior_epoch) + 1
     if record["attempt"] > 1:
         logger.warning(
             "PROTOCOL: %s validation attempt #%d. The pre-registered rule "
@@ -3174,12 +3833,24 @@ def handle_validation_result(payload: dict):
             record["phase"], record["attempt"])
 
     state.setdefault("validations", []).append(record)
-    # Only the FIT phase may fit. Re-fitting on the check set would
-    # destroy the one property that makes the check meaningful.
+    _session_event(state, "validation", phase=record["phase"],
+                   attempt=record["attempt"],
+                   calibration_epoch=record["calibration_epoch"],
+                   record=record)
+    # Only the FIT phase may fit, and only once per CALIBRATION. A new
+    # calibration is a new mapping, so the correction fitted to the old
+    # one must not be carried over (it is reset in the calibration
+    # handler); its first fit-grid check fits again. Re-fitting on the
+    # check set would destroy the one property that makes it meaningful.
     if record["phase"] in ("pre_fit", "pre") \
             and record.get("mean_err_px") is not None \
-            and record["attempt"] == 1:
+            and record["attempt_in_epoch"] == 1:
         _auto_fit_correction(state, record, sid)
+        _session_event(state, "correction_decision",
+                       calibration_epoch=record["calibration_epoch"],
+                       decision=state.get("correction_decision"),
+                       correction=_correction_payload(
+                           state.get("correction")))
     # Log the things that distinguish a coordinate fault from bad
     # tracking, so a bad validation is diagnosable from the log alone.
     geom = record.get("geometry") or {}
@@ -3354,6 +4025,10 @@ def _run_rate_gate(sid: str) -> None:
     if not RATE_GATE_SECONDS:
         return
     state = _get_session_state(sid)
+    # The gate that GATED the videos must survive later re-measurements
+    # (the post-video one used to overwrite it, override and all).
+    stage = state.get("rate_stage", "pre-video")
+    gating_before = state.get("rate_gate")
     started = gaze_service.rate_check_start()
     if not started or not started.get("ok"):
         state["rate_gate"] = {
@@ -3402,8 +4077,19 @@ def _run_rate_gate(sid: str) -> None:
     history = state.setdefault("rate_history", [])
     entry = dict(state["rate_gate"])
     entry["at"] = datetime.now(timezone.utc).isoformat()
-    entry["stage"] = state.get("rate_stage", "pre-video")
+    entry["stage"] = stage
     history.append(entry)
+    state.setdefault("rate_gate_decisions", []).append({
+        "kind": "measurement", "stage": stage, "at": entry["at"],
+        "sustained_hz": entry.get("sustained_hz"),
+        "passes": entry.get("passes"), "ok": entry.get("ok")})
+    _session_event(state, "rate_gate", stage=stage,
+                   sustained_hz=entry.get("sustained_hz"),
+                   passes=entry.get("passes"), ok=entry.get("ok"))
+    if stage == "post-video":
+        state["rate_gate_post_video"] = state["rate_gate"]
+        if gating_before is not None:
+            state["rate_gate"] = gating_before
     logger.info(
         "Rate gate [%s #%d]: %s Hz sustained (initial %s, peak %s) | "
         "%s%% detected | subscribers=%s | bursty=%s | profile %s",
@@ -3494,6 +4180,13 @@ def handle_rate_gate_override(payload: dict = None):
     gate["override_reason"] = str((payload or {}).get("reason", ""))[:200]
     gate["overridden_at_utc"] = datetime.now(timezone.utc).isoformat()
     state["rate_gate"] = gate
+    state.setdefault("rate_gate_decisions", []).append({
+        "kind": "override", "at": gate["overridden_at_utc"],
+        "sustained_hz": gate.get("sustained_hz"),
+        "reason": gate["override_reason"]})
+    _session_event(state, "rate_gate_override",
+                   sustained_hz=gate.get("sustained_hz"),
+                   reason=gate["override_reason"])
     logger.warning("Rate gate OVERRIDDEN by researcher: %s Hz sustained, "
                    "reason=%r", gate.get("sustained_hz"),
                    gate.get("override_reason"))
@@ -3657,7 +4350,12 @@ def _persist_llm_result(session: str, stimulus: str, block: dict) -> None:
             samples, err = claim_check.load_gaze(manifest, path, stimulus)
             acc, acc_src = claim_check._accuracy_deg(manifest)
             if claims and not err and acc:
-                scr = manifest.get("screen") or {}
+                # Manifests carry the screen inside each validation, not at
+                # top level; the old lookup always fell back to defaults.
+                scr = manifest.get("screen") or next(
+                    (v.get("screen") for v in reversed(
+                        manifest.get("validations") or [])
+                     if v.get("screen")), {}) or {}
                 dist = ((manifest.get("distance") or {}).get("cm")
                         or VIEWING_DISTANCE_CM)
                 ppd = claim_check._px_per_degree(
@@ -3681,9 +4379,23 @@ def _persist_llm_result(session: str, stimulus: str, block: dict) -> None:
             logger.exception("Correspondence scoring failed")
             block["correspondence"] = {"error": str(exc)[:200]}
 
-        manifest.setdefault("llm", {})[stimulus] = block
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(manifest, fh, indent=2)
+        # Never destroy an earlier result: it moves to llm_history. A
+        # non-"fixations" run (e.g. a narrative "phases" summary) never
+        # replaces a fixations result, because the coding tool reads the
+        # fixations result.
+        llm = manifest.setdefault("llm", {})
+        old = llm.get(stimulus)
+        if old and old.get("detail") == "fixations" \
+                and block.get("detail") != "fixations":
+            manifest.setdefault("llm_other", {}).setdefault(
+                stimulus, []).append(block)
+        else:
+            if old:
+                manifest.setdefault("llm_history", {}).setdefault(
+                    stimulus, []).append(old)
+            llm[stimulus] = block
+        if not _write_json_atomic(path, manifest):
+            raise RuntimeError("manifest write failed")
         corr = (block.get("correspondence") or {}).get("correspondence_pct")
         logger.info("LLM result persisted to the manifest – %s / %s | "
                     "correspondence %s %%", session, stimulus, corr)
@@ -3842,9 +4554,35 @@ def handle_start_native_calibration(_payload=None):
         return
 
     opts = _calibration_options()   # session access needs request context
+    reason = str((_payload or {}).get("reason") or "")[:300]
 
     def _run_calibration() -> None:
+        state = _get_session_state(sid)
         result = gaze_service.calibrate(opts)
+        if (result or {}).get("success"):
+            prior = [e for e in _read_session_events(state.get("session_uid"))
+                     if e.get("kind") == "calibration"
+                     and e.get("success")]
+            # A RECALIBRATION is a new mapping: the gain correction fitted
+            # to the previous calibration's residuals must not be applied
+            # to it. Reset, and let the next fit-grid check fit afresh.
+            if prior or state.get("calibration_epoch"):
+                state["calibration_epoch"] = state.get(
+                    "calibration_epoch", 0) + 1
+                state["correction"] = None
+                state["auto_correction"] = None
+                state["correction_decision"] = None
+                socketio.emit("gain_correction", _correction_payload(None),
+                              to=sid)
+            else:
+                state.setdefault("calibration_epoch", 0)
+        _session_event(state, "calibration",
+                       success=bool((result or {}).get("success")),
+                       error=(result or {}).get("error"),
+                       calibration_epoch=state.get("calibration_epoch", 0),
+                       recalibration_reason=reason or None,
+                       loops=(result or {}).get("calibration_loops"),
+                       fit=(result or {}).get("calibration_fit"))
         socketio.emit("native_calibration_result", result, to=sid)
         logger.info("Native calibration finished: %s", result)
         _telemetry_event(sid, "calibration_finished",
@@ -3886,6 +4624,8 @@ def handle_stop_recording(payload: dict):
     # --- Mark stimulus offset in the continuous GazeFollower recording -------
     # (data is saved & segmented once, at the END of the whole session —
     # GazeFollower's API only permits a single save per session)
+    media_clock = payload.get("media_clock") if isinstance(
+        payload.get("media_clock"), dict) else None
     if state.get("gazefollower_active"):
         k = len(state["stimulus_log"])
         gaze_service.end_stimulus(101 + 2 * k)
@@ -3895,8 +4635,21 @@ def handle_stop_recording(payload: dict):
                 "t_start_ns": state.get("current_t_start_ns", 0),
                 "t_end_ns": time.time_ns(),
                 "video_rect": state.get("current_video_rect"),
+                # The video's own clock: one [browser_epoch_ms, media_s]
+                # pair per PRESENTED frame, playback events (waiting,
+                # stalled, fullscreen exits) and the browser→server clock
+                # offset. finalize maps every gaze sample onto it.
+                "media_clock": media_clock,
+                "start_info": state.get("current_start_payload"),
             }
         )
+    _session_event(state, "stimulus_end", stimulus=stimulus_name,
+                   recorded=bool(state.get("gazefollower_active")),
+                   media_clock_frames=len((media_clock or {}).get(
+                       "frames") or []),
+                   media_events=(media_clock or {}).get("events"),
+                   playback_quality=(media_clock or {}).get(
+                       "playback_quality"))
 
     logger.info(
         "Recording stopped – sid=%s, participant=%s, stimulus=%s, "
@@ -3993,9 +4746,12 @@ if __name__ == "__main__":
 
     # allow_unsafe_werkzeug: this is a local, single-machine research
     # application, so Werkzeug's development server is acceptable.
+    # Localhost only: the review/coder APIs and the stored Gemini key are
+    # unauthenticated, so the server must not be reachable from the
+    # network. HOST=0.0.0.0 restores the old behaviour if ever needed.
     socketio.run(
         app,
-        host="0.0.0.0",
+        host=os.environ.get("HOST", "127.0.0.1"),
         port=port,
         debug=False,
         allow_unsafe_werkzeug=True,

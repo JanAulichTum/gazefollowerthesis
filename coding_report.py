@@ -68,6 +68,23 @@ def band(k: float) -> str:
     return "poor (worse than chance)"
 
 
+def verdict(v) -> str:
+    """One code -> 'correct' | 'wrong' | 'unclear'.
+
+    Design A files (2026-10-02 on) store a record per unit with
+    ``verdict`` in RIGHT/WRONG/UNCLEAR; older files store the bare string
+    with 'correct'. Both read the same way here.
+    """
+    if isinstance(v, dict):
+        v = v.get("verdict")
+    v = str(v or "").lower()
+    return "correct" if v in ("right", "correct") else v
+
+
+def _norm(codes: dict) -> dict:
+    return {k: verdict(v) for k, v in (codes or {}).items()}
+
+
 def cohens_kappa(a: dict, b: dict) -> "dict | None":
     """Cohen's kappa between two coders over the units BOTH coded.
 
@@ -76,6 +93,7 @@ def cohens_kappa(a: dict, b: dict) -> "dict | None":
     a difference of opinion, and counting it as either inflates or
     deflates the coefficient depending on which way you guess.
     """
+    a, b = _norm(a), _norm(b)
     shared = sorted(set(a) & set(b), key=lambda k: int(k)
                     if str(k).isdigit() else 0)
     n = len(shared)
@@ -110,7 +128,7 @@ def cohens_kappa(a: dict, b: dict) -> "dict | None":
 
 
 def summarise(codes: dict) -> dict:
-    c = Counter(codes.values())
+    c = Counter(_norm(codes).values())
     judged = c["correct"] + c["wrong"]
     return {
         "n_coded": len(codes),

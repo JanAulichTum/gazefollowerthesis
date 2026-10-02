@@ -30,6 +30,12 @@ function sleepMs(ms) {
 // fullscreen both offsets are ~0.
 // ──────────────────────────────────────────────────────────────
 function screenToViewportOffsets() {
+    // In fullscreen the viewport IS the screen. The chrome heuristic below
+    // returned (0, -11) there on the collection machine (Windows reports
+    // outer < inner in fullscreen), shifting every coordinate by 11 px.
+    if (document.fullscreenElement) {
+        return { x: 0, y: 0 };
+    }
     const chromeX = (window.outerWidth - window.innerWidth) / 2; // side borders
     const chromeY = window.outerHeight - window.innerHeight;      // top chrome
     return {
@@ -69,6 +75,42 @@ socket.on('disconnect', (reason) => {
 socket.on('connect_error', (err) => {
     console.error('[SocketIO] Connection error:', err.message);
 });
+
+/** Browser epoch time in ms on the high-resolution (monotonic) clock. */
+function epochMs() {
+    return performance.timeOrigin + performance.now();
+}
+
+/**
+ * Estimate the server − browser clock offset (ms) from n round trips,
+ * keeping the one with the shortest round trip (least queueing error).
+ * Resolves to {offset_ms, rtt_ms} or {offset_ms: null} on failure.
+ */
+function syncClock(n = 5) {
+    return new Promise((resolve) => {
+        const results = [];
+        let done = 0;
+        const one = () => {
+            const c0 = epochMs();
+            socket.timeout(2000).emit('clock_ping', {}, (err, res) => {
+                const c1 = epochMs();
+                if (!err && res && res.server_ns) {
+                    results.push({
+                        rtt_ms: c1 - c0,
+                        offset_ms: res.server_ns / 1e6 - (c0 + c1) / 2,
+                    });
+                }
+                done += 1;
+                if (done < n) { one(); return; }
+                if (!results.length) { resolve({ offset_ms: null }); return; }
+                results.sort((a, b) => a.rtt_ms - b.rtt_ms);
+                resolve({ offset_ms: results[0].offset_ms,
+                          rtt_ms: results[0].rtt_ms, n: results.length });
+            });
+        };
+        one();
+    });
+}
 
 
 // ============================================================
@@ -371,6 +413,14 @@ class NativeCalibration {
         }
 
         this.startBtn.addEventListener('click', () => {
+            let reason = '';
+            if (this.calibratedOnce) {
+                reason = window.prompt(
+                    'Recalibration is a protocol deviation and is recorded. '
+                    + 'Reason?', '');
+                if (reason === null) return;      // cancelled
+                this.stopGazeVerification();
+            }
             // Stop the position check when calibration begins (frees the
             // tracker for the calibration window).
             if (this.positionActive) {
@@ -393,7 +443,7 @@ class NativeCalibration {
             this.startBtn.disabled = true;
             this.setLoading(true);
             this.setStatus('Starting calibration…', 'unknown');
-            socket.emit('start_native_calibration', {});
+            socket.emit('start_native_calibration', { reason: reason });
         });
 
         socket.on('native_calibration_started', () => {
@@ -409,7 +459,21 @@ class NativeCalibration {
                     + 'your gaze. Next, run the required accuracy check.',
                     'detected');
                 this.validateBtn.disabled = false;
-                if (this.gainControl) this.gainControl.hidden = false;
+                // A new calibration needs a new accuracy check before the
+                // videos (its correction is refitted server-side).
+                this.startVideosBtn.disabled = true;
+                // Manual gain only in TEST mode: in a real session a gain
+                // changed after the canonical check would make that check
+                // describe a different correction than the one applied.
+                if (this.gainControl && window.testMode) {
+                    this.gainControl.hidden = false;
+                }
+                // Recalibration stays possible WITHOUT a page reload (a
+                // reload used to erase the first attempt from the record).
+                this.calibratedOnce = true;
+                this.startBtn.disabled = false;
+                this.startBtn.textContent =
+                    'Recalibrate (recorded as a protocol deviation)';
                 this.startGazeVerification();
                 // The rate measurement runs in the BACKGROUND from here.
                 // Nothing waits for it: the participant goes straight
@@ -727,6 +791,10 @@ const VALIDATION_POSITIONS = {
     pre_fit: VALIDATION_GRID,
     pre_check: VALIDATION_CHECK_GRID,
     post: VALIDATION_CHECK_GRID,
+    // Same grid B, over a frozen frame of the last clip watched. Compared
+    // with `post` (seconds earlier, dark screen): the difference is the
+    // effect of the viewing condition, with drift held to a minimum.
+    post_video: VALIDATION_CHECK_GRID,
     // Legacy alias: sessions recorded before the split used 'pre'.
     pre: VALIDATION_GRID,
 };
@@ -769,7 +837,7 @@ class ValidationTest {
      * @param {'pre'|'post'} phase
      * @param {function} [onDone] — called after the results are closed.
      */
-    async run(phase, onDone) {
+    async run(phase, onDone, opts = {}) {
         // Re-entrancy guard. When the overlay froze, clicking anything
         // could start a SECOND run on top of the first — which is what
         // "it looped" was. One check at a time.
@@ -781,6 +849,13 @@ class ValidationTest {
         console.log('[Validation] Starting (' + phase + ')…');
         this.phase = phase;
         this.onDone = onDone || null;
+        // Optional FROZEN STIMULUS FRAME behind the targets ({src, t}).
+        // The ordinary checks run on a dark screen while the videos are
+        // bright full-frame scenes; an appearance-based tracker can err
+        // differently under the two (a pilot participant saw the gaze
+        // "above the people" during the videos). This measures the same
+        // grid-B targets over a real frame, so the two can be compared.
+        this.background = await this.setBackground(opts.background || null);
         const positions = VALIDATION_POSITIONS[phase] || VALIDATION_POSITIONS.pre;
 
         socket.on('gaze_preview', this.onGaze);
@@ -824,6 +899,7 @@ class ValidationTest {
         // the last target, which — inside an async method with no
         // handler — rejected silently and left the overlay frozen on
         // "Look at the ring (7/7)" with no error anywhere.
+        this.clock = await syncClock(3);
         this.geometry = {
             fullscreen: !!document.fullscreenElement,
             inner: [window.innerWidth, window.innerHeight],
@@ -846,17 +922,27 @@ class ValidationTest {
             this.target.style.top = ty + 'px';
             this.info.textContent =
                 'Look at the ring (' + (i + 1) + ' / ' + positions.length + ')';
+            // Display window of THIS target on the browser clock (mapped
+            // to the server clock with clock.offset_ms). With it, every
+            // raw CSV sample can be matched to its target afterwards, so
+            // the per-SAMPLE error distribution is recoverable — not just
+            // the per-target median sent below.
+            const tOn = epochMs();
 
             await sleepMs(1000);           // settle on the new target
             this.samples = [];
             this.collecting = true;
+            const tC0 = epochMs();
             await sleepMs(1600);           // collect
             this.collecting = false;
+            const tC1 = epochMs();
 
             // n_samples is recorded even on failure: "0 samples" and
             // "samples landed in the wrong place" look identical in the
             // error alone, and they are completely different faults.
-            let out = { tx, ty, ok: false, n: this.samples.length };
+            let out = { tx, ty, ok: false, n: this.samples.length,
+                        t_on_ms: tOn, t_collect_start_ms: tC0,
+                        t_collect_end_ms: tC1 };
             if (this.samples.length >= 3) {
                 const med = (arr) => arr.sort((a, b) => a - b)[Math.floor(arr.length / 2)];
                 const mx = med(this.samples.map((s) => s[0]));
@@ -899,6 +985,8 @@ class ValidationTest {
                     prec: prec,
                     prec_sd: sd,
                     n: this.samples.length,
+                    t_on_ms: tOn, t_collect_start_ms: tC0,
+                    t_collect_end_ms: tC1,
                 };
             }
             outcomes.push(out);
@@ -957,7 +1045,12 @@ class ValidationTest {
                 n_samples: o.n || 0,
                 precision_sd_px: o.prec_sd === undefined
                     ? null : Math.round(o.prec_sd * 10) / 10,
+                t_on_ms: o.t_on_ms,
+                t_collect_start_ms: o.t_collect_start_ms,
+                t_collect_end_ms: o.t_collect_end_ms,
             })),
+            clock: this.clock || null,
+            background: this.background || null,
             targets_measured: measured.length,
             mean_err_px: meanPx === null ? null : Math.round(meanPx * 10) / 10,
             mean_err_deg: meanPx === null
@@ -1067,7 +1160,53 @@ class ValidationTest {
         this.results.hidden = false;
     }
 
+    /**
+     * Show a paused stimulus frame behind the targets, or clear it.
+     * Resolves to a description of what was shown (for the record), or
+     * null. Never throws: without a frame the check runs on the dark
+     * background and says so in the record.
+     */
+    async setBackground(bg) {
+        const el = document.getElementById('testBackground');
+        const clear = () => {
+            if (el) {
+                try { el.pause(); } catch (e) { /* fine */ }
+                el.hidden = true;
+                el.removeAttribute('src');
+            }
+            this.overlay.classList.remove('tracking-test--video');
+        };
+        if (!bg || !el) {
+            clear();
+            return bg ? { error: 'no #testBackground element' } : null;
+        }
+        try {
+            el.muted = true;
+            el.src = bg.src;
+            await new Promise((resolve, reject) => {
+                el.addEventListener('loadeddata', resolve, { once: true });
+                el.addEventListener('error', reject, { once: true });
+                el.load();
+            });
+            await new Promise((resolve) => {
+                el.addEventListener('seeked', resolve, { once: true });
+                el.currentTime = bg.t;
+            });
+            el.pause();
+            el.hidden = false;
+            this.overlay.classList.add('tracking-test--video');
+            return { src: bg.src, stimulus: bg.stimulus || null,
+                     frame_time_s: el.currentTime,
+                     video_w: el.videoWidth, video_h: el.videoHeight };
+        } catch (e) {
+            console.error('[Validation] background frame failed:', e);
+            clear();
+            return { error: 'frame could not be shown: ' + e };
+        }
+    }
+
     close() {
+        this.setBackground(null);
         this.overlay.hidden = true;
         const cb = this.onDone;
         this.onDone = null;
@@ -1140,8 +1279,53 @@ class ExperimentRunner {
             await this.waitForUserGesture();
         }
 
+        // Warm the playback pipeline before the first RECORDED clip.
+        await this.primePlayback(this.stimuli[0]);
+
         // Begin sequential playback
         await this.playNextStimulus();
+    }
+
+    /**
+     * Pre-roll: play the first clip for ~1 s INVISIBLY and SILENTLY, then
+     * rewind. In every pilot the first-presented clip's window ran 335-600
+     * ms longer than the file (the second only ~75 ms) — the signature of
+     * one-off start-up cost (decoder / audio-output initialisation) paid
+     * by whichever clip plays first. Paying it here, before recording,
+     * keeps the participant's first clip from opening on a stall. Volume
+     * 0 rather than muted, so the audio output path is initialised too.
+     * The media-clock log still corrects any residual offset.
+     */
+    async primePlayback(firstStimulus) {
+        if (!firstStimulus || !this.videoPlayer) return;
+        const v = this.videoPlayer;
+        const t0 = epochMs();
+        try {
+            v.hidden = true;
+            v.volume = 0;
+            v.muted = false;
+            v.src = '/stimulus/' + encodeURIComponent(firstStimulus);
+            await new Promise((resolve, reject) => {
+                v.addEventListener('canplay', resolve, { once: true });
+                v.addEventListener('error', reject, { once: true });
+                v.load();
+            });
+            await v.play();
+            await this.sleep(1000);
+            v.pause();
+            this.primed = { ok: true, ms: Math.round(epochMs() - t0) };
+        } catch (e) {
+            // Autoplay refusal or a decode error: carry on unprimed (the
+            // real playback path has its own click-to-continue retry).
+            this.primed = { ok: false, error: String(e) };
+            try { v.pause(); } catch (e2) { /* fine */ }
+        } finally {
+            v.volume = 1;
+            v.muted = false;
+            v.removeAttribute('src');
+            v.load();
+        }
+        console.log('[Runner] pre-roll', this.primed);
     }
 
     /**
@@ -1206,7 +1390,10 @@ class ExperimentRunner {
         this.progressIndicator.hidden = false;
 
         console.log('[Runner] Inter-stimulus rest (3s)…');
-        await this.sleep(this.REST_DURATION);
+        // Browser↔server clock offset, measured during the rest screen, so
+        // the media-clock log below can be mapped onto gaze timestamps.
+        const [clockStart] = await Promise.all([
+            syncClock(5), this.sleep(this.REST_DURATION)]);
 
         // ── Load and play video ──
         this.interStimulus.hidden = true;
@@ -1215,6 +1402,7 @@ class ExperimentRunner {
         // Served via the Flask /stimulus/<filename> route (supports HTTP
         // range requests; the videos live outside the static folder).
         const videoSrc = '/stimulus/' + encodeURIComponent(stimulusName);
+        this.startMediaClock(clockStart);
         this.videoPlayer.src = videoSrc;
         console.log('[Runner] Loading video:', videoSrc);
 
@@ -1248,6 +1436,8 @@ class ExperimentRunner {
         // forever on an 'ended' event that will never fire.
         if (this.videoPlayer.paused) {
             console.error('[Runner] Skipping unplayable stimulus:', stimulusName);
+            this.stopMediaClock();
+            socket.emit('stimulus_skipped', { stimulus_name: stimulusName });
             this.currentIndex++;
             await this.playNextStimulus();
             return;
@@ -1258,15 +1448,21 @@ class ExperimentRunner {
 
         // Wait for video to end. In TEST MODE, cut playback short after
         // a few seconds so the whole pipeline can be exercised quickly.
-        await new Promise((resolve) => {
+        const failed = await new Promise((resolve) => {
             let settled = false;
-            const finish = () => {
+            const finish = (isFail) => {
                 if (settled) return;
                 settled = true;
-                this.videoPlayer.removeEventListener('ended', finish);
-                resolve();
+                this.videoPlayer.removeEventListener('ended', onEnded);
+                socket.off('recording_failed', onFail);
+                resolve(isFail === true);
             };
-            this.videoPlayer.addEventListener('ended', finish);
+            const onEnded = () => finish(false);
+            // The server could not start recording this clip. Never let
+            // a participant watch an unrecorded clip: stop visibly.
+            const onFail = () => finish(true);
+            socket.on('recording_failed', onFail);
+            this.videoPlayer.addEventListener('ended', onEnded);
             if (this.testMode) {
                 setTimeout(() => {
                     console.log('[Runner] TEST MODE — cutting video after',
@@ -1277,14 +1473,124 @@ class ExperimentRunner {
             }
         });
 
+        if (failed) {
+            try { this.videoPlayer.pause(); } catch (e) { /* fine */ }
+            this.stopMediaClock();
+            this.videoPlayer.hidden = true;
+            console.error('[Runner] RECORDING FAILED for', stimulusName);
+            const overlay = document.getElementById('startOverlay');
+            const textEl = document.getElementById('startOverlayText');
+            if (textEl) {
+                textEl.textContent = 'Recording stopped — the eye tracker '
+                    + 'did not record this video. Please call the '
+                    + 'researcher. (Researcher: the session is logged; '
+                    + 'check the server window.)';
+            }
+            const hint = overlay && overlay.querySelector('.start-overlay__hint');
+            if (hint) hint.hidden = true;
+            if (overlay) overlay.hidden = false;
+            return;   // do NOT continue to the next clip unrecorded
+        }
+
         console.log('[Runner] ■ Playback ended:', stimulusName);
 
+        // Clock offset again at the end: the pair bounds any drift.
+        const clockEnd = await syncClock(3);
+        const mediaClock = this.stopMediaClock(clockEnd);
+
         // Stop recording and wait for server acknowledgment
-        await this.stopRecording(stimulusName);
+        await this.stopRecording(stimulusName, mediaClock);
 
         // Advance to next stimulus
         this.currentIndex++;
         await this.playNextStimulus();
+    }
+
+    /**
+     * Start logging the VIDEO'S OWN CLOCK for the clip about to play.
+     *
+     * Why: the stimulus window is stamped on the server after play(),
+     * a socket hop and a tracker round trip, and in every pilot the
+     * first-presented clip's window ran 335-600 ms longer than the
+     * 30.000 s file — with nothing to say whether that was a start-up
+     * stall (which would shift every gaze sample against the frames) or
+     * not. requestVideoFrameCallback reports each frame actually
+     * PRESENTED, with its display time and media time; the server maps
+     * gaze timestamps onto that (app._media_time_s).
+     */
+    startMediaClock(clockStart) {
+        const v = this.videoPlayer;
+        const log = { frames: [], ticks: [], events: [],
+                      clock_start: clockStart,
+                      clock_end: null, duration_s: null,
+                      rvfc: !!v.requestVideoFrameCallback };
+        // Fallback clock: currentTime at each timeupdate (~4 Hz). Frame
+        // callbacks follow RENDERING and are throttled if the page is not
+        // the visible surface; timeupdate keeps a coarser clock anyway.
+        const onTick = () => log.ticks.push(
+            [Math.round(epochMs() * 1000) / 1000,
+             Math.round(v.currentTime * 1e6) / 1e6]);
+        this.mediaLog = log;
+        const stamp = (name) => log.events.push(
+            [name, Math.round(epochMs() * 1000) / 1000,
+             Math.round(v.currentTime * 1e6) / 1e6]);
+        this._mediaHandlers = {};
+        ['loadeddata', 'play', 'playing', 'waiting', 'stalled', 'pause',
+         'seeking', 'seeked', 'ended', 'error'].forEach((ev) => {
+            const h = () => stamp(ev);
+            this._mediaHandlers[ev] = h;
+            v.addEventListener(ev, h);
+        });
+        const onFs = () => stamp(document.fullscreenElement
+            ? 'fullscreen_enter' : 'fullscreen_exit');
+        this._mediaHandlers.__fs = onFs;
+        document.addEventListener('fullscreenchange', onFs);
+        const onVis = () => stamp('visibility_' + document.visibilityState);
+        this._mediaHandlers.__vis = onVis;
+        document.addEventListener('visibilitychange', onVis);
+        this._mediaHandlers.timeupdate = onTick;
+        v.addEventListener('timeupdate', onTick);
+        if (v.requestVideoFrameCallback) {
+            const cb = (now, md) => {
+                if (this.mediaLog !== log) return;   // a later clip
+                log.frames.push([
+                    Math.round((performance.timeOrigin
+                                + md.expectedDisplayTime) * 1000) / 1000,
+                    Math.round(md.mediaTime * 1e6) / 1e6]);
+                if (!v.ended) v.requestVideoFrameCallback(cb);
+            };
+            v.requestVideoFrameCallback(cb);
+        }
+    }
+
+    /** Stop logging; returns the payload sent with stop_recording. */
+    stopMediaClock(clockEnd) {
+        const v = this.videoPlayer;
+        const log = this.mediaLog;
+        if (!log) return null;
+        Object.entries(this._mediaHandlers || {}).forEach(([ev, h]) => {
+            if (ev === '__fs') document.removeEventListener('fullscreenchange', h);
+            else if (ev === '__vis') document.removeEventListener('visibilitychange', h);
+            else v.removeEventListener(ev, h);
+        });
+        this._mediaHandlers = {};
+        this.mediaLog = null;
+        log.clock_end = clockEnd || null;
+        log.duration_s = isFinite(v.duration) ? v.duration : null;
+        const offs = [log.clock_start, log.clock_end]
+            .filter((c) => c && c.offset_ms !== null && c.offset_ms !== undefined)
+            .map((c) => c.offset_ms);
+        log.offset_ms = offs.length
+            ? offs.reduce((a, b) => a + b, 0) / offs.length : null;
+        try {
+            const q = v.getVideoPlaybackQuality && v.getVideoPlaybackQuality();
+            if (q) {
+                log.playback_quality = {
+                    total: q.totalVideoFrames, dropped: q.droppedVideoFrames,
+                    corrupted: q.corruptedVideoFrames };
+            }
+        } catch (e) { /* optional */ }
+        return log;
     }
 
     /**
@@ -1321,6 +1627,9 @@ class ExperimentRunner {
         socket.emit('start_recording', {
             stimulus_name: stimulusName,
             video_rect: this.getVideoContentRect(),
+            client_epoch_ms: epochMs(),
+            fullscreen: !!document.fullscreenElement,
+            primed: this.currentIndex === 0 ? (this.primed || null) : null,
         });
     }
 
@@ -1329,7 +1638,7 @@ class ExperimentRunner {
      * @param {string} stimulusName
      * @returns {Promise<void>}
      */
-    stopRecording(stimulusName) {
+    stopRecording(stimulusName, mediaClock) {
         return new Promise((resolve) => {
             console.log('[Runner] ○ Stopping recording:', stimulusName);
 
@@ -1345,7 +1654,8 @@ class ExperimentRunner {
             socket.on('recording_stopped', onAck);
 
             // Tell the server to stop recording
-            socket.emit('stop_recording', { stimulus_name: stimulusName });
+            socket.emit('stop_recording', { stimulus_name: stimulusName,
+                                            media_clock: mediaClock || null });
 
             // Safety timeout — don't hang forever if server doesn't respond
             setTimeout(() => {
@@ -1381,7 +1691,17 @@ class ExperimentRunner {
             // whether a session degrades over its own duration — the
             // question a single reading cannot answer.
             socket.emit('run_rate_gate', { stage: 'post-video' });
-            window.__validation.run('post', finalize);
+            // Then the SAME grid over a frozen frame (15 s in) of the
+            // last clip the participant watched — after the videos, so it
+            // previews nothing.
+            const last = this.stimuli[this.stimuli.length - 1];
+            const bg = last ? {
+                src: '/stimulus/' + encodeURIComponent(last),
+                t: this.testMode ? 1.0 : 15.0, stimulus: last } : null;
+            window.__validation.run('post', () => {
+                window.__validation.run('post_video', finalize,
+                                        { background: bg });
+            });
         } else {
             console.warn('[Runner] No validation overlay on this page — '
                 + 'skipping post-validation.');
@@ -1392,20 +1712,40 @@ class ExperimentRunner {
     /** Ask the server to save & segment the recording, then redirect. */
     finalizeSession() {
         console.log('[Runner] Finalizing session…');
-        // The server also finalizes on disconnect, so data cannot be
-        // lost even if this ack never arrives.
-        let redirected = false;
-        const go = () => {
-            if (redirected) return;
-            redirected = true;
-            window.location.href = '/complete';
+        // The page used to redirect to "recorded successfully" after a
+        // fixed 20 s whatever had happened, while saving took ~1 min — so
+        // the server got closed mid-save. Now the outcome shown is the
+        // SERVER's verdict, and nothing claims success before it.
+        const overlay = document.getElementById('startOverlay');
+        const textEl = document.getElementById('startOverlayText');
+        const show = (msg) => {
+            if (textEl) textEl.textContent = msg;
+            const hint = overlay && overlay.querySelector('.start-overlay__hint');
+            if (hint) hint.hidden = true;
+            if (overlay) overlay.hidden = false;
         };
+        show('Saving the session — please wait and do not close anything.');
+        let settled = false;
         socket.on('experiment_saved', (data) => {
-            console.log('[Runner] ✓ Session saved:', data);
-            go();
+            if (settled) return;
+            settled = true;
+            console.log('[Runner] Session save result:', data);
+            const r = (data && data.result) || {};
+            if (r.ok) {
+                window.location.href = '/complete';
+                return;
+            }
+            show('SAVE PROBLEM — please call the researcher. '
+                + '(Researcher: do not close the server; details: '
+                + JSON.stringify(r.problems || r) + ')');
         });
         socket.emit('experiment_done', {});
-        setTimeout(go, 20000);
+        setTimeout(() => {
+            if (!settled) {
+                show('Still saving… (Researcher: do NOT close the server '
+                    + 'window until this page changes.)');
+            }
+        }, 60000);
     }
 
     /**

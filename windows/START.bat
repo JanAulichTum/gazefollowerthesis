@@ -56,11 +56,20 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 REM ---- 2. Update ------------------------------------------------------
-REM  Factored into a subroutine so the SAME logic runs at launch and
-REM  from menu option u. A second copy would drift from the first, and
-REM  the one that drifts is always the one guarding the collection
-REM  machine.
-call :do_update
+REM  DATA COLLECTION IS RUNNING (since 2026-10-02): the code is FROZEN.
+REM  Pulling new code at every launch would change the instrument between
+REM  participants. At launch we only REPORT the version; updating is a
+REM  deliberate act (menu option u), and every manifest records the
+REM  commit it was recorded with.
+echo    Code version on this machine:
+git log --oneline -1 2>nul
+git fetch --quiet origin 2>nul
+for /f %%i in ('git rev-list --count HEAD..@{u} 2^>nul') do set BEHIND=%%i
+if not "%BEHIND%"=="" if not "%BEHIND%"=="0" (
+    echo    NOTE: %BEHIND% newer commit^(s^) on GitHub - NOT pulled.
+    echo    Only update between collection days, on purpose ^(option u^).
+)
+echo.
 
 REM ====================================================================
 REM  MENU

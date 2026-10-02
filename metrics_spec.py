@@ -233,10 +233,15 @@ RQ3_FEEDBACK = [
     ("marker_uncertainty_deg", "session", "deg", "collected",
      "The radius drawn on the video AND stated in the prompt. Ties "
      "every feedback claim to the session's measured accuracy."),
-    ("human_agreement_kappa", "study", "kappa", "missing",
-     "Cohen's kappa on criteria_met against human coders. Tooling "
-     "exists (agreement_kit.py); the study has not been run. This is "
-     "the remaining RQ3 validity gap."),
+    # Design A (decided; kappa dropped 2026-10-01). The coder judges, per
+    # fixation, whether the model names the region at the reported gaze
+    # location. Computed by analysis_designA.py from data/coding/.
+    ("coded_percent_right", "study", "%", "derived",
+     "RIGHT / (RIGHT + WRONG) over coded fixations, participant-cluster "
+     "bootstrap CI. UNCLEAR reported separately, never as wrong."),
+    ("coded_unclear_pct", "study", "%", "derived",
+     "UNCLEAR / all coded fixations: how often the marker cannot be "
+     "assigned to one region. A property of the method."),
 ]
 
 # NOT APPLICABLE — recorded here so the choice is explicit rather than an
@@ -251,6 +256,8 @@ NOT_APPLICABLE = [
     ("aoi_first_entry_s", "superseded by the model's phase timeline"),
     ("aoi_revisits", "no fixed AOI set to revisit"),
     ("aoi_coverage_pct", "no fixed AOI set exists to cover"),
+    ("human_agreement_kappa", "dropped 2026-10-01: Design A reports percent "
+     "RIGHT and the UNCLEAR rate, not chance-corrected agreement"),
 ]
 NOT_APPLICABLE_NAMES = {n for n, _ in NOT_APPLICABLE}
 
@@ -296,7 +303,93 @@ INCLUSION = {
                      "evaluation session had been recorded. The "
                      "resulting exclusion rate is reported as a result, "
                      "not treated as a problem to tune away.",
+    # ── Fixed 2026-10-02, before the first evaluation participant ────
+    # Defaults taken from the 2026-08-18 pre-registration draft; confirm
+    # or change them BEFORE looking at any evaluation data, and date it.
+    # The ruler: the distance MEASURED at validation (iris), as this spec
+    # already calls authoritative; the browser's 60 cm is the fallback
+    # only when no measurement exists, and that fallback is reported.
+    "ruler": "measured",
+    # A validation target with fewer samples than this is a collection
+    # failure, not a measurement, and is left out of its phase mean
+    # (cause-based rejection — never by error size).
+    "min_samples_per_target": 25,
+    # Which attempt counts: the FIRST pre_check after the LAST calibration
+    # (the calibration the stimuli were recorded under) and the FIRST
+    # post. Repeats are reported, never selected.
+    "attempts": "first pre_check of the final calibration; first post",
+    "fixed_on": "2026-10-02",
 }
+
+
+def _phase_deg(v: dict, ruler: str, min_n: int) -> "tuple":
+    """A validation phase's mean error in degrees on the given ruler,
+    dropping targets below the sample floor. -> (deg, basis, n_dropped)."""
+    px = v.get("mean_err_px")
+    deg_m, deg_b = v.get("mean_err_deg_measured"), v.get("mean_err_deg")
+    deg = deg_m if (ruler == "measured" and deg_m) else deg_b
+    basis = ("measured" if (ruler == "measured" and deg_m)
+             else "browser-60cm (no measured distance)")
+    if not (px and deg):
+        return None, basis, 0
+    per_px = deg / px
+    errs = [t.get("err_px") for t in v.get("targets") or []
+            if t.get("err_px") is not None]
+    kept = [t.get("err_px") for t in v.get("targets") or []
+            if t.get("err_px") is not None
+            and (t.get("n_samples") is None or t.get("n_samples") >= min_n)]
+    if errs and kept:
+        return (sum(kept) / len(kept)) * per_px, basis, len(errs) - len(kept)
+    return deg, basis, 0
+
+
+def inclusion(manifest: dict) -> dict:
+    """THE inclusion decision for one session — the one implementation.
+
+    Returns {"include": bool, "accuracy_deg": float|None, "reasons": [...],
+    "stimuli": {name: {"include": bool, "reasons": [...]}}, ...}.
+    """
+    rule = INCLUSION
+    vals = manifest.get("validations") or []
+    epochs = [v.get("calibration_epoch", 0) for v in vals]
+    last_epoch = max(epochs) if epochs else 0
+    pre = [v for v in vals if v.get("phase") == "pre_check"
+           and v.get("calibration_epoch", 0) == last_epoch]
+    post = [v for v in vals if v.get("phase") == "post"]
+    out: dict = {"rule_fixed_on": rule["fixed_on"], "ruler": rule["ruler"],
+                 "reasons": [], "stimuli": {}}
+    a = b = None
+    if pre and post:
+        a, basis_a, drop_a = _phase_deg(pre[0], rule["ruler"],
+                                        rule["min_samples_per_target"])
+        b, basis_b, drop_b = _phase_deg(post[0], rule["ruler"],
+                                        rule["min_samples_per_target"])
+        out.update(pre_check_deg=a, post_deg=b,
+                   basis=sorted({basis_a, basis_b}),
+                   targets_dropped=drop_a + drop_b,
+                   repeats={"pre_check": len(pre) - 1,
+                            "post": len(post) - 1},
+                   recalibrations=last_epoch)
+    if a is None or b is None:
+        out["accuracy_deg"] = None
+        out["reasons"].append("no pre_check + post pair")
+    else:
+        out["accuracy_deg"] = round((a + b) / 2.0, 3)
+        if out["accuracy_deg"] > rule["max_validation_error_deg"]:
+            out["reasons"].append("accuracy %.2f deg > %.1f" % (
+                out["accuracy_deg"], rule["max_validation_error_deg"]))
+    for stim, q in (manifest.get("data_quality") or {}).items():
+        r = []
+        if (q.get("gaze_samples_pct") or 0) < rule["min_gaze_samples_pct"]:
+            r.append("valid samples %.1f %% < %.0f %%" % (
+                q.get("gaze_samples_pct") or 0, rule["min_gaze_samples_pct"]))
+        if (q.get("sampling_hz") or 0) < rule["min_sampling_hz"]:
+            r.append("rate %.1f Hz < %.0f Hz" % (
+                q.get("sampling_hz") or 0, rule["min_sampling_hz"]))
+        out["stimuli"][stim] = {"include": not r and not out["reasons"],
+                                "reasons": r}
+    out["include"] = not out["reasons"]
+    return out
 
 
 def summary() -> str:

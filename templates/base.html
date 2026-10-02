@@ -18,8 +18,25 @@
     <!-- Application stylesheet (cache-busted so updates always load) -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v={{ asset_version }}">
 
-    <!-- Socket.IO client -->
+    <!-- Socket.IO client. A LOCAL copy (static/js/socket.io.min.js) is
+         used when present, so a session never depends on the internet;
+         otherwise the CDN. Without either, the whole study is dead, so
+         that is said on screen rather than in the console. -->
+    {% if local_socketio %}
+    <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+    {% else %}
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    {% endif %}
+    <script>
+        if (typeof io === 'undefined') {
+            document.addEventListener('DOMContentLoaded', function () {
+                document.body.insertAdjacentHTML('afterbegin',
+                    '<div class="flash-messages" role="alert"><div class="flash-message flash-error">'
+                    + 'The Socket.IO library did not load (no internet and no local copy in '
+                    + 'static/js/socket.io.min.js). Do not start a participant.</div></div>');
+            });
+        }
+    </script>
 
     <!-- Page-specific head extras (scripts, styles, etc.) -->
     {% block head_extra %}{% endblock %}

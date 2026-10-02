@@ -119,8 +119,8 @@ if not "%NSTIM%"=="2" (
 echo.
 echo    stimuli     : %NSTIM% (mode=all, full length)
 echo    Expect ~30 Hz and "perf_mode ... ACTIVE" in the log.
-echo    If the rate gate reports under 25 Hz, stop and investigate
-echo    BEFORE running the participant.
+echo    If the rate gate FAILS, stop and investigate BEFORE running the
+echo    participant. Rehearsals: use an ID starting with REHEARSAL.
 echo.
 
 python app.py

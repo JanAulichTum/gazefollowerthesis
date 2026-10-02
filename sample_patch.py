@@ -102,7 +102,7 @@ def apply_sample_patch(gf, log=None) -> bool:
                 log("Sample patch skipped (no sample stream on this build)")
             return False
 
-        stats = {"written": 0, "failed": 0}
+        stats = {"written": 0, "failed": 0, "write_errors": 0}
         # GazeFollower flushes to disk on EVERY sample — ~30 synchronous
         # writes per second, inside the capture loop. On Windows that is
         # exactly the pattern real-time antivirus and file-sync clients
@@ -152,7 +152,10 @@ def apply_sample_patch(gf, log=None) -> bool:
                     stream.flush()
                     last_flush[0] = now
             except Exception:  # noqa: BLE001 — a write failure must not
-                pass          # kill the capture thread
+                # kill the capture thread — but it must not be SILENT
+                # either (a full disk dropped samples with no trace). The
+                # count reaches the manifest via end_session.
+                stats["write_errors"] += 1
 
         gf._write_sample = _write_sample
         gf._sample_stats = stats

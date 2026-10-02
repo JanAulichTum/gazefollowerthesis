@@ -161,6 +161,10 @@
          session manifest.
          ============================================================ -->
     <div id="trackingTest" class="tracking-test" hidden>
+        <!-- Frozen stimulus frame behind the targets for the post_video
+             check (viewing-condition comparison); hidden otherwise. -->
+        <video id="testBackground" class="tracking-test__background"
+               muted playsinline preload="auto" hidden></video>
         <p id="testInfo" class="tracking-test__info">Look at the ring</p>
         <div id="testTarget" class="test-target" hidden></div>
         <div id="testGazeDot" class="gaze-preview-dot" hidden></div>

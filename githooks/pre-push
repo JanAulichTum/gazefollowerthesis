@@ -41,7 +41,9 @@ fi
 blocked=$(git ls-files -- \
     'models/*.mnn' 'models/*.onnx' 'models/*.tflite' 'models/*.pb' \
     'data/gazefollower_raw' 'data/archive' 'data/llm_logs' \
-    'data/telemetry' \
+    'data/telemetry' 'data/study' 'data/retired' 'data/coding' \
+    'data/llm_replay' 'data/session_events' 'data/allocation_log.json' \
+    'data/agreement' 'data/inverse_check' 'data/model_comparison' \
     '*participant_key*' '*participants.xlsx' '*gazefollower_data.xlsx' \
     '*.gemini_key' '*.secret_key' '*.env' '*fake_face.mp4' \
     2>/dev/null)

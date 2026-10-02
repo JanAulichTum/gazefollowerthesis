@@ -22,6 +22,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from typing import Optional
 
 from config import DATA_DIR
@@ -129,18 +130,46 @@ class GazeService:
             return None
 
     def _send(self, msg: dict, timeout: float) -> Optional[dict]:
-        """Send one command and wait for its reply (serialised by lock)."""
+        """Send one command and wait for ITS reply (serialised by lock).
+
+        Every command carries a sequence number that the tracker echoes.
+        Without it, one late reply (any timeout) left a stale answer in the
+        queue and every later command silently received the previous
+        command's reply — a "successful" calibrate, begin_stimulus or
+        end_session that had not happened yet. Stale replies are now
+        discarded and logged.
+        """
         with self._lock:
             if not self._ensure_process():
                 return None
             assert self._proc is not None and self._proc.stdin is not None
+            self._seq = getattr(self, "_seq", 0) + 1
+            seq = self._seq
+            msg = dict(msg, seq=seq)
             try:
                 self._proc.stdin.write(json.dumps(msg) + "\n")
                 self._proc.stdin.flush()
             except OSError:
                 logger.exception("Tracker service pipe broken")
                 return None
-            return self._wait_reply(timeout)
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.error("Tracker reply to %s (seq %d) timed out",
+                                 msg.get("cmd"), seq)
+                    return None
+                reply = self._wait_reply(remaining)
+                if reply is None:
+                    logger.error("Tracker reply to %s (seq %d) timed out",
+                                 msg.get("cmd"), seq)
+                    return None
+                if reply.get("seq") == seq:
+                    return reply
+                logger.warning("Discarding stale tracker reply (cmd=%s, "
+                               "seq=%s) while waiting for %s seq %d",
+                               reply.get("cmd"), reply.get("seq"),
+                               msg.get("cmd"), seq)
 
     # ------------------------------------------------------------------
     # Public API
@@ -238,10 +267,13 @@ class GazeService:
         if reply is None:
             return {"success": False,
                     "error": "Tracker service unavailable or timed out."}
+        extra = {k: reply.get(k) for k in ("calibration_loops",
+                                           "calibration_fit")}
         if reply.get("ok"):
             self.calibrated = True
-            return {"success": True, "error": None}
-        return {"success": False, "error": reply.get("error", "unknown error")}
+            return {"success": True, "error": None, **extra}
+        return {"success": False,
+                "error": reply.get("error", "unknown error"), **extra}
 
     def begin_stimulus(self, trigger: int) -> bool:
         """Mark a stimulus onset (starts continuous sampling on first call)."""
@@ -302,6 +334,9 @@ class GazeService:
         reply = self._send(
             {"cmd": "end_session", "csv": csv_path}, TIMEOUT_COMMAND
         )
+        # Kept for the manifest: sample/write-failure counts of the session.
+        self.last_end_session = {k: v for k, v in (reply or {}).items()
+                                 if k not in ("cmd", "seq")} or None
         if reply and reply.get("ok"):
             return csv_path
         logger.warning("GazeFollower end_session failed: %s", reply)

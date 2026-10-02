@@ -111,16 +111,15 @@ LLM_WINDOW_SECONDS = float(os.environ.get("LLM_WINDOW_SECONDS", "5"))
 # before the sampling rate was fixed at ~31 Hz, and sessions whose
 # viewing distance was assumed rather than measured.
 #
-# EMPTY means collection has NOT started: every session recorded so far
-# is development data, used to build and debug the pipeline, and none of
-# it counts toward the study. That is the current state and it is the
-# honest one — the sessions to date were run against a pipeline that
-# changed between them, sometimes between validations.
+# SET 2026-10-02, before the first evaluation participant: collection
+# starts on this day. Every session recorded earlier (all PILOT_* and
+# named development runs) is development data. Setting it ONCE, in
+# advance, is what makes it a pre-registration; a date chosen afterwards
+# to include the sessions that happened to work is not one.
 #
-# Set this to the first collection date when real recruitment begins.
-# Setting it ONCE, in advance, is what makes it a pre-registration; a
-# date chosen afterwards to include the sessions that happened to work
-# is not one.
+# Rehearsal/test runs on collection day: use a participant ID starting
+# with REHEARSAL or TEST (see NON_EVALUATION_ID_PREFIXES) so they never
+# enter the evaluation set even though they are recorded after this time.
 # Accepts "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM".
 #
 # The time matters on the FIRST day. Collection starting "today" cannot
@@ -129,7 +128,11 @@ LLM_WINDOW_SECONDS = float(os.environ.get("LLM_WINDOW_SECONDS", "5"))
 # development runs into the evaluation set, which is the one thing this
 # constant exists to prevent.
 EVALUATION_FROM_DATE = os.environ.get(
-    "EVALUATION_FROM_DATE", "2026-08-11T14:00").strip()
+    "EVALUATION_FROM_DATE", "2026-10-02T00:00").strip()
+
+# Participant IDs with these prefixes are never evaluation data, whatever
+# their date (rehearsals, demos, failure-injection runs on collection day).
+NON_EVALUATION_ID_PREFIXES = ("REHEARSAL", "TEST", "PILOT", "DEMO")
 
 # Assumed viewing distance for px → degrees-of-visual-angle conversion.
 # Used only when the validation could not measure it; logged per session.
@@ -137,8 +140,11 @@ VIEWING_DISTANCE_CM = float(os.environ.get("VIEWING_DISTANCE_CM", "60"))
 
 # Fallback screen diagonal (inches) when the participant does not enter
 # one at login. Logged per session so the assumption is auditable.
+# 15.6 = the collection laptop (typed at every pilot login). The old
+# default of 13.3 silently made every degree figure ~15 % too SMALL
+# whenever the field was left empty.
 DEFAULT_SCREEN_DIAG_INCHES = float(
-    os.environ.get("SCREEN_DIAG_INCHES", "13.3"))
+    os.environ.get("SCREEN_DIAG_INCHES", "15.6"))
 
 # Inclusion thresholds (per stimulus / per session):
 MAX_VALIDATION_ERROR_DEG = float(
@@ -310,6 +316,8 @@ def is_evaluation_session(session_id: str) -> bool:
     boundary = _eval_boundary()
     if boundary is None:
         return False
+    if str(session_id or "").upper().startswith(NON_EVALUATION_ID_PREFIXES):
+        return False
     m = _re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})(\d{2})",
                    str(session_id or ""))
     if not m:
@@ -392,8 +400,10 @@ TEST_VIDEO_SECONDS = 5
 # stable and make pilot/demo runs repeatable. Switch to "all" for real
 # data collection and RECORD which mode produced each dataset.
 # ---------------------------------------------------------------------------
+# Default changed to "all" when collection started (2026-10-02), so a
+# server started without the launcher still shows the study stimuli.
 SESSION_STIMULUS_MODE = os.environ.get(
-    "SESSION_STIMULUS_MODE", "clip30").strip().lower()
+    "SESSION_STIMULUS_MODE", "all").strip().lower()
 
 # ---------------------------------------------------------------------------
 # In-browser validation targets (pre = after calibration, post = after

@@ -814,11 +814,41 @@ class Service:
                 gf.preview(win=win)
             log("Starting calibration…")
             status("calibrating")
-            gf.calibrate(win=win)
+            # GazeFollower's calibrate() loops (recalibrate until the
+            # participant accepts) without telling anyone. Count the loops
+            # and capture each fit so repeats are visible in the record.
+            fits: list = []
+            ctrl = getattr(gf, "_calibration_controller", None)
+            orig_set = getattr(ctrl, "set_calibration_results", None)
+            if callable(orig_set):
+                def _spy(has_cal, mean_err, *a, **k):
+                    try:
+                        fits.append({"has_calibrated": bool(has_cal),
+                                     "mean_euclidean_error": float(mean_err)})
+                    except Exception:  # noqa: BLE001
+                        fits.append({"has_calibrated": bool(has_cal)})
+                    return orig_set(has_cal, mean_err, *a, **k)
+                ctrl.set_calibration_results = _spy
+            try:
+                gf.calibrate(win=win)
+            finally:
+                if callable(orig_set):
+                    ctrl.set_calibration_results = orig_set
+            # A calibration whose last fit failed must not be marked as
+            # done: SVRCalibration may still hold an EARLIER mapping.
+            last_ok = (fits[-1]["has_calibrated"] if fits else bool(
+                getattr(getattr(gf, "calibration", None),
+                        "has_calibrated", False)))
+            if not last_ok:
+                status("finished")
+                return {"ok": False, "error": "calibration fit failed",
+                        "calibration_loops": len(fits),
+                        "calibration_fit": fits}
             self.calibrated = True
-            log("Calibration finished.")
+            log("Calibration finished (%d fit(s)): %s" % (len(fits), fits))
             status("finished")
-            return {"ok": True}
+            return {"ok": True, "calibration_loops": len(fits),
+                    "calibration_fit": fits}
         finally:
             # Fully shut pygame down (not just the display): a half-alive
             # pygame app whose event queue is never pumped again gets
@@ -2182,8 +2212,9 @@ class Service:
             return {"ok": False, "error": "not sampling"}
         self.gf.stop_sampling()
         self.sampling = False
+        stats = dict(getattr(self.gf, "_sample_stats", None) or {})
         self.gf.save_data(csv_path)
-        log("Session data saved to %s" % csv_path)
+        log("Session data saved to %s (sample stats %s)" % (csv_path, stats))
 
         # save_data() closes GazeFollower's sample stream PERMANENTLY —
         # this instance can never record again. Release it so the next
@@ -2197,7 +2228,8 @@ class Service:
         self.gf = None
         self.calibrated = False
         log("GazeFollower instance released — next session starts fresh.")
-        return {"ok": True, "csv": csv_path}
+        # written / failed-detection / WRITE-ERROR counts for the manifest.
+        return {"ok": True, "csv": csv_path, "sample_stats": stats}
 
     def cmd_shutdown(self) -> dict:
         """Release camera/model resources."""
@@ -2310,6 +2342,7 @@ class Service:
                 elif cmd == "shutdown":
                     result = self.cmd_shutdown()
                     result["cmd"] = cmd
+                    result["seq"] = msg.get("seq")
                     reply(result)
                     break
                 else:
@@ -2319,6 +2352,9 @@ class Service:
                 result = {"ok": False, "error": str(exc)}
 
             result["cmd"] = cmd
+            # Echoed so the Flask side can match a reply to its request
+            # and discard a late reply to an earlier, timed-out command.
+            result["seq"] = msg.get("seq")
             reply(result)
 
 
