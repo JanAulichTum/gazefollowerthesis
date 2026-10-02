@@ -41,6 +41,11 @@ USAGE::
 
 from __future__ import annotations
 
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _ROOT not in _sys.path:
+    _sys.path.insert(0, _ROOT)  # project root: config, tracker_service, ...
+
 import argparse
 import json
 import os
@@ -54,7 +59,7 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+BASE = _ROOT
 DATA = os.path.join(BASE, "data")
 DEFAULT_CLIP = os.path.join(DATA, "fake_face.mp4")
 

@@ -283,7 +283,7 @@ def make_camera(log=None):
                         "lengthening in dim light — put a lamp on the "
                         "participant's face, raise the screen brightness, "
                         "or set GF_CAM_EXPOSURE=capped. Confirm with "
-                        "camera_light_test.py. ***"
+                        "tools/camera_light_test.py. ***"
                         % (delivered, self.cam_fps))
             self._create_capture_thread()
 

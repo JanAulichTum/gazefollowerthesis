@@ -345,15 +345,6 @@ def find_manifest(session_id: str) -> "str | None":
     return None
 
 
-def all_manifests() -> list:
-    """Every session manifest, both directories, oldest first."""
-    import glob as _glob
-
-    out = []
-    for d in session_dirs():
-        out.extend(_glob.glob(os.path.join(d, "*_manifest.json")))
-    return sorted(out, key=lambda p: os.path.basename(p))
-
 # ---------------------------------------------------------------------------
 # Stimulus discovery
 # ---------------------------------------------------------------------------

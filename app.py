@@ -690,7 +690,7 @@ def finalize_gazefollower_session(
         # The workbook is a DERIVED convenience copy (the session CSV +
         # manifest are the record). A failure here — the file open in Excel
         # on Windows locks it, a full disk — must not abort finalisation;
-        # it is recorded and the workbook can be rebuilt with tidy_data.py.
+        # it is recorded and the workbook can be rebuilt with tools/tidy_data.py.
         try:
             _append_to_excel(
                 GAZEFOLLOWER_DATA_FILE, segment, list(segment.columns),
@@ -2903,7 +2903,7 @@ def _finalize_session(sid: str, state: dict[str, Any]) -> dict[str, int]:
         "test_mode": TEST_MODE,
         # "pre-segmentation" until the per-stimulus metrics are added; a
         # manifest stuck at that stage still holds the full accuracy
-        # record and can be completed with rederive_session.py.
+        # record and can be completed with tools/rederive_session.py.
         "finalisation": {"stage": "pre-segmentation"},
         # WHICH instrument: code commit, packages, model and stimulus
         # hashes, config snapshot, browser.
@@ -3281,7 +3281,7 @@ def _correction_payload(corr: "dict | None") -> dict:
     """The manifest/UI form of a correction.
 
     One implementation, in validation_stats, shared with the review page
-    and rederive_session.py. Two copies would let the manifest and the
+    and tools/rederive_session.py. Two copies would let the manifest and the
     recorded data describe different corrections.
     """
     return validation_stats.payload(corr)

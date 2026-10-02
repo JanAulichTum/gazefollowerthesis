@@ -30,7 +30,7 @@ mediapipe==0.10.21
 # broken ("symbol not found ... MNN10getVersionEv") — require a recent one.
 MNN>=3.0
 
-# Legacy pupil-detection fallback (pygazetracker/ package)
+# Image handling (cv2)
 opencv-python>=4.8
 
 # Machine telemetry: CPU load, clock, RAM, battery. Without it every

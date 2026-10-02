@@ -47,6 +47,11 @@ USAGE::
 
 from __future__ import annotations
 
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _ROOT not in _sys.path:
+    _sys.path.insert(0, _ROOT)  # project root: config, tracker_service, ...
+
 import argparse
 import json
 import multiprocessing
@@ -64,7 +69,7 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+BASE = _ROOT
 DATA = os.path.join(BASE, "data")
 
 # The budget a 30 fps camera gives us, and the measured baseline this
@@ -79,11 +84,6 @@ def hr(title: str) -> None:
     print("\n" + "=" * 72)
     print("  " + title)
     print("=" * 72)
-
-
-def _median(vals) -> "float | None":
-    vals = [v for v in vals if v is not None]
-    return round(statistics.median(vals), 2) if vals else None
 
 
 # ──────────────────────────────────────────────────────────────────────

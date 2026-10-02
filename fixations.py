@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from config import FIXATION_DISPERSION_NORM, FIXATION_MIN_DURATION_S
+from config import FIXATION_DISPERSION_NORM
 
 # Literature default for I-DT (Salvucci & Goldberg 2000 and after use
 # ~100 ms). Used as the LOWER bound of the derived minimum duration;

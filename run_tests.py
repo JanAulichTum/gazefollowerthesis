@@ -118,17 +118,13 @@ def environment_block(exc: BaseException) -> "str | None":
 print("\n[1] Python modules compile")
 for py in ("app.py", "config.py", "gaze_service.py", "tracker_service.py",
            "fixations.py", "gaze_vision.py", "quality_report.py",
-           "excel_style.py", "tidy_data.py", "agreement_kit.py",
+           "excel_style.py", "tools/tidy_data.py", "agreement_kit.py",
            "camera_fps_test.py", "tracker_fps_test.py",
            "backfill_manifests.py", "mnn_backend.py", "run_all.py",
            "camera_patch.py", "diagnose_rate.py", "sample_patch.py",
            "env_check.py", "check_screen_space.py", "fake_camera.py",
-           "hz_experiment.py", "camera_light_test.py",
-           "preview_load_test.py", "session_probe.py",
-           # legacy vendored module (unused since WebGazer/pupil tracking
-           # was dropped; kept for provenance):
-           "pygazetracker/__init__.py", "pygazetracker/tracker.py",
-           "pygazetracker/_pupil.py"):
+           "tools/hz_experiment.py", "tools/camera_light_test.py",
+           "tools/preview_load_test.py", "tools/session_probe.py"):
     try:
         py_compile.compile(os.path.join(BASE, py), doraise=True)
         check(py, True)
@@ -180,6 +176,7 @@ check(".calibration-grid is fullscreen-fixed",
 # ── 5. Stimuli discovery ───────────────────────────────────────────────
 print("\n[5] Stimuli discovery")
 sys.path.insert(0, BASE)
+sys.path.insert(0, os.path.join(BASE, "tools"))  # standalone diagnostics
 import config  # noqa: E402
 
 stimuli = config.discover_stimuli()
@@ -938,7 +935,7 @@ try:
     check("app.py stores the spatial terms on every validation",
           'record["spatial"] = _sp' in _appsrc
           and "VALIDATION IS SHEARED" in _appsrc)
-    _sv = read("show_validations.py")
+    _sv = read("tools/show_validations.py")
     check("show_validations prints the off-diagonal term",
           "off-diagonal" in _sv and "SHEARED" in _sv)
     _ca = read("correction_audit.py")
@@ -1516,7 +1513,7 @@ try:
     # (n) The unattended experiment must isolate one variable per
     #     condition and run each in a FRESH process — otherwise an
     #     in-process leak and a thermal drop are indistinguishable.
-    _hz = read("hz_experiment.py")
+    _hz = read("tools/hz_experiment.py")
     check("hz experiment has the key conditions",
           all(c in _hz for c in ("baseline", "repeat2", "stock_writer",
                                  "flush_always", "threads8")))
@@ -1544,7 +1541,7 @@ try:
     # The preview test must exercise the REAL IPC path (tracker
     # subprocess + GazeService), not an in-process call — an in-process
     # poll is a cheap attribute read and proves nothing about the app.
-    _pl = read("preview_load_test.py")
+    _pl = read("tools/preview_load_test.py")
     check("preview test uses the real tracker subprocess",
           "from gaze_service import GazeService" in _pl
           and "svc.gaze_info()" in _pl)
@@ -1563,7 +1560,7 @@ try:
     check("tracker can reproduce the session's sampling churn",
           "def cmd_cycle_sampling" in _tsvc
           and 'cmd == "cycle_sampling"' in _tsvc)
-    _sp2 = read("session_probe.py")
+    _sp2 = read("tools/session_probe.py")
     check("session probe walks the lifecycle and tracks subscribers",
           "cycle_sampling" in _sp2 and "subscribers" in _sp2
           and "after_calibration" in _sp2)
@@ -1879,8 +1876,8 @@ try:
           "maxlen=4000" in _tsvc2)
     check("app logs the stage split", "Stage split [" in _app2)
     check("session_probe reports per-frame cost for a browser-free baseline",
-          "face ms" in read("session_probe.py")
-          and "callback_ms_median" in read("session_probe.py"))
+          "face ms" in read("tools/session_probe.py")
+          and "callback_ms_median" in read("tools/session_probe.py"))
 
     # Overhead arithmetic: callback total minus the two model stages.
     _cb, _face, _gaze = 64.5, 21.0, 38.0
@@ -1890,7 +1887,7 @@ try:
           round(max(0.0, 30.0 - 33.0), 1) == 0.0)
 
     # ── optimize_rate.py: every knob, one pass, no person needed ──
-    _opt = read("optimize_rate.py")
+    _opt = read("tools/optimize_rate.py")
     for _stage in ("[1] MACHINE", "[2] POWER STATE", "[3] MNN THREAD SWEEP",
                    "[4] MNN BACKENDS", "[5] FACEMESH", "[6] CPU CONTENTION",
                    "[7] PROCESS PRIORITY", "[8] VERDICT"):
@@ -2139,7 +2136,7 @@ try:
     # Recorded for EVERY session, so the first requirement is that it
     # cannot possibly harm one. Overhead second, usefulness third.
     _tel_src = read("telemetry.py")
-    _diag = read("diagnose_session.py")
+    _diag = read("tools/diagnose_session.py")
     _gs2 = read("gaze_service.py")
 
     import importlib.util as _ilu
@@ -2303,10 +2300,10 @@ try:
           len(_data["series"]) >= 12, "%d rows" % len(_data["series"]))
 
     _dns: dict = {"__name__": "_diag",
-                  "__file__": os.path.join(BASE, "diagnose_session.py")}
+                  "__file__": os.path.join(BASE, "tools/diagnose_session.py")}
     exec(compile(_diag.replace('if __name__ == "__main__":\n'
                                '    raise SystemExit(main())', ''),
-                 "diagnose_session.py", "exec"), _dns)
+                 "tools/diagnose_session.py", "exec"), _dns)
     _found = _dns["find_anomalies"](_data)
     _levels = [f[0] for f in _found]
     _texts = " ".join(f[1] for f in _found)
@@ -2982,7 +2979,7 @@ try:
           and "iris_traceback" in read("app.py"))
     check("the reader shouts when the fallback ruler was used",
           "The FALLBACK ruler produced this distance"
-          in read("show_validations.py"))
+          in read("tools/show_validations.py"))
 
     check("the distance block records which ruler was used",
           '"iris_cm": pos.get("distance_cm_iris")' in _app2)
@@ -4093,7 +4090,7 @@ try:
           "workbook_errors[entry[\"stimulus\"]] = repr(exc)" in _app_src2)
 
     # ── Rebuilding a manifest from the log ───────────────────────────
-    _rb = read("rebuild_manifest.py")
+    _rb = read("tools/rebuild_manifest.py")
     check("the rebuilt manifest is marked as reconstructed",
           '"reconstructed"' in _rb and "must be reported as such" in _rb)
     check("...and lists what could NOT be recovered",
@@ -4147,7 +4144,7 @@ try:
     # A session that disappears leaves a gap, and a gap cannot answer
     # whether the participant was dropped for a fault or for an
     # inconvenient number.
-    _ret = read("retire_session.py")
+    _ret = read("tools/retire_session.py")
     check("retiring moves files, never deletes them",
           "shutil.move(f, target)" in _ret
           and "os.remove" not in _ret and "os.unlink" not in _ret)
@@ -4171,7 +4168,7 @@ try:
     # The clips are not in the repo, so a cut made on one machine cannot
     # travel to another; only the script can. Identical stimulus for
     # every participant therefore depends on the cut being reproducible.
-    _cut = read("cut_stimuli.py")
+    _cut = read("tools/cut_stimuli.py")
     check("the cut re-encodes rather than stream-copies",
           "libx264" in _cut and '"-c", "copy"' not in _cut)
     check("...and says why, since a copy cut lands on a keyframe",

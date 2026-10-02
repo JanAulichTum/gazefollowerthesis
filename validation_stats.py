@@ -589,7 +589,7 @@ def apply_points(xs, ys, corr: "dict | None"):
     """Vectorized correction for two ALIGNED arrays -> (xs', ys').
 
     THE canonical bulk-application path. app.py's per-sample gaze
-    correction and rederive_session.py's offline re-derivation both call
+    correction and tools/rederive_session.py's offline re-derivation both call
     this instead of each independently deciding how to apply a
     correction — two implementations of "apply the correction" that
     could silently disagree is exactly F30's failure class, and it is
@@ -672,7 +672,7 @@ def from_payload(gc: "dict | None") -> "dict | None":
     """Reconstruct an APPLIABLE correction from its manifest/UI form.
 
     The inverse of ``payload()``. app.py (recovering the correction that
-    was ACTIVE while a validation was measured) and rederive_session.py
+    was ACTIVE while a validation was measured) and tools/rederive_session.py
     (recovering the one recorded in ``gain_correction``) both need this,
     and both used to rebuild ``{"px": gc.get("px"), "py": gc.get("py")}``
     by hand — which is a second, independent reconstruction of the exact
@@ -1168,27 +1168,3 @@ def corrected_targets(targets: "list[dict]", corr: "dict | None") -> list:
                                            corr)
         out.append(r)
     return out
-
-
-def both_ways(targets: "list[dict]", corr: "dict | None",
-              correction_was_active: bool,
-              deg_per_px: "float | None" = None,
-              width: float = 1920.0, height: float = 1080.0,
-              in_sample: bool = False) -> dict:
-    """Accuracy and signed bias for one grid, corrected AND uncorrected.
-
-    Both figures come from the same seven measurements, so the pair is a
-    like-for-like comparison of the correction's effect rather than a
-    comparison of two different moments.
-    """
-    if correction_was_active:
-        raw = raw_targets(targets, corr, width, height)
-        cor = [dict(t) for t in (targets or [])]
-    else:
-        raw = [dict(t) for t in (targets or [])]
-        cor = corrected_targets(targets, corr)
-    return {
-        "raw": signed_bias(raw, deg_per_px, in_sample=False),
-        "corrected": signed_bias(cor, deg_per_px, in_sample=in_sample),
-        "correction_was_active": bool(correction_was_active),
-    }

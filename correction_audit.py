@@ -43,8 +43,6 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-import numpy as np
-
 import validation_stats as vs
 
 PHASES = ("pre_fit", "pre_check", "post")
@@ -149,7 +147,7 @@ def audit(path: str) -> "dict | None":
         # this: applied=affine, current rule=full-affine (a real 13%
         # LOO improvement, not a rounding difference), and the flag
         # stayed silent. corrections_equal is kind-aware (same function
-        # rederive_session.py already uses for this exact decision, so
+        # tools/rederive_session.py already uses for this exact decision, so
         # the two tools cannot disagree about whether a session changed).
         out["rule_changes_this_session"] = not vs.corrections_equal(
             sel["correction"], applied)

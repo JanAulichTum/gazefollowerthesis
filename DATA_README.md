@@ -140,7 +140,7 @@ The same metrics are printed by `quality_report.py` and logged to
   `.corrupt-<timestamp>` backups — data is never silently overwritten.
 - All workbooks are auto-styled on write (bold header, frozen top row,
   filter, column widths); gaze positions are rounded to 2 decimals in
-  Excel (originals stay in the raw CSVs). `python tidy_data.py --apply`
+  Excel (originals stay in the raw CSVs). `python tools/tidy_data.py --apply`
   migrates legacy file names and re-applies the styling.
 - Calibration: 13 points by default (better vertical accuracy), 5 in test
   mode; override with `GF_CALI_MODE`. The authors' stronger 32M-image

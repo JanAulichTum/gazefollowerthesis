@@ -46,7 +46,7 @@ Disable with ``GF_TELEMETRY=0``.
 
 Read a file back with::
 
-    python diagnose_session.py data/telemetry/<file>.json
+    python tools/diagnose_session.py data/telemetry/<file>.json
 """
 
 from __future__ import annotations

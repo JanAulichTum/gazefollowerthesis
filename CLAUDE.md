@@ -39,7 +39,7 @@ which produced each dataset.
 Key files: `config.py` (all constants/env), `gaze_vision.py` (gaze-annotated
 video frames for the LLM), `fixations.py` (I-DT fixation detection),
 `quality_report.py`, `run_tests.py` (integrity suite — RUN AFTER CHANGES),
-`tidy_data.py`, `fix_environment.sh`, `DATA_README.md` (data dictionary —
+`tools/tidy_data.py`, `fix_environment.sh`, `DATA_README.md` (data dictionary —
 kept current), `README.md`.
 
 ## Environment (macOS development / Windows collection)
@@ -264,8 +264,8 @@ kept current), `README.md`.
   inference: **15.1 Hz → 29.4 Hz**, FaceMesh back to 9.6 ms and the gaze
   CNN to 20.0 ms. `GF_PERF_MODE=0` disables it; the active policy is
   recorded in every manifest and asserted by `run_tests.py`.
-- **Why `hz_experiment.py` said the opposite, and why that was not a
-  contradiction.** The same day, `hz_experiment.py` (60 s per condition,
+- **Why `tools/hz_experiment.py` said the opposite, and why that was not a
+  contradiction.** The same day, `tools/hz_experiment.py` (60 s per condition,
   recorded clip as input) measured a flat 30.0 Hz in EVERY condition —
   baseline, two repeats, GazeFollower's own writer, flush-on-every-sample,
   8 MNN threads — 100 % detection, no slide across twelve 5-second
@@ -278,7 +278,7 @@ kept current), `README.md`.
   browser cannot speak to a problem whose mechanism IS the browser
   holding the foreground.** Any future rate benchmark must either run a
   real session or state explicitly that it does not.
-- **`python session_probe.py`** walks the REAL session lifecycle against
+- **`python tools/session_probe.py`** walks the REAL session lifecycle against
   the fixed clip — the churn every other benchmark skips. `cmd_cycle_sampling`
   reproduces the stop/start pattern calibration and the accuracy check
   perform (each `start_sampling()` appends `_write_sample`; upstream's
@@ -289,8 +289,8 @@ kept current), `README.md`.
   rate is measured before the videos and again after them, so a drift
   across a session is visible from one run instead of needing to be
   reproduced live.
-- **`python preview_load_test.py`** tests whether the live gaze preview
-  costs rate. IMPORTANT: `hz_experiment.py` ran the tracker IN-PROCESS
+- **`python tools/preview_load_test.py`** tests whether the live gaze preview
+  costs rate. IMPORTANT: `tools/hz_experiment.py` ran the tracker IN-PROCESS
   with no Flask/IPC, and `diagnose_rate.py`'s "polled" condition called
   `get_gaze_info()` in-process — a cheap attribute read. Neither tests
   the real preview, which is a full JSON round trip into the tracker
@@ -298,12 +298,12 @@ kept current), `README.md`.
   contends for the GIL with the capture thread running MediaPipe + MNN.
   This test uses the real subprocess and brackets the app's actual
   `socketio.sleep(0.15)` with 50 ms and 20 ms polling.
-- **`python camera_light_test.py`** alternates a fullscreen white/black
+- **`python tools/camera_light_test.py`** alternates a fullscreen white/black
   window while measuring delivered camera fps and image brightness. A
   large fps drop on the dark phase means the webcam is lengthening
   exposure (it cannot expose longer than one frame interval, so it halves
   the rate) — a LIGHTING fix, not a code fix.
-- **`python hz_experiment.py`** is the unattended rate investigation:
+- **`python tools/hz_experiment.py`** is the unattended rate investigation:
   runs the real pipeline against the fixed clip under one-variable-at-a-
   time conditions (baseline, two repeats, stock writer, flush-every-
   sample, 8 threads, BlazeFace), **each in a fresh subprocess**, then
@@ -450,7 +450,7 @@ reduced-motion. TEST badge + options panel amber #b45309.
    Caveat it prints itself: a console is already the foreground process,
    so a clean result proves the API calls succeed, NOT that the rate is
    recovered under a fullscreen browser. Only a real session tests that;
-   compare `perf_mode` across sessions with `diagnose_session.py`.
+   compare `perf_mode` across sessions with `tools/diagnose_session.py`.
 5. `python backfill_manifests.py --dry-run` after changing any quality
    formula, to see how existing sessions would be re-scored.
 
